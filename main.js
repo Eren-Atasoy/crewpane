@@ -931,72 +931,23 @@ const MODE = resolveMode();
 // the app's writable logs dir instead. Resolved lazily — app paths aren't
 // available until `whenReady`. All writes are guarded so a read-only target can
 // never crash the main process.
+// ── Logger & Hata Altyapısı (Faz 3.2): src/shared/logger ─────────────────────
+const logger = require('./src/shared/logger/index.js');
 let LOG_PATH = null;
-let LOG_TARGET = null; // CRASH-R1 — {isolated, source, tag}; açılışta bir kez loglanır
+let LOG_TARGET = null;
+
 function initLog() {
-  // CRASH-R1 — İZOLE KOPYA KENDİ DOSYASINA YAZAR. Eskiden yol YALNIZ uygulama
-  // adına bağlıydı ('crewpane-shell'), o yüzden duman testi (`smoke_boot.sh`)
-  // CREWPANE_HOME'u ve `--user-data-dir`i yalıtsa bile canlı uygulamanın
-  // günlüğüne yazıyor ve her açılışta onu rotasyona sokuyordu. 16.09 olayında
-  // ölüm anının satırları iki sürümün çıktısıyla karıştı ve ayrıştırılamadı.
-  // Yalıtım işareti YOKSA ad BİREBİR eskisi kalır (destek/QA yolları aynı).
-  LOG_TARGET = logTarget.resolveLogFile({
-    logsDir: app.getPath('logs'),
-    homeEnv: process.env.CREWPANE_HOME || null,
-    osHome: os.homedir(),
-    argv: process.argv,
+  const res = logger.initLog({
+    app,
+    mode: MODE,
     e2e: AUTOTEST || process.env.CREWPANE_E2E === '1',
   });
-  const logsFolder = path.join(__dirname, 'logs');
-  if (!fs.existsSync(logsFolder)) {
-    try { fs.mkdirSync(logsFolder, { recursive: true }); } catch {}
-  }
-  LOG_PATH = app.isPackaged
-    ? LOG_TARGET.file
-    : path.join(logsFolder, 'spike-log.txt');
-  // TASK-MRDXOGZJDQLJG — rotation: each boot used to OVERWRITE the log, destroying
-  // the previous instance's evidence (the 22:50 self-update instance's log was gone
-  // by the time the wipe was diagnosed).
-  //
-  // ADP-734 — TEK KUŞAK YETMİYOR (ölçüldü): ADP-732 incelemesi sırasında 15:13
-  // öncesindeki tüm log'lar zaten dönmüştü; kaybın YAŞANDIĞI 14:49 açılışının log'u
-  // elde yoktu ve inceleme bir mtime zincirine mahkûm kaldı. Üstelik incelemenin
-  // KENDİSİ (app yeniden başlatıldıkça) bir rotasyon daha yaşattı. Artık N kuşak
-  // (<name>.1<ext> … <name>.N<ext>) saklanır; en eskisi düşer. Log'lar küçüktür
-  // (~yüzlerce KB) — bir olay incelemesinin bedeli yanında hiç kalır.
-  // Geriye uyum: eski `.prev` dosyası varsa `.1` olarak kuşak zincirine katılır.
-  const gens = (() => {
-    const n = Number(crewpaneEnv.readEnv('LOG_GENERATIONS'));
-    return Number.isFinite(n) && n >= 1 && n <= 50 ? Math.floor(n) : 5;
-  })();
-  try {
-    const p = path.parse(LOG_PATH);
-    const gen = (i) => path.join(p.dir, `${p.name}.${i}${p.ext}`);
-    try { renameWithRetrySync(path.join(p.dir, `${p.name}.prev${p.ext}`), gen(1)); } catch { /* eski şema yoksa geç */ }
-    for (let i = gens - 1; i >= 1; i -= 1) {
-      try { renameWithRetrySync(gen(i), gen(i + 1)); } catch { /* yoksa geç */ }
-    }
-    renameWithRetrySync(LOG_PATH, gen(1));
-  } catch { /* first boot or unrotatable — best-effort */ }
-  try {
-    fs.writeFileSync(LOG_PATH, `# CrewPane shell log — mode=${MODE} — ${new Date().toISOString()}\n`);
-  } catch { /* logging is best-effort */ }
+  LOG_PATH = res.logPath;
+  LOG_TARGET = res.logTarget;
+  return res;
 }
-function logLine(rawMsg) {
-  // ADP-586 (Kural 4) — bilinen entegrasyon anahtarları log'a DÜZ yazılmaz. Şifreli
-  // vault'un anlamı, jeton `crewpane-shell.log`'a düşer düşmez biter (log dosyaları
-  // hata ayıklarken paylaşılır). Defter boşken bu çağrı girdiyi aynen döndürür.
-  const msg = secretRedactor.redact(String(rawMsg));
-  try { if (LOG_PATH) fs.appendFileSync(LOG_PATH, msg + '\n'); } catch { /* best-effort */ }
-  // ADP-303 — the app is usually launched FROM a terminal/agent pane, so stdout is a PIPE.
-  // When that reader dies (the 2026-07-12 incident: the leader killed pane ptys by hand to
-  // clean them up) every further write raises an async EPIPE on the stream → uncaught →
-  // Electron's "A JavaScript error occurred in the main process" dialog. stdioGuard listens
-  // for the stream error and flips canWriteStdout() to false; the FILE log keeps everything.
-  try {
-    if (stdioGuards.canWriteStdout()) process.stdout.write('[crewpane] ' + msg + '\n');
-  } catch { /* raced with the pipe closing — the file log already has the line */ }
-}
+
+const logLine = logger.logLine;
 
 // ADP-946 — AYAR YAZIMININ DÜŞÜŞÜ ARTIK DOSYA LOG'UNA DÜŞER. `agentSettings` bunu
 // yalnız `process.stderr`e yazabiliyordu; paketli Windows app Explorer'dan açılır,
@@ -1037,6 +988,7 @@ const stdioGuards = stdioGuard.installStdioGuards({
     }
   },
 });
+logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
 // ── ADP-335 — MODÜL HATA SINIRI (bkz. moduleGuard.cjs) ──────────────────────────────────
 // main'deki HERHANGİ bir modülde sıradan bir kod hatası (ReferenceError/TypeError) tüm
