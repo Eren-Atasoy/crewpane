@@ -85,7 +85,6 @@ test('Architecture: Root directory remains clean (no loose cjs/js files)', (t) =
     'devChannelTarget.json',
     'main.js',
     'package.json',
-    'preload.js',
     'schema.sql',
     'start.bat'
   ]);

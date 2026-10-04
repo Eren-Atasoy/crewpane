@@ -12920,7 +12920,7 @@ function broadcastLocale() {
 }
 
 const sharedWebPreferences = () => ({
-  preload: path.join(__dirname, 'preload.js'),
+  preload: path.join(__dirname, 'dist', 'preload.js'),
   contextIsolation: true,
   nodeIntegration: false,
   sandbox: true,

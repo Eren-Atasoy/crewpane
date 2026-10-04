@@ -19,14 +19,14 @@ test('Smoke: Next.js standalone distribution exists and has server.js', (t) => {
   assert.ok(fs.existsSync(dotNext), 'standalone/.next directory must exist');
 });
 
-test('Smoke: Electron preload.js exists and is syntactically valid', (t) => {
-  const preloadPath = path.join(ROOT_DIR, 'preload.js');
-  assert.ok(fs.existsSync(preloadPath), 'preload.js must exist');
+test('Smoke: Electron dist/preload.js exists and is syntactically valid', (t) => {
+  const preloadPath = path.join(ROOT_DIR, 'dist', 'preload.js');
+  assert.ok(fs.existsSync(preloadPath), 'dist/preload.js must exist');
 
   // Verify syntax with node --check
   assert.doesNotThrow(() => {
     execFileSync(process.execPath, ['--check', preloadPath], { stdio: 'pipe' });
-  }, 'preload.js should have valid JavaScript syntax');
+  }, 'dist/preload.js should have valid JavaScript syntax');
 });
 
 test('Smoke: Electron main.js exists and is syntactically valid', (t) => {

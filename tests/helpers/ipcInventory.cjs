@@ -54,7 +54,7 @@ function mainChannels() {
   return sortedUnique(out);
 }
 
-function preloadSurface(preloadPath = path.join(ROOT, 'preload.js')) {
+function preloadSurface(preloadPath = path.join(ROOT, 'dist', 'preload.js')) {
   const text = fs.readFileSync(preloadPath, 'utf8');
   return {
     bridges: sortedUnique(collect(EXPOSE_RE, text, false)),

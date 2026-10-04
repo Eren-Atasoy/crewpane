@@ -15,7 +15,8 @@
 # standalone/.next is the shipped frontend and IS tracked.
 # ---------------------------------------------------------------
 /.next/
-/dist/
+/dist/*
+!/dist/preload.js
 /out/
 /build/
 /release/
