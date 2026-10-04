@@ -128,4 +128,62 @@ test('Units - Agents: jevRouter classifies task difficulty and routes optimal mo
   assert.strictEqual(expertRes.effort, 'high', 'Expert task should have high effort');
 });
 
+test('Units - Main: createIpcRouter registers contract-based handlers with schema validation', async (t) => {
+  const { createIpcRouter } = require('../src/main/ipc/router.js');
 
+  const registeredHandlers = new Map();
+  const fakeIpcMain = {
+    handle: (channel, fn) => {
+      registeredHandlers.set(channel, fn);
+    },
+  };
+
+  const fakeLogger = {
+    warnLogs: [],
+    errorLogs: [],
+    warn(msg, meta) { this.warnLogs.push({ msg, meta }); },
+    error(msg, meta) { this.errorLogs.push({ msg, meta }); },
+  };
+
+  const router = createIpcRouter({ ipcMain: fakeIpcMain, logger: fakeLogger });
+
+  const testContract = {
+    channels: {
+      ping: 'test:ping',
+      calc: 'test:calc',
+    },
+    schemas: {
+      'test:calc': {
+        safeParse: (payload) => {
+          if (typeof payload?.num === 'number') {
+            return { success: true, data: payload };
+          }
+          return { success: false, error: { issues: ['num must be number'] } };
+        },
+      },
+    },
+  };
+
+  router(testContract, {
+    ping: () => 'pong',
+    calc: ({ num }) => ({ result: num * 2 }),
+  });
+
+  assert.strictEqual(registeredHandlers.has('test:ping'), true);
+  assert.strictEqual(registeredHandlers.has('test:calc'), true);
+
+  // Test ping
+  const pingHandler = registeredHandlers.get('test:ping');
+  const pingRes = await pingHandler({}, null);
+  assert.deepStrictEqual(pingRes, { ok: true, data: 'pong' });
+
+  // Test valid calc
+  const calcHandler = registeredHandlers.get('test:calc');
+  const validCalc = await calcHandler({}, { num: 21 });
+  assert.deepStrictEqual(validCalc, { ok: true, data: { result: 42 } });
+
+  // Test invalid calc
+  const invalidCalc = await calcHandler({}, { num: 'not-a-number' });
+  assert.deepStrictEqual(invalidCalc, { ok: false, error: 'INVALID_PAYLOAD' });
+  assert.strictEqual(fakeLogger.warnLogs.length, 1);
+});
