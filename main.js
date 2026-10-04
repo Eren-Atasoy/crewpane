@@ -45,6 +45,8 @@ const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 
 // ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
+const { createWindowManager } = require('./src/main/windows');
+let windowManager = null;
 
 const bootstrapCtx = {
   app,
@@ -7214,25 +7216,13 @@ function wireIpc() {
     // Renderer çizim bedelini bildirir (görev kartı madde 4: bedel ölçülür ve
     // rapora yazılır). Ekrana değil LOG'a: overlay bir konsol değildir.
     if (payload && typeof payload === 'object') {
-      handOverlayLastCost = { ...payload, at: Date.now() };
+      if (windowManager) windowManager.setHandOverlayLastCost({ ...payload, at: Date.now() });
       logLine(`hand overlay bedel: display=${payload.displayId} draw_p50=${payload.drawMsP50}ms draw_p95=${payload.drawMsP95}ms fps=${payload.fps}`);
     }
     return { ok: true };
   });
   ipcMain.handle('handOverlay:debug', () => {
-    // e2e/kanıt: pencerelerin GERÇEK bayrakları (iddia değil, ölçüm).
-    const wins = [];
-    for (const [id, win] of handOverlayWindows) {
-      if (!win || win.isDestroyed()) continue;
-      wins.push({
-        displayId: id,
-        bounds: win.getBounds(),
-        alwaysOnTop: win.isAlwaysOnTop(),
-        focusable: typeof win.isFocusable === 'function' ? win.isFocusable() : null,
-        visible: win.isVisible(),
-      });
-    }
-    return { open: handOverlayAnyAlive(), lastFeedAt: handOverlayLastFeedAt, lastCost: handOverlayLastCost, windows: wins };
+    return windowManager ? windowManager.getHandOverlayDebugInfo() : { open: false };
   });
 
   // HAND-A2 — EL KONTROLÜ UÇLARI. Kare ucu YALNIZ gizli tespit penceresinden
@@ -7415,7 +7405,7 @@ function wireIpc() {
   // Ana pencerenin ses yüzeyi durumunu YAYINLAR (widget açık değilse main yalnız
   // son fotoğrafı saklar — pencere sonradan açıldığında ekran boş kalmasın).
   ipcMain.handle('jarvisWidget:publish', (_event, payload) => {
-    jarvisWidgetSnapshot = jarvisWidget.normalizeSnapshot(payload);
+    if (windowManager) windowManager.setJarvisWidgetSnapshot(jarvisWidget.normalizeSnapshot(payload));
     broadcastJarvisWidget();
     return { ok: true, open: !!jarvisWidgetAlive() };
   });
@@ -12640,235 +12630,64 @@ function broadcastLocale() {
   return state;
 }
 
-const sharedWebPreferences = () => ({
-  preload: path.join(__dirname, 'dist', 'preload.js'),
-  contextIsolation: true,
-  nodeIntegration: false,
-  sandbox: true,
-  backgroundThrottling: false, // keep timers/pty alive when window is hidden (ADP-003)
-  // ADP-305 — the renderer's NEXT_PUBLIC_CREWPANE_SUPABASE_* are INLINED at build
-  // time, so an env var cannot move it off the live office DB. additionalArguments is
-  // the documented channel into a SANDBOXED preload (arrives as process.argv), and it
-  // is set before any page script runs — so the client is built with the right target
-  // on its very first import. Absent flag → renderer keeps the baked-in (live) values.
-  additionalArguments: [
-    supabaseTarget.encodeArgv(rendererSupabaseTarget()),
-    // ADP-888 — ARAYÜZ DİLİ aynı kanaldan: `NEXT_PUBLIC_*` build-time gömülü
-    // olduğu için env ile dil verilemez, sandboxed preload de relative require
-    // yapamaz. Bayrak sayfanın İLK script'inden önce oradadır → ilk boyama
-    // doğru dilde olur (async IPC beklenirse önce yanlış dilde bir kare görülür).
-    appI18n.encodeArgv(applyAppLocale()),
-  ],
+// ── Pencere Yönetimi (Faz 3.3): BrowserWindow yönetimi src/main/windows altında ──
+windowManager = createWindowManager({
+  BrowserWindow,
+  shell,
+  screen,
+  Notification,
+  app,
+  preloadPath: path.join(__dirname, 'dist', 'preload.js'),
+  supabaseTarget,
+  rendererSupabaseTarget,
+  appI18n,
+  applyAppLocale,
+  isTest: instancePaths.isTest(),
+  crewpaneHome,
+  APP_PROBE,
+  PROBE_WAIT,
+  PROBE_CLICKS,
+  PROBE_PATH,
+  START_PATH,
+  AUTOTEST,
+  getAppWindow: () => appWindow,
+  setAppWindow: (w) => { appWindow = w; },
+  getAppBaseUrl: () => appBaseUrl,
+  setAppBaseUrl: (u) => { appBaseUrl = u; },
+  setPanesRestored: (val) => { panesRestored = val; },
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  logLine,
+  rebindOrphanPanes,
+  restoreLivePanes,
+  startPtyResumeDaemonOnce,
+  ptys,
+  noteQuit,
+  crashWatchdog,
+  keepPanesAliveOnWindowClose,
+  liveAgentPaneCount,
+  killPtysForWindow,
+  quitFunnel,
+  armQuitBrake,
+  reportsWatcher,
+  activeWorktreePaths,
+  mappedProjectRootsForReports,
+  browserGuests,
+  ghostGuests: () => ghostGuests,
+  guestOwners,
+  agentGuests,
+  getPendingAgentTabs: () => pendingAgentTabs,
+  getAppWindowGuest: () => appWindowGuest,
+  setAppWindowGuest: (g) => { appWindowGuest = g; },
+  lastUnownedGuest,
+  getHandControl: () => handControl,
+  stopHandControl,
+  broadcastHandControlStatus,
 });
 
-// ADP-091 (ADR-006 Karar 2) — internal-browser <webview> hardening + logging.
-// Called once per app window. The renderer can declare a <webview>, but the
-// MAIN process decides the guest's powers here — the renderer cannot grant the
-// guest node access or a privileged preload.
-/**
- * ADP-905 F4 — HTML5 tam ekran ÇIKIŞINDA pencereyi eski boyutuna döndür.
- *
- * ADP-905'i TETİKLEYEN tuzak buydu: <webview> içindeki video (YouTube) tam ekrana
- * geçince Chromium pencereyi de fullscreen yapar; videodan çıkınca pencere ESKİ
- * boyutuna DÖNMÜYORDU (ölçüldü: `enter-html-full-screen`/`leave-html-full-screen`
- * main'de HİÇ dinlenmiyordu — grep 0 sonuç). Kullanıcı "çıktım ama ekran hâlâ
- * büyüktü" deyip × sandığı yere bastı ve 12 canlı ajanını kaybetti (F1/F2 o kaybı
- * kapatıyor; bu madde TETİĞİ kapatıyor).
- *
- * Durum PENCEREDE tutulur (`win._adp905Fs`), çünkü aynı nöbet iki ayrı webContents'e
- * bağlanır: ana sayfa VE her <webview> misafiri. Video misafirin içinde oynar; olayı
- * hangisi yayınlarsa yayınlasın karar tek yerde verilir.
- *
- * Kullanıcı pencereyi ZATEN kendisi tam ekran yaptıysa (wasFullScreen) hiçbir şey
- * yapılmaz — onun tercihini bozmak ikinci bir bug olurdu.
- */
-function attachHtmlFullscreenGuard(win, wc) {
-  if (!win || win.isDestroyed() || !wc || wc.isDestroyed()) return;
-  if (!win._adp905Fs) win._adp905Fs = { active: false, bounds: null, wasFullScreen: false };
-  const st = win._adp905Fs;
-  wc.on('enter-html-full-screen', () => {
-    try {
-      if (win.isDestroyed()) return;
-      // Olay İKİ webContents'ten de gelebilir (gömen sayfa + misafir). İkincisi
-      // pencere ARTIK tam ekranken gelir; ölçüm o an alınsaydı "zaten tam ekrandı"
-      // sanılır ve çıkışta bounds geri konmazdı. Oturum tek sayılır.
-      if (st.active) return;
-      st.active = true;
-      st.wasFullScreen = win.isFullScreen();
-      st.bounds = st.wasFullScreen ? null : win.getBounds();
-      logLine(
-        `ADP-905 fullscreen: HTML tam ekran GİRİŞ (wasFullScreen=${st.wasFullScreen} ` +
-          `bounds=${st.bounds ? JSON.stringify(st.bounds) : '-'})`,
-      );
-    } catch (e) { logLine(`ADP-905 fullscreen giriş hatası: ${e.message}`); }
-  });
-  wc.on('leave-html-full-screen', () => {
-    if (win.isDestroyed()) return;
-    if (!st.active) return; // ikinci webContents'in aynı çıkışı (bkz. yukarıdaki not)
-    st.active = false;
-    const target = st.bounds;
-    st.bounds = null;
-    if (st.wasFullScreen || !target) {
-      logLine('ADP-905 fullscreen: HTML tam ekran ÇIKIŞ — pencere zaten tam ekrandı, dokunulmadı');
-      return;
-    }
-    // macOS'ta native fullscreen geçişi ANİMASYONLU ve asenkron: setBounds'u hemen
-    // çağırmak yutulur. Bu yüzden önce çıkış beklenir, bounds sonra geri konur.
-    const restoreBounds = () => {
-      try {
-        if (win.isDestroyed()) return;
-        win.setBounds(target);
-        logLine(`ADP-905 fullscreen: ÇIKIŞ → bounds geri kondu ${JSON.stringify(target)}`);
-      } catch (e) { logLine(`ADP-905 fullscreen bounds geri konamadı: ${e.message}`); }
-    };
-    try {
-      if (win.isFullScreen()) {
-        win.once('leave-full-screen', () => setTimeout(restoreBounds, 60));
-        win.setFullScreen(false);
-      } else {
-        restoreBounds();
-      }
-    } catch (e) { logLine(`ADP-905 fullscreen çıkış hatası: ${e.message}`); }
-  });
-}
-
-// WIN-FIX-01 (W5) — misafir oturumuna izin politikasını BİR KEZ bağla.
-// Aynı partition'ı paylaşan her sekme AYNI `Session` nesnesini döndürür, o yüzden
-// tekrar bağlamak zararsız olurdu; yine de `boundGuestSessions` ile bir kez bağlanır
-// (log gürültüsü olmasın ve "kim bağladı" belirsizleşmesin).
-const boundGuestSessions = new WeakSet();
-
-function applyGuestPermissionPolicy(ses) {
-  if (!ses || boundGuestSessions.has(ses)) return false;
-  try {
-    // İSTEK yolu (async, sayfa `getUserMedia()` gibi bir çağrı yaptığında).
-    ses.setPermissionRequestHandler((wc, permission, callback) => {
-      const verdict = guestPermissions.decide(permission);
-      if (!verdict.granted) {
-        let origin = '?';
-        try { origin = (wc && wc.getURL && new URL(wc.getURL()).origin) || '?'; } catch { /* about:blank vb. */ }
-        logLine(`webview izin REDDEDİLDİ: ${permission} (${origin}) — sebep=${verdict.reason}`);
-      }
-      callback(verdict.granted);
-    });
-    // KONTROL yolu (senkron; Electron belgeleri ikisinin BİRLİKTE kurulmasını şart
-    // koşar — yalnız istek handler'ı kurmak `permissions.query()` yolunu varsayılan
-    // ONAYDA bırakırdı ve site "iznim var" sanıp kullanıcıyı yanıltırdı).
-    ses.setPermissionCheckHandler((_wc, permission) => guestPermissions.decide(permission).granted);
-    boundGuestSessions.add(ses);
-    logLine(`webview izin politikası bağlandı (izinli: ${guestPermissions.ALLOWED.join(', ')}; diğer HEPSİ ret)`);
-    return true;
-  } catch (e) {
-    // Sessiz kalmak YASAK: bağlanamadıysak oturum Electron VARSAYILANINDA — yani
-    // HER İZİN ONAYLI — kalır ve bu bir güvenlik bilgisidir.
-    logLine(`webview izin politikası BAĞLANAMADI (${e.message}) → oturum Electron varsayılanında (izinler AÇIK)`);
-    return false;
-  }
-}
-
-function attachWebviewGuards(win) {
-  const wc = win.webContents;
-  // Before a guest attaches, neuter its webPreferences regardless of what the
-  // <webview> tag asked for: no preload, no node, isolated + sandboxed.
-  wc.on('will-attach-webview', (_event, webPreferences, params) => {
-    delete webPreferences.preload;
-    delete webPreferences.preloadURL;
-    webPreferences.nodeIntegration = false;
-    webPreferences.nodeIntegrationInSubFrames = false;
-    webPreferences.contextIsolation = true;
-    webPreferences.sandbox = true;
-    webPreferences.webSecurity = true;
-    logLine('webview will-attach: ' + (params && params.src ? params.src : '(no src)'));
-  });
-  // After attach, govern the guest's navigation surface. Every navigation is logged
-  // (ADR-006 navigation log). The guest stays the only CDP-able surface (ADP-085);
-  // the app renderer is never driven. No child Electron windows are ever created.
-  wc.on('did-attach-webview', (_event, guest) => {
-    try {
-      // ADP-150 (multi-tab) — target=_blank / window.open from a guest opens an
-      // IN-APP new tab (not the OS browser): forward the URL to the renderer, which
-      // spawns another <webview> in this SAME hardened partition. We always deny the
-      // native child window (no popups escape the sandboxed in-app browser). mailto:
-      // is not browsable, so it still hands off to the OS mail client.
-      guest.setWindowOpenHandler(({ url: target }) => {
-        if (/^https?:/.test(target)) {
-          try {
-            if (appWindow && !appWindow.isDestroyed()) {
-              appWindow.webContents.send('browser:new-tab', { url: target });
-            }
-          } catch { /* best-effort */ }
-          logLine('webview new-tab (in-app): ' + target);
-        } else if (/^mailto:/.test(target)) {
-          shell.openExternal(target);
-        }
-        return { action: 'deny' };
-      });
-    } catch { /* best-effort */ }
-    // WIN-FIX-01 (W5) — MİSAFİRİN OTURUMUNA İZİN POLİTİKASI BAĞLA.
-    // `<webview partition="persist:crewpane-browser">` uygulama penceresinden AYRI
-    // bir oturumdur ve ona bugüne dek HİÇ handler bağlanmamıştı → Electron'un
-    // varsayılanı devrede kalıyordu: HER izin isteği SESSİZCE ONAYLANIYOR (mikrofon,
-    // kamera, konum, bildirim…). Windows'ta bunun görünen yüzü, sayfanın tetiklediği
-    // ve bizim hiç sormadığımız SİSTEM izin diyaloglarıdır (WIN-R1 §W5).
-    // Partition adını burada TEKRARLAMIYORUZ (o src/'te yaşıyor): misafirin KENDİ
-    // oturumunu kullanıyoruz → ad değişse bile politika bağlı kalır.
-    applyGuestPermissionPolicy(guest.session);
-    guest.on('will-navigate', (_e, target) => logLine('webview will-navigate: ' + target));
-    guest.on('did-navigate', (_e, target) => logLine('webview did-navigate: ' + target));
-    // WIN-FIX-01 (W4 · main kırıntısı) — BEYAZ SAYFA ARTIK SESSİZ DEĞİL.
-    // WIN-R1 §W4'ün belirtisi "200 OK, konsol temiz, ama boş beyaz". O tabloda tek
-    // eksik olan ŞEY KAYITTI: misafirin yükleme hatası, render süreci ölümü ve
-    // yanıtsızlığı hiçbir yere düşmüyordu → destek "neden beyaz" sorusuna bakacak
-    // hiçbir satır bulamıyordu. Tanı koymayı mümkün kılmak da bir düzeltmedir.
-    guest.on('did-fail-load', (_e, code, desc, url, isMainFrame) => {
-      // -3 (ABORTED) normaldir: kullanıcı yeni bir adrese geçince önceki iptal olur.
-      if (code === -3) return;
-      logLine(`webview did-fail-load: code=${code} "${desc}" url=${url} mainFrame=${!!isMainFrame}`);
-    });
-    guest.on('render-process-gone', (_e, details) => {
-      logLine(`webview render-process-gone: reason=${details && details.reason} exit=${details && details.exitCode}`);
-    });
-    guest.on('unresponsive', () => logLine('webview unresponsive (render süreci yanıt vermiyor)'));
-    guest.on('responsive', () => logLine('webview responsive (yanıt vermeye döndü)'));
-    // ADP-905 F4 — video MİSAFİRİN içinde tam ekrana geçer: nöbeti misafire de bağla
-    // (karar tek yerde, durum pencerede — bkz. attachHtmlFullscreenGuard).
-    attachHtmlFullscreenGuard(win, guest);
-    // ADP-095/ADP-150 — track this guest as a CDP-able target. The most-recently
-    // attached guest (usually the active/new tab) becomes the default; the renderer
-    // refines the active target on tab switch via 'browser:setActiveGuest'. The
-    // guest is the ONLY surface driven; the app renderer is never CDP-attached.
-    browserGuests.set(guest.id, guest);
-    // ADP-396 — "son attach kazanır" bir KAÇAKTI: ajanın arka plan sekmesi attach olur
-    // olmaz insan yolunun hedefi de o oluyordu. main KENDİ bir ajan sekmesi istediyse
-    // (pendingAgentTabs) bu attach insan hedefine DOKUNMAZ. Sahiplik bildirimi attach'tan
-    // sonra geldiği için ikinci savunma setTabOwner'da (geri-alma).
-    if (pendingAgentTabs > 0) {
-      logLine(`[adp396] ajan sekmesi attach oldu (id=${guest.id}, bekleyen=${pendingAgentTabs}) → İNSAN yolu hedefi korunuyor`);
-    } else {
-      appWindowGuest = guest;
-      logLine(`[adp396] sahipsiz sekme attach (id=${guest.id}) → İNSAN yolu hedefi`);
-    }
-    guest.once('destroyed', () => {
-      browserGuests.delete(guest.id);
-      ghostGuests.delete(guest.id); // ADP-394 — ölü guest hayalet defterinde kalmasın
-      // ADP-333 — sahiplik ölür: ajanın sekmesi kapandıysa BAŞKA bir sekmeye DEVRETMEYİZ
-      // (eskiden "kalan son sekme"ye düşüyordu — o sekme kullanıcının olabilir). Ajanın
-      // sonraki işlemi kendine YENİ sekme açar (resolveAgentGuest).
-      const owner = guestOwners.get(guest.id);
-      if (owner) {
-        guestOwners.delete(guest.id);
-        if (agentGuests.get(owner) === guest) agentGuests.delete(owner);
-      }
-      // İNSAN yolu (agentId'siz Jarvis komutları) için aktif hedef geri düşebilir —
-      // ADP-396: yalnız SAHİPSİZ bir sekmeye. Eskiden "kalan son sekme"ye düşüyordu ve o
-      // sekme bir AJANIN olabiliyordu (kaçağın ikinci kapısı).
-      if (appWindowGuest === guest) {
-        appWindowGuest = lastUnownedGuest();
-      }
-    });
-    logLine('webview attached: CDP target ready (headed automation)');
-  });
-}
+function sharedWebPreferences() { return windowManager.sharedWebPreferences(); }
+function attachHtmlFullscreenGuard(win, wc) { return windowManager.attachHtmlFullscreenGuard(win, wc); }
+function applyGuestPermissionPolicy(ses) { return windowManager.applyGuestPermissionPolicy(ses); }
+function attachWebviewGuards(win) { return windowManager.attachWebviewGuards(win); }
 
 // ADP-095 — write a CDP base64 PNG screenshot to a temp file; return its path.
 // WIN-IMG-01 — TTL YOK: aynı oturum deposundan geçer (ajanın kanıt-screenshot'ları
@@ -13190,331 +13009,9 @@ async function runBrowserAction(value) {
  * ölçer — ekrandan kaçırmak o kapıları körleştirirdi.
  * i18n-exempt: pencere başlığı işareti (arayüz metni değil, ayırt edici damga).
  */
-const E2E_WINDOW_TAG = ' [E2E TEST]';
-function tagTestWindow(win, base) {
-  if (!instancePaths.isTest() || !win || win.isDestroyed()) return;
-  try {
-    const stamp = () => {
-      if (!win.isDestroyed() && !win.getTitle().includes(E2E_WINDOW_TAG)) {
-        win.setTitle(`${win.getTitle() || base || 'CrewPane'}${E2E_WINDOW_TAG}`);
-      }
-    };
-    stamp();
-    // Sayfa başlığı yüklenince pencere başlığını EZER → damga her seferinde geri konur.
-    win.webContents.on('page-title-updated', () => setImmediate(stamp));
-  } catch { /* etiket kozmetiktir, pencereyi ASLA kıramaz */ }
-}
-
-/** The real app window — loads the embedded Next server. */
-function createAppWindow(url) {
-  // LIC-ENFORCE-01 (D) — AÇILIŞ SIRASI ÇİVİSİ. Lisans durumu (seatGate.init:
-  // safeStorage'dan oturum + jeton + kara-liste damgası) bu satırdan ÖNCE
-  // çözülmüş olmak ZORUNDA; aksi hâlde kilitli kullanıcı ilk karede ofisi
-  // görürdü. `seatGate init:` log satırı bunun ÖNÜNDE görünmelidir — sıra
-  // e2e'de ölçülür (lic-enforce-01 spec'i) ve statik olarak da nöbet tutulur
-  // (adp646BootOrder.test.cjs). Bu satır o kanıtın görünür ucudur.
-  logLine('boot: ana uygulama penceresi açılıyor (lisans durumu çözülmüş olmalı)');
-  const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
-    minWidth: 960,
-    minHeight: 600,
-    title: 'CrewPane',
-    // Hidden during a headless probe, but a screenshot run must paint, so show
-    // the window when capturing.
-    show: !APP_PROBE || !!process.env.CREWPANE_PROBE_SHOT,
-    backgroundColor: '#0d0f17',
-    autoHideMenuBar: true,
-    // ADP-091 (ADR-006 Karar 2) — internal browser via <webview>. webviewTag is
-    // enabled ONLY for the app window (spike window stays default). The guest is
-    // hardened on attach (will-attach-webview) so opening it changes the renderer
-    // security model by exactly one bit; the guest itself stays sandboxed +
-    // nodeIntegration:false + no custom preload (see attachWebviewGuards below).
-    webPreferences: { ...sharedWebPreferences(), webviewTag: true },
-  });
-
-  // ADP-091 (ADR-006 §2 güvenlik) — harden every <webview> guest this window
-  // attaches: strip any renderer-supplied preload, force sandbox + no node, and
-  // log navigation. Keeps the internal browser process-isolated from the app.
-  attachWebviewGuards(win);
-
-  tagTestWindow(win, 'CrewPane'); // E2E-MUTE-01 — kapı kopyası ekranda ayırt edilsin
-
-  // ADP-192 — once the workspace has loaded, re-spawn the agents that were running
-  // before the last shutdown, each on its prior claude session. Runs once per
-  // process (guarded inside restoreLivePanes); the office/notification bell pick the
-  // restored panes up via their normal pty:list reconcile.
-  // ADP-limit — the pty resume daemon starts strictly AFTER restore (spec §3.4):
-  // its boot remap needs the restored panes in `ptys` to re-point stale paneRefs.
-  win.webContents.once('did-finish-load', () => {
-    // ADP-905 — ÖNCE bağla, SONRA restore et: yaşayan pane'lerin baytları yeni
-    // pencereye akmaya başlasın ve restore onları "zaten canlı" olarak görsün.
-    rebindOrphanPanes(win);
-    restoreLivePanes(win);
-    startPtyResumeDaemonOnce();
-  });
-
-  // ADP-121 (ADR-009) — allow the Jarvis widget to capture the microphone. Grant
-  // ONLY 'media' (mic), and ONLY for the app window's own origin (loopback Next
-  // server) — every other permission stays denied. The <webview> guest has a
-  // separate session and is unaffected (its requests still hit the default deny).
-  try {
-    win.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
-      const granted = permission === 'media';
-      callback(granted);
-    });
-  } catch (e) {
-    logLine(`permission handler wire error: ${e.message}`);
-  }
-
-  if (APP_PROBE) {
-    win.webContents.on('did-finish-load', async () => {
-      // Settle so client-side React (and any embedded terminals) can mount.
-      setTimeout(async () => {
-        try {
-          const proof = await win.webContents.executeJavaScript(
-            `(async () => {
-              for (let i = 0; i < ${PROBE_CLICKS}; i++) {
-                const add = document.querySelector('[title="New terminal"]');
-                if (add) add.click();
-                await new Promise((r) => setTimeout(r, 900));
-              }
-              return JSON.stringify({ title: document.title, hasApp: !!document.querySelector("main, #__next, [data-crewpane]"), xterms: document.querySelectorAll(".xterm").length, bodyLen: document.body.innerText.length });
-            })()`,
-          );
-          // ptys.size is direct main-side proof that the real app window spawned
-          // ptys through the ADP-003 multi-pane IPC (not just the spike renderer).
-          logLine('app-probe loaded: ' + proof + ` livePtys=${ptys.size} paneIds=[${[...ptys.keys()].join(',')}]`);
-          const shot = process.env.CREWPANE_PROBE_SHOT;
-          if (shot) {
-            try {
-              const img = await win.webContents.capturePage();
-              fs.writeFileSync(shot, img.toPNG());
-              logLine('app-probe screenshot saved: ' + shot);
-            } catch (e) {
-              logLine('app-probe screenshot error: ' + e.message);
-            }
-          }
-        } catch (e) {
-          logLine('app-probe eval error: ' + e.message);
-        }
-        noteQuit('probe');
-        app.quit();
-      }, PROBE_WAIT);
-    });
-    setTimeout(() => { logLine('app-probe watchdog timeout'); noteQuit('probe', 'watchdog-timeout'); app.quit(); }, 30000);
-  }
-
-  // External links (http/https/mailto) open in the OS browser, not a child
-  // Electron window. In-app navigation stays inside the embedded server.
-  win.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:|^mailto:/.test(target)) shell.openExternal(target);
-    return { action: 'deny' };
-  });
-  win.webContents.on('will-navigate', (event, target) => {
-    if (!target.startsWith(url)) {
-      event.preventDefault();
-      if (/^https?:/.test(target)) shell.openExternal(target);
-    }
-  });
-
-  // ADP-876 — KASITLI KAPANIŞTA "SAYFADAN AYRILMAK İSTEDİĞİNİZE EMİN MİSİNİZ?" KUTUSU YOK.
-  //
-  // Ölçülen kullanıcı şikâyeti: açık terminal pane'leri varken Ayarlar → Hesap →
-  // Çıkış yap, uygulamayı bir TARAYICI onay kutusunda askıda bırakabiliyordu. Sebep
-  // web mirası: sayfada bir `beforeunload` dinleyicisi varsa (bizim kodumuzda YOK —
-  // renderer paketindeki editör/terminal kütüphaneleri kuruyor) Chromium pencere
-  // kapanışını durdurup o kutuyu basar. `app.quit()` orada takılır: oturum kapanmış,
-  // pane'ler kapanmış, ama uygulama ne kapanır ne yeniden başlar.
-  //
-  // Kutu ancak KASITLI kapanışta (quit/relaunch) bastırılır: `app.isQuitting`
-  // `before-quit` içinde işaretlenir, yani buraya geldiğimizde karar ZATEN verilmiş
-  // ve geri alınamaz durumdadır — kullanıcıya sorulacak bir şey kalmamıştır. Kasıtlı
-  // olmayan bir kapanışta davranış AYNEN eskisi gibi (kutu çıkar).
-  //
-  // Veri kaybı yok: kapanış yolu ekran kuyruğunu + pane defterini zaten yazar
-  // (`before-quit` → persistScreenTails + writeQuitSnapshot) ve çıkış yolu bunu
-  // oturum kapanmadan ÖNCE de yapar (closePanesForSignOut).
-  win.webContents.on('will-prevent-unload', (event) => {
-    if (!app.isQuitting) return; // kullanıcı kaynaklı gezinme → varsayılan davranış
-    logLine('[quit] beforeunload kutusu bastırıldı (kasıtlı kapanış) — uygulama askıda kalmaz');
-    event.preventDefault(); // "unload'u engelleme" → pencere kapanır, quit sürer
-  });
-
-  // ADP-475 — render-process-gone RECOVERY. Before this the handler only
-  // logged and left the window dead: a blank/frozen BrowserWindow forever —
-  // from Eren's chair indistinguishable from "the app crashed". The fix
-  // exploits something already true of this codebase: every pty lives in the
-  // MAIN process (`ptys` map, keyed by paneId, holding a `win` reference) —
-  // it is NOT torn down by a renderer crash, only by this window's `closed`
-  // event (killPtysForWindow, below). So a dead RENDERER with a SURVIVING
-  // BrowserWindow can just win.reload() — the agents never stopped running,
-  // and the reloaded page re-syncs to them the same way a normal page load
-  // does (pty:list reconcile), no different from Eren switching tabs.
-  // decideReload (crashWatchdog.cjs) bounds this to MAX_RELOADS within
-  // RELOAD_WINDOW_MS so a genuinely broken bundle can't reload-loop forever.
-  let renderCrashHistory = [];
-  win.webContents.on('render-process-gone', (_e, details) => {
-    logLine('RENDERER GONE: ' + JSON.stringify(details));
-    if (win.isDestroyed()) return; // window itself is going away — nothing to recover
-    if (!crashWatchdog.isRecoverableGone(details && details.reason)) return; // deliberate close
-    const { reload, history } = crashWatchdog.decideReload(renderCrashHistory, Date.now());
-    renderCrashHistory = history;
-    if (reload) {
-      logLine(`render-process-gone RECOVERY: reloading window (attempt ${history.length}/${crashWatchdog.MAX_RELOADS} in window)`);
-      try {
-        win.reload();
-      } catch (e) {
-        logLine(`render-process-gone recovery reload failed: ${e.message}`);
-      }
-    } else {
-      logLine(`render-process-gone RECOVERY GIVING UP: ${history.length} crashes within ${crashWatchdog.RELOAD_WINDOW_MS}ms — not reloading again`);
-      try {
-        new Notification({
-          title: appI18n.t('main.notify.crashLoop.title'),
-          body: appI18n.t('main.notify.crashLoop.body'),
-        }).show();
-      } catch { /* headless / notifications unavailable — the log line above still has it */ }
-    }
-  });
-
-  // ADP-475 — a HUNG (not dead) renderer never fires render-process-gone, so it
-  // was previously invisible to every handler above: no log, no recovery, the
-  // window just stops responding to input. Log both edges so a post-mortem can
-  // tell "died" from "froze then came back" from "froze and stayed frozen".
-  let unresponsiveSince = null;
-  win.webContents.on('unresponsive', () => {
-    unresponsiveSince = Date.now();
-    logLine('RENDERER UNRESPONSIVE');
-  });
-  win.webContents.on('responsive', () => {
-    if (unresponsiveSince) {
-      logLine(`renderer responsive again after ${Date.now() - unresponsiveSince}ms`);
-      unresponsiveSince = null;
-    }
-  });
-
-  // Reap this window's terminals when it closes so no pty is orphaned.
-  // ADP-905 — …AMA macOS'ta pencere kapanması uygulamanın sonu DEĞİLDİR (ADP-334).
-  // Orada reap etmek 12 canlı ajanı tek tıkla öldürüyordu; artık yalnız GERÇEK
-  // teardown'da (quit / win32 / linux / AUTOTEST) reap edilir.
-  win.on('closed', () => {
-    if (keepPanesAliveOnWindowClose()) {
-      const agents = liveAgentPaneCount();
-      // ADP-905 F2 — restore "süreç başına bir kez" DEĞİL, "pencere örneği başına bir
-      // kez": yeni pencerenin did-finish-load'u defteri yeniden uzlaştırabilsin.
-      panesRestored = false;
-      // ADP-905 F3 — sessizlik bitiyor: kullanıcı 12 oturumunu kaybettiğini sandığında
-      // log'da tek bir açıklama satırı bile yoktu.
-      logLine(
-        `ADP-905 window-close: pencere kapandı ama ${ptys.size} pane (${agents} ajan) ` +
-          'YAŞIYOR — macOS\'ta uygulama Dock\'ta sürüyor, pty\'lere dokunulmadı ' +
-          '(dock ikonuna basınca geri gelirler)',
-      );
-    } else {
-      killPtysForWindow(win.id);
-      // ─────────────────────────────────────────────────────────────────────
-      // HATA-14 (KÖK NEDEN 1) — ANA PENCERE KAPANDI = ÇIKIŞ (win32/linux).
-      // ─────────────────────────────────────────────────────────────────────
-      // Eskiden çıkış YALNIZ `window-all-closed`den gelirdi. İzole sonda
-      // (bare Electron, kendi --user-data-dir'i) o olayın SESSİZCE HİÇ
-      // ateşlemediğini ölçtü: jarvis widget'ının bayraklarıyla (skipTaskbar,
-      // focusable:false, alwaysOnTop, show:false) açık TEK bir yardımcı
-      // pencere yeter.
-      //   KOL A (yardımcı yok): main.close() → +4 ms window-all-closed → exit=0
-      //   KOL B (yardımcı var): main.close() → olay HİÇ gelmedi; süreç 9 sn
-      //                         sonra hâlâ canlı (pencere=1, ekranda hiçbir şey)
-      // Ürün bu pencereyi ana pencere kapanınca KASITLI yaşatır (ADP-816) —
-      // macOS'ta doğru (uygulama Dock'ta sürer, ADP-334/905), Windows'ta ise
-      // tepsi (tray) yüzeyi OLMADIĞI için uygulamayı görünmez ama canlı
-      // bırakır. Müşterinin Görev Yöneticisi karesi tam olarak budur.
-      // Karar artık kalan pencere sayısına DEĞİL, ana pencerenin kapanmasına
-      // bağlı; kararın kendisi quitFunnel'da (platform enjekte edilerek test).
-      const verdict = quitFunnel.decideQuitOnMainWindowClose({
-        platform: process.platform, autotest: AUTOTEST,
-      });
-      if (verdict.quit && !app.isQuitting) {
-        const aux = BrowserWindow.getAllWindows().filter((w) => w !== win && !w.isDestroyed()).length;
-        logLine(`HATA-14 main-window-closed: ÇIKILIYOR (${verdict.reason}) — ${aux} yardımcı pencere açıktı`);
-        armQuitBrake('window-close'); // quit ASILIRSA bile süreç kalmaz
-        noteQuit('user-quit', 'main-window-closed');
-        app.quit();
-      }
-    }
-    if (appWindow === win) appWindow = null; // ADP-050 — drop the bridge IPC target
-    // ADP-816 — ses widget'ı ana pencere kapansa da YAŞAR; ama artık kimse durum
-    // yayınlamıyor. Fotoğrafı `live:false` ile tazele: widget "son bilinen durum"
-    // olduğunu DÜRÜSTÇE gösterir, canlıymış gibi durmaz.
-    broadcastJarvisWidget();
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // ADP-905 F4 — HTML5 TAM EKRAN ÇIKIŞINDA PENCERE ESKİ BOYUTUNA DÖNSÜN.
-  // ─────────────────────────────────────────────────────────────────────────
-  // ADP-905'i TETİKLEYEN tuzak: <webview> içindeki bir video (YouTube) tam ekrana
-  // geçince Chromium pencereyi de fullscreen yapar; videodan çıkıldığında pencere
-  // ESKİ boyutuna dönmüyordu (ölçüldü: bu iki olay main'de HİÇ dinlenmiyordu).
-  // Kullanıcı "çıktım ama ekran hâlâ büyüktü" diyerek × sandığı yere bastı ve 12
-  // ajanını kaybetti. Girişte bounds saklanır, çıkışta pencere fullscreen'den
-  // çıkarılıp bounds geri konur.
-  //
-  // Kullanıcı pencereyi ZATEN kendi tam ekrana almışsa (wasFullScreen) hiçbir şey
-  // yapılmaz — onun tercihini bozmak ikinci bir bug olurdu.
-  // Hem ana sayfanın webContents'i hem de <webview> misafirleri (did-attach-webview)
-  // aynı nöbete bağlanır — video misafirin İÇİNDE oynuyor.
-  attachHtmlFullscreenGuard(win, win.webContents);
-
-  // ADP-284 — pencere-görünürlük köprüsü: backgroundThrottling:false (pty akışı
-  // buna bağımlı, DOKUNMA) document.visibilityState'i 'visible'a sabitler, yani
-  // renderer pencerenin minimize/gizli olduğunu kendisi göremez. Canvas döngüleri
-  // (Phaser ofis, JarvisOrb) bu sinyalle uyur/uyanır (useRenderGate hook'u).
-  const sendWindowVisible = () => {
-    try {
-      if (!win.isDestroyed()) win.webContents.send('app:window-visible', win.isVisible() && !win.isMinimized());
-    } catch { /* pencere kapanıyor — best-effort */ }
-  };
-  for (const ev of ['show', 'hide', 'minimize', 'restore']) win.on(ev, sendWindowVisible);
-
-  // ADP-298 — Raporlar canlı yenilensin: rapor dizinlerini MAIN izler ve değişimde
-  // renderer'a tek bir olay atar. Poll YOK (ADP-284 boşta-CPU disiplini): fs.watch
-  // işletim sisteminin olay mekanizmasıdır; renderer da olayı yalnız sekme GÖRÜNÜRKEN
-  // listeye çevirir (görünmezken "yeni rapor var" rozetine düşer).
-  // ADP-232-B — the watcher is bound to the CURRENT root's result dirs at creation,
-  // so a live workspace switch must tear it down and rebuild it for the new root.
-  // Store it on `win` (per-window) and let switchWorkspaceRoot() rebuild the active
-  // window's watcher when the root changes.
-  const attachReportsWatcher = () => {
-    if (win._reportsWatch) { try { win._reportsWatch.close(); } catch { /* already gone */ } }
-    win._reportsWatch = reportsWatcher.createReportsWatcher({
-      workspaceRoot: agentWorkspaceRoot,
-      // B-01 (F-7) — AKTİF İZOLE AĞAÇLAR da izlenir. Bir görev kendi worktree'sinde
-      // koşarken raporunu O ağaca yazar; bu liste olmadan Raporlar sekmesi izole
-      // görevlerin raporlarından HİÇ haberdar olmaz (dosya diske düşer, UI sessiz
-      // kalır — ADP-298'in kapattığı deliğin izolasyon sürümü). Liste spawn/merge
-      // ile değişir; `_attachReportsWatcher` dikişi zaten yeniden kurulum sağlıyor.
-      worktreePaths: activeWorktreePaths(),
-      // REPORTS-ROOT-01 (FB-1007) — supervisor ile AYNI proje-kökü kuralı: eşlenmiş
-      // (settings.projectRepos / worktrees.json) repo kökleri de izlenir; `<root>/<proje>/
-      // docs/agent-results` adaylarını watcher kendisi türetir ve SONRADAN DOĞANI da bekler.
-      projectRoots: mappedProjectRootsForReports(),
-      log: logLine,
-      onChange: () => {
-        try {
-          if (!win.isDestroyed()) win.webContents.send('reports:changed', { at: Date.now() });
-        } catch { /* pencere kapanıyor — best-effort */ }
-      },
-    });
-    logLine(`reports watcher: ${win._reportsWatch.dirs.length} dizin izleniyor, ${win._reportsWatch.pendingAncestors.length} aday bekleniyor (root=${agentWorkspaceRoot ?? '-'})`);
-  };
-  win._attachReportsWatcher = attachReportsWatcher; // switchWorkspaceRoot rebuild seam
-  attachReportsWatcher();
-  win.on('closed', () => { try { win._reportsWatch?.close(); } catch { /* best-effort */ } });
-
-  appWindow = win; // ADP-050 — the delegation bridge IPCs to this window
-  appBaseUrl = url; // ADP-593 — pop-out pencereleri aynı kökten `/popout` yükler
-  win.loadURL(url + (PROBE_PATH || START_PATH));
-  return win;
-}
+const E2E_WINDOW_TAG = windowManager.E2E_WINDOW_TAG;
+function tagTestWindow(win, base) { return windowManager.tagTestWindow(win, base); }
+function createAppWindow(url) { return windowManager.createAppWindow(url); }
 
 // ---------------------------------------------------------------------------
 // ADP-593 — pane POP-OUT (terminal pane'i ayrı bir macOS penceresine çıkar)
@@ -13530,68 +13027,13 @@ function createAppWindow(url) {
 // Pencere kapanınca (⌘W / kırmızı düğme / "Geri koy") ana pencereye
 // `popout:closed` gider ve pane TAM ESKİ HÜCRESİNE geri döner (hücre hiç
 // silinmedi: dışarıdayken yerinde "dışarıda" göstergesi duruyordu).
-const popoutWindows = new Map(); // paneId → BrowserWindow
-
-/** Canlı pop-out penceresi (yoksa/yıkıldıysa null). */
-function popoutWindowFor(paneId) {
-  const w = popoutWindows.get(paneId);
-  if (!w || w.isDestroyed()) return null;
-  return w;
-}
-
-/**
- * ADP-593 — pane olayını (pty:data / pty:exit) SAHİP pencereye ve varsa o pane'in
- * pop-out penceresine yolla. Yayın kopyadır: iki renderer da aynı akışı görür,
- * hiçbir yönlendirme/kesme yok (pop-out sırasında dock'taki görünüm unmount
- * olduğundan pratikte tek tüketici olur; yayın yine de idempotent).
- */
-function sendPaneEvent(win, paneId, channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
-  const pop = popoutWindowFor(paneId);
-  if (pop) pop.webContents.send(channel, payload);
-}
-
-/** Ana pencereye pop-out durum olayı (renderer hücreyi dışarıda/geri işaretler). */
-function notifyPopoutState(channel, payload) {
-  if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send(channel, payload);
-}
-
-/** ADP-712 — bu pencere bir pop-out mu (öyleyse hangi pane'in)? Değilse null. */
-function popoutPaneIdForWindow(win) {
-  if (!win || win.isDestroyed()) return null;
-  for (const [paneId, w] of popoutWindows) {
-    if (w && !w.isDestroyed() && w.id === win.id) return paneId;
-  }
-  return null;
-}
-
-/**
- * ADP-712 — görünüm tercihi değişti: ANA pencere + TÜM pop-out pencereleri duysun.
- * Yayın idempotent (aynı değer tekrar gelirse renderer no-op yapar) ve yalnız
- * GERÇEK değişimde çağrılır (paneViewState.changed).
- */
-function broadcastPaneView(paneId, readable) {
-  const payload = { paneId, readable };
-  if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('paneView:changed', payload);
-  for (const w of popoutWindows.values()) {
-    if (w && !w.isDestroyed()) w.webContents.send('paneView:changed', payload);
-  }
-}
-
-/**
- * ADP-786 — taslak değişti: aynı pane'i gösteren DİĞER yüzeyler de görsün.
- * Yazan yüzey kendi kutusunu zaten güncelledi; yayın onun için no-op'tur
- * (gelen metin kendi metniyle aynı). Alan yüzey, KUTUSUNDA ODAK YOKSA benimser —
- * odaktaki kullanıcı her zaman kazanır, böylece iki pencere birbirinin yazdığını
- * silemez.
- */
-function broadcastPaneDraft(paneId, text) {
-  const payload = { paneId, text };
-  if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('paneDraft:changed', payload);
-  for (const w of popoutWindows.values()) {
-    if (w && !w.isDestroyed()) w.webContents.send('paneDraft:changed', payload);
-  }
-}
+const popoutWindows = windowManager.popoutWindows;
+function popoutWindowFor(paneId) { return windowManager.popoutWindowFor(paneId); }
+function sendPaneEvent(win, paneId, channel, payload) { return windowManager.sendPaneEvent(win, paneId, channel, payload); }
+function notifyPopoutState(channel, payload) { return windowManager.notifyPopoutState(channel, payload); }
+function popoutPaneIdForWindow(win) { return windowManager.popoutPaneIdForWindow(win); }
+function broadcastPaneView(paneId, readable) { return windowManager.broadcastPaneView(paneId, readable); }
+function broadcastPaneDraft(paneId, text) { return windowManager.broadcastPaneDraft(paneId, text); }
 /**
  * AXP-02 — Agent X iş taslağı değişti: ana pencere, widget pop-out'u ve pane
  * pop-out'ları AYNI fotoğrafı görür (taslak main'de tek gerçek; hiçbir yüzey
@@ -13617,103 +13059,10 @@ function broadcastAgentxDraftConfirmed(confirmed) {
  * tazelensin (ana pencere + pop-out'lar). İçerik TAŞINMAZ, yalnız "değişti"
  * sinyali gider; liste `clip:list` ile ayrıca çekilir (ADP-712 deseni).
  */
-function broadcastClipChanged() {
-  if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('clip:changed');
-  for (const w of popoutWindows.values()) {
-    if (w && !w.isDestroyed()) w.webContents.send('clip:changed');
-  }
-}
-
-/**
- * Pane'i ayrı bir pencereye çıkar. Zaten dışarıdaysa o pencereyi öne getirir.
- * → { ok, paneId } | { ok:false, error }
- */
-function openPopoutWindow({ paneId, title, agentId }) {
-  if (typeof paneId !== 'string' || !paneId) return { ok: false, error: 'paneId yok' };
-  const entry = ptys.get(paneId);
-  if (!entry) return { ok: false, error: 'pane yok' };
-  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
-
-  const existing = popoutWindowFor(paneId);
-  if (existing) {
-    existing.show();
-    existing.focus();
-    return { ok: true, paneId, reused: true };
-  }
-
-  const label = (typeof title === 'string' && title.trim()) || entry.label || paneId;
-  const key = popoutBounds.boundsKey({ agentId: agentId ?? entry.agentId, title: label });
-  let workArea = null;
-  try { workArea = screen.getPrimaryDisplay().workArea; } catch { workArea = null; }
-  const bounds = popoutBounds.openBounds(popoutBounds.loadBoundsStore(crewpaneHome()), key, workArea);
-
-  const win = new BrowserWindow({
-    ...bounds,
-    minWidth: popoutBounds.MIN_SIZE.width,
-    minHeight: popoutBounds.MIN_SIZE.height,
-    title: `${label} — CrewPane`,
-    backgroundColor: '#0d0f17',
-    autoHideMenuBar: true,
-    show: false,
-    webPreferences: sharedWebPreferences(),
-  });
-  popoutWindows.set(paneId, win);
-
-  // ⌘W = "geri koy" (pencereyi kapat). Menü kısayolu zaten bunu yapar; burada
-  // AÇIKÇA bağlıyoruz ki menüsüz/paketli durumda da kısayol garanti çalışsın.
-  win.webContents.on('before-input-event', (_event, input) => {
-    if (input.type !== 'keyDown') return;
-    if ((input.meta || input.control) && String(input.key).toLowerCase() === 'w') {
-      if (!win.isDestroyed()) win.close();
-    }
-  });
-
-  // ADP-712 — kullanıcı pencereyi NATIVE düğmeyle (yeşil) büyütürse üst bardaki
-  // zoom ikonu da dönsün: durum tek yönlü değil, pencereden renderer'a da akar.
-  const sendWindowState = () => {
-    if (!win.isDestroyed()) win.webContents.send('popout:state', { paneId, maximized: win.isMaximized() });
-  };
-  win.on('maximize', sendWindowState);
-  win.on('unmaximize', sendWindowState);
-
-  // Kapanırken son konum/boyut hatırlanır (bir dahaki pop-out aynı yere gelir).
-  win.on('close', () => {
-    try { popoutBounds.rememberBounds(key, win.getBounds(), crewpaneHome()); } catch { /* best-effort */ }
-  });
-
-  // KRİTİK: burada pty'ye HİÇBİR ŞEY yapılmaz (kill YOK). Yalnız görünüm geri döner.
-  win.on('closed', () => {
-    popoutWindows.delete(paneId);
-    logLine(`popout closed paneId=${paneId} (pty korunuyor, ptys=${ptys.size})`);
-    notifyPopoutState('popout:closed', { paneId });
-  });
-
-  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
-  win.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:|^mailto:/.test(target)) shell.openExternal(target);
-    return { action: 'deny' };
-  });
-
-  const q = `?paneId=${encodeURIComponent(paneId)}&title=${encodeURIComponent(label)}`;
-  win.loadURL(`${appBaseUrl}/popout${q}`);
-  logLine(`popout opened paneId=${paneId} label=${label} bounds=${JSON.stringify(bounds)}`);
-  return { ok: true, paneId };
-}
-
-/** Pop-out penceresini kapat (= pane'i eski hücresine geri koy). pty'ye dokunmaz. */
-function closePopoutWindow(paneId) {
-  const win = popoutWindowFor(paneId);
-  if (!win) return { ok: false, error: 'dışarıda değil' };
-  win.close();
-  return { ok: true, paneId };
-}
-
-/** Şu an dışarıda olan pane'ler (renderer reload sonrası durum hidrasyonu). */
-function listPopoutPanes() {
-  const out = [];
-  for (const [paneId, win] of popoutWindows) if (win && !win.isDestroyed()) out.push(paneId);
-  return out;
-}
+function broadcastClipChanged() { return windowManager.broadcastClipChanged(); }
+function openPopoutWindow(options) { return windowManager.openPopoutWindow(options); }
+function closePopoutWindow(paneId) { return windowManager.closePopoutWindow(paneId); }
+function listPopoutPanes() { return windowManager.listPopoutPanes(); }
 
 // ---------------------------------------------------------------------------
 // AUID-KABLO (SPRINT-AUID-01) — TASARIM TURUNUN AYRI PENCERESİ (`/design`)
@@ -13735,130 +13084,16 @@ function listPopoutPanes() {
 // M1 REGRESYONSUZ: iç tarayıcı pane'inin tasarım modu (D2=a) olduğu gibi durur;
 // bu kapı yalnız EK bir yol açar (D2=c). Konum defteri yeniden icat edilmedi —
 // ADP-593'ün popoutBounds deposu kendi anahtarıyla (`label:design-window`).
-let designWindow = null;
-const DESIGN_WINDOW_KEY = popoutBounds.boundsKey({ title: 'design-window' });
-const DESIGN_WINDOW_MIN = { width: 900, height: 600 };
+const DESIGN_WINDOW_KEY = windowManager.DESIGN_WINDOW_KEY;
+const DESIGN_WINDOW_MIN = windowManager.DESIGN_WINDOW_MIN;
 
-/** Canlı tasarım penceresi (yoksa/yıkıldıysa null). */
-function designWindowAlive() {
-  return designWindow && !designWindow.isDestroyed() ? designWindow : null;
-}
-
-/**
- * TIER-DESIGN-01 — TASARIM TURU TAVANI (Basic KAPALI · Pro/Ultra AÇIK).
- *
- * TEK BOĞAZ, ölçülerek seçildi. Tasarım yüzeyine giden dört yol var ve DÖRDÜ DE
- * `openDesignWindow()`e varır:
- *   1. 🎨 sekmesine tıklama          → WorkspaceView `onActivate` → `design:openWindow`
- *   2. pane içindeki "Aç" düğmesi     → aynı IPC
- *   3. doğrudan köprü çağrısı         → `window.designApi.openWindow()` → aynı IPC
- *   4. main içinden bir çağrı         → bu fonksiyonun kendisi
- * `design:openWindow` handler'ı bu fonksiyondan BAŞKA bir şey çağırmaz, yani
- * kapıyı IPC handler'ına değil FONKSİYONUN İÇİNE koymak şart: F-4'ün dersi
- * (`spawnPty`nin IPC dışı 4 çağıranı) burada tekrarlanamasın diye.
- *
- * Kapının EL KOYDUĞU tek şey pencereyi AÇMAKTIR: `design:*` IPC'leri (listAgents /
- * ensureTaskDir) ve `docs/design/` ağacı olduğu gibi durur — reddedilen bir eylem
- * kalıcı durumu ne değiştirir ne siler (BL-02 sözleşmesi).
- */
+function designWindowAlive() { return windowManager.designWindowAlive(); }
 function designPlanDenial({ notify = true } = {}) {
   return planDenial('designMode', 0, { notify });
 }
-
-/**
- * Tasarım turunu ayrı bir CrewPane penceresinde aç.
- * Zaten açıksa YENİSİNİ AÇMAZ — var olanı öne getirir.
- * → { ok:true, reused? } | { ok:false, error } | { ok:false, reason:'plan_limit', denial }
- */
-function openDesignWindow() {
-  // TIER-DESIGN-01 — karar pencere DOĞMADAN önce. Metin main'de üretilir
-  // (planLimits.FEATURES.designMode); yüzey kendi cümlesini KURMAZ.
-  const planGate = designPlanDenial();
-  if (planGate) {
-    logLine(`design window: plan tavanı — açılmadı (katman=${planGate.tier}); docs/design ağacı diskte KORUNUYOR`);
-    return {
-      ok: false,
-      reason: 'plan_limit',
-      error: planGate.message,
-      denial: planGate,
-      requiredTierLabel: planGate.requiredTierLabel,
-    };
-  }
-  const existing = designWindowAlive();
-  if (existing) {
-    if (existing.isMinimized()) existing.restore();
-    existing.show();
-    existing.focus();
-    logLine('design window: zaten açık → öne getirildi (tekillik)');
-    return { ok: true, reused: true };
-  }
-  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
-
-  let workArea = null;
-  try { workArea = screen.getPrimaryDisplay().workArea; } catch { workArea = null; }
-  const saved = popoutBounds.openBounds(
-    popoutBounds.loadBoundsStore(crewpaneHome()),
-    DESIGN_WINDOW_KEY,
-    workArea,
-  );
-  const bounds = typeof saved.x === 'number'
-    ? saved
-    : { width: 1440, height: 900, ...(workArea ? { x: workArea.x + 40, y: workArea.y + 40 } : {}) };
-
-  const win = new BrowserWindow({
-    ...bounds,
-    minWidth: DESIGN_WINDOW_MIN.width,
-    minHeight: DESIGN_WINDOW_MIN.height,
-    title: 'Tasarım — CrewPane',
-    backgroundColor: '#0d0f17',
-    autoHideMenuBar: true,
-    show: false,
-    webPreferences: sharedWebPreferences(),
-  });
-  designWindow = win;
-
-  // ⌘W = pencereyi kapat (pop-out'la aynı sözleşme; menüsüz/paketli durumda da çalışsın).
-  win.webContents.on('before-input-event', (_event, input) => {
-    if (input.type !== 'keyDown') return;
-    if ((input.meta || input.control) && String(input.key).toLowerCase() === 'w') {
-      if (!win.isDestroyed()) win.close();
-    }
-  });
-
-  win.on('close', () => {
-    try { popoutBounds.rememberBounds(DESIGN_WINDOW_KEY, win.getBounds(), crewpaneHome()); } catch { /* best-effort */ }
-  });
-  win.on('closed', () => {
-    if (designWindow === win) designWindow = null;
-    logLine('design window kapandı');
-    notifyDesignWindowOpen();
-  });
-  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.show(); });
-  win.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:|^mailto:/.test(target)) shell.openExternal(target);
-    return { action: 'deny' };
-  });
-
-  win.loadURL(`${appBaseUrl}/design`);
-  logLine(`design window açıldı bounds=${JSON.stringify(bounds)}`);
-  notifyDesignWindowOpen();
-  return { ok: true, reused: false };
-}
-
-/** Tasarım penceresini kapat. Tasarım dosyalarına/pty'lere DOKUNMAZ. */
-function closeDesignWindow() {
-  const win = designWindowAlive();
-  if (!win) return { ok: false, error: 'tasarım penceresi açık değil' };
-  win.close();
-  return { ok: true };
-}
-
-/** Ana penceredeki giriş düğmesi gerçeği yansıtsın (pencere açık mı). */
-function notifyDesignWindowOpen() {
-  if (appWindow && !appWindow.isDestroyed()) {
-    appWindow.webContents.send('design:openState', { open: !!designWindowAlive() });
-  }
-}
+function openDesignWindow() { return windowManager.openDesignWindow(); }
+function closeDesignWindow() { return windowManager.closeDesignWindow(); }
+function notifyDesignWindowOpen() { return windowManager.notifyDesignWindowOpen(); }
 
 // ---------------------------------------------------------------------------
 // ADP-816 (SPRINT-AGENTX-VOICE · Faz 4) — TAŞINABİLİR SES WIDGET'I
@@ -13883,141 +13118,16 @@ function notifyDesignWindowOpen() {
 //
 // Konum defteri yeniden icat EDİLMEDİ: ADP-593'ün popoutBounds deposu, kendi
 // anahtarıyla (`label:jarvis-widget`) kullanılır.
-let jarvisWidgetWindow = null;
-let jarvisWidgetSnapshot = jarvisWidget.emptySnapshot();
-const JARVIS_WIDGET_KEY = popoutBounds.boundsKey({ title: 'jarvis-widget' });
+const JARVIS_WIDGET_KEY = windowManager.JARVIS_WIDGET_KEY;
 
-/** Canlı widget penceresi (yoksa/yıkıldıysa null). */
-function jarvisWidgetAlive() {
-  return jarvisWidgetWindow && !jarvisWidgetWindow.isDestroyed() ? jarvisWidgetWindow : null;
-}
-
-/**
- * Widget'a giden fotoğraf. `live` alanını RENDERER İDDİA EDEMEZ — main yazar:
- * yayıncı (ana pencere) kapandıysa widget "son bilinen durum" olduğunu bilir ve
- * ekranda canlıymış gibi göstermez.
- */
-function jarvisWidgetPayload() {
-  return { ...jarvisWidgetSnapshot, live: !!(appWindow && !appWindow.isDestroyed()) };
-}
-
-/** Fotoğraf değişti → widget penceresi (varsa) duysun. Yoksa sessiz no-op. */
-function broadcastJarvisWidget() {
-  const w = jarvisWidgetAlive();
-  if (w) w.webContents.send('jarvisWidget:changed', jarvisWidgetPayload());
-}
-
-/** Ana penceredeki düğme gerçeği yansıtsın (widget açık mı). */
-function notifyJarvisWidgetOpen() {
-  if (appWindow && !appWindow.isDestroyed()) {
-    appWindow.webContents.send('jarvisWidget:openState', { open: !!jarvisWidgetAlive() });
-  }
-}
-
-/** Widget'ın oturduğu ekranın çalışma alanı (çok monitörde doğru kelepçe). */
-function jarvisWidgetWorkArea(bounds) {
-  try {
-    const display = bounds ? screen.getDisplayMatching(bounds) : screen.getPrimaryDisplay();
-    return display ? display.workArea : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Widget penceresini aç (zaten açıksa ODAK ÇALMADAN öne getirir). */
-function openJarvisWidgetWindow() {
-  const existing = jarvisWidgetAlive();
-  if (existing) {
-    existing.showInactive(); // .show()/.focus() DEĞİL — odak çalmama sözleşmesi
-    return { ok: true, reused: true };
-  }
-  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
-
-  const workArea = jarvisWidgetWorkArea(null);
-  const store = popoutBounds.loadBoundsStore(crewpaneHome());
-  const saved = popoutBounds.openBounds(store, JARVIS_WIDGET_KEY, workArea);
-  // Ölçü SABİT (resizable:false): defterden yalnız KONUM devralınır.
-  const bounds = typeof saved.x === 'number'
-    ? { x: saved.x, y: saved.y, ...jarvisWidget.SIZE }
-    : jarvisWidget.defaultBounds(workArea);
-
-  const win = new BrowserWindow({
-    ...bounds,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    resizable: false,
-    minimizable: false,
-    maximizable: false,
-    fullScreenable: false,
-    skipTaskbar: true,
-    focusable: false, // ODAK ÇALMAZ (KABUL kriteri)
-    alwaysOnTop: true,
-    ...(process.platform === 'darwin' ? { type: 'panel' } : {}), // nonactivating NSPanel
-    show: false,
-    title: 'CrewPane — Ses',
-    webPreferences: sharedWebPreferences(),
-  });
-  jarvisWidgetWindow = win;
-  tagTestWindow(win, 'CrewPane — Ses'); // E2E-MUTE-01
-
-  // Tam ekrandaki BAŞKA bir uygulamanın Space'inde de görün + her masaüstünde kal.
-  try {
-    win.setAlwaysOnTop(true, 'screen-saver');
-    win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  } catch (err) {
-    logLine(`jarvis widget: always-on-top ayarlanamadı: ${err.message}`);
-  }
-
-  win.on('close', () => {
-    try { popoutBounds.rememberBounds(JARVIS_WIDGET_KEY, win.getBounds(), crewpaneHome()); } catch { /* best-effort */ }
-  });
-  win.on('closed', () => {
-    if (jarvisWidgetWindow === win) jarvisWidgetWindow = null;
-    logLine('jarvis widget kapandı');
-    notifyJarvisWidgetOpen();
-  });
-  // ready-to-show → showInactive: pencere BELİRİR ama öndeki uygulama önde kalır.
-  win.once('ready-to-show', () => { if (!win.isDestroyed()) win.showInactive(); });
-  win.webContents.setWindowOpenHandler(({ url: target }) => {
-    if (/^https?:|^mailto:/.test(target)) shell.openExternal(target);
-    return { action: 'deny' };
-  });
-  win.webContents.on('did-finish-load', () => {
-    if (!win.isDestroyed()) win.webContents.send('jarvisWidget:changed', jarvisWidgetPayload());
-  });
-
-  win.loadURL(`${appBaseUrl}/jarvis-widget`);
-  logLine(`jarvis widget açıldı bounds=${JSON.stringify(bounds)}`);
-  notifyJarvisWidgetOpen();
-  return { ok: true, bounds };
-}
-
-/** Widget penceresini kapat (ses akışına DOKUNMAZ — yalnız görünüm). */
-function closeJarvisWidgetWindow() {
-  const win = jarvisWidgetAlive();
-  if (!win) return { ok: false, error: 'widget açık değil' };
-  win.close();
-  return { ok: true };
-}
-
-/**
- * Sürükleme: widget renderer'ı pointer deltalarını gönderir, konum kararını
- * (ve ekran-dışı kelepçesini) SAF modül verir. Yeni bounds döner → e2e ölçer.
- */
-function moveJarvisWidget(payload) {
-  const win = jarvisWidgetAlive();
-  if (!win) return { ok: false, error: 'widget açık değil' };
-  const cur = win.getBounds();
-  const next = jarvisWidget.nextPosition(
-    cur,
-    payload && payload.dx,
-    payload && payload.dy,
-    jarvisWidgetWorkArea(cur),
-  );
-  win.setBounds(next);
-  return { ok: true, bounds: win.getBounds() };
-}
+function jarvisWidgetAlive() { return windowManager.jarvisWidgetAlive(); }
+function jarvisWidgetPayload() { return windowManager.jarvisWidgetPayload(); }
+function broadcastJarvisWidget() { return windowManager.broadcastJarvisWidget(); }
+function notifyJarvisWidgetOpen() { return windowManager.notifyJarvisWidgetOpen(); }
+function jarvisWidgetWorkArea(bounds) { return windowManager.jarvisWidgetWorkArea(bounds); }
+function openJarvisWidgetWindow() { return windowManager.openJarvisWidgetWindow(); }
+function closeJarvisWidgetWindow() { return windowManager.closeJarvisWidgetWindow(); }
+function moveJarvisWidget(payload) { return windowManager.moveJarvisWidget(payload); }
 
 /**
  * Widget'tan "uygulamayı göster": ana pencere kapalıyken TEK geri dönüş yolu.
@@ -14054,194 +13164,18 @@ function showAppFromJarvisWidget() {
 // Akış koparsa bekçi katmanı KENDİ KENDİNE kapatır (feedVerdict) — imleci biz
 // tutmadığımız için OS imleci zaten normaldir; kaynak geri gelince katman
 // yeniden doğar.
-let handOverlayWindows = new Map(); // displayId → BrowserWindow
-let handOverlayLastFeedAt = null; // son geçerli telemetri olayının saati (ms)
-let handOverlayWatchdog = null; // akış bekçisi (yalnız pencereler açıkken)
-let handOverlayScreenHooked = false; // display olay dinleyicileri bir kez takılır
-let handOverlayLastCost = null; // renderer'ın bildirdiği çizim bedeli (rapor/e2e)
-
-/** HAND-G4 — kullanıcının DOLU eşiklerini FSM yapılandırmasına çevir.
- *  `null` alan hiç yazılmaz → `ClickFSM` kendi varsayılanını kullanır. */
-function handTuningConfig(prefs) {
-  const t = (prefs && prefs.tuning) || {};
-  const cfg = {};
-  for (const key of ['zoomBackMax', 'zoomBackMin', 'enter', 'release']) {
-    if (typeof t[key] === 'number' && Number.isFinite(t[key])) cfg[key] = t[key];
-  }
-  return cfg;
-}
-
-/** Ayarlardaki güncel overlay tercihi (kapalı-liste nöbetinden geçmiş). */
-function handOverlayPrefs() {
-  return handOverlayContract.sanitizeHandControl(agentSettings.readSettings().handControl);
-}
-
-function handOverlayAnyAlive() {
-  for (const win of handOverlayWindows.values()) {
-    if (win && !win.isDestroyed()) return true;
-  }
-  return false;
-}
-
-/** Ekran başına bir tam-ekran click-through pencere kur (açıksa yeniden kurmaz). */
-function openHandOverlayWindows() {
-  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
-  if (!handOverlayPrefs().overlay.enabled) return { ok: false, error: 'overlay ayarı kapalı' };
-  if (handOverlayAnyAlive()) return { ok: true, reused: true, count: handOverlayWindows.size };
-
-  const plan = handOverlayContract.planWindows(screen.getAllDisplays());
-  for (const p of plan) {
-    const win = new BrowserWindow({
-      ...p.bounds,
-      frame: false,
-      transparent: true,
-      backgroundColor: '#00000000',
-      hasShadow: false,
-      resizable: false,
-      movable: false,
-      minimizable: false,
-      maximizable: false,
-      fullScreenable: false,
-      // true ŞART (ölçüldü): false iken macOS setBounds'u çalışma alanına
-      // kelepçeliyor (y=0 → y=38) ve üst kenar bandı menü çubuğunun altında
-      // kalıyordu. Pencere yine display.bounds'tan büyük yapılmaz (planWindows).
-      enableLargerThanScreen: true,
-      skipTaskbar: true,
-      focusable: false, // odak ÇALMAZ (ADP-816 sözleşmesi)
-      alwaysOnTop: true,
-      ...(process.platform === 'darwin' ? { type: 'panel' } : {}), // nonactivating NSPanel
-      show: false,
-      title: 'CrewPane — El kontrolü',
-      webPreferences: sharedWebPreferences(),
-    });
-    tagTestWindow(win, 'CrewPane — El kontrolü'); // E2E-MUTE-01
-    try {
-      win.setAlwaysOnTop(true, 'screen-saver');
-      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-      // TIKLAMA-GEÇİRGENLİK — katmanın varlık sebebi: her tık ALTA gider.
-      win.setIgnoreMouseEvents(true, { forward: true });
-      // macOS pencereyi OLUŞTURMA anında menü çubuğunun altına iter (ölçüldü:
-      // y=0 → y=38). Ekranı GERÇEK kenarına kadar kaplamak (üst kenar bandı,
-      // durum 19) screen-saver seviyesinde serbesttir — bayraklardan SONRA
-      // bounds yeniden basılır.
-      win.setBounds(p.bounds);
-    } catch (err) {
-      logLine(`hand overlay: pencere bayrakları ayarlanamadı: ${err.message}`);
-    }
-    win.on('closed', () => {
-      for (const [id, w] of handOverlayWindows) {
-        if (w === win) handOverlayWindows.delete(id);
-      }
-      if (!handOverlayAnyAlive()) stopHandOverlayWatchdog();
-    });
-    win.once('ready-to-show', () => {
-      if (win.isDestroyed()) return;
-      win.showInactive();
-      // Kelepçe SHOW anında da tekrarlanıyor (ölçüldü: bayrak-sonrası setBounds
-      // yetmedi, pencere yine menü çubuğu altına indi) → gösterimden sonra bir
-      // kez daha basılır; screen-saver seviyesinde bu konum kalıcıdır.
-      try { win.setBounds(p.bounds); } catch { /* pencere kapanma yarışı zararsız */ }
-    });
-    // Renderer kendi ekran sınırlarını + yoğunluğu sorgu parametresiz, IPC
-    // (`handOverlay:init`) ile alır; URL yalnız display kimliğini taşır.
-    win.loadURL(`${appBaseUrl}/hand-overlay?display=${encodeURIComponent(p.displayId)}`);
-    handOverlayWindows.set(p.displayId, win);
-  }
-  hookHandOverlayScreenEvents();
-  startHandOverlayWatchdog();
-  logLine(`hand overlay açıldı: ${plan.length} ekran (${plan.map((p) => p.displayId).join(',')})`);
-  return { ok: true, count: plan.length };
-}
-
-function closeHandOverlayWindows(reason) {
-  const had = handOverlayAnyAlive();
-  for (const win of handOverlayWindows.values()) {
-    try { if (win && !win.isDestroyed()) win.close(); } catch { /* kapanışta pencere yarışı zararsız */ }
-  }
-  handOverlayWindows.clear();
-  stopHandOverlayWatchdog();
-  if (had) logLine(`hand overlay kapandı (${reason || 'istek'})`);
-  return { ok: true, closed: had };
-}
-
-/**
- * Ekran takımı değişti → plan bayat: kapat, akış canlıysa yeniden aç.
- * `display-metrics-changed` workArea/scale değişimlerinde de ateşlenir (macOS
- * bunu overlay'in KENDİ açılışında bile tetikler — ölçüldü: pencereler tur
- * ortasında sebepsiz yeniden kuruldu) → plan GERÇEKTEN değişmediyse dokunma.
- */
-function rebuildHandOverlayWindows() {
-  if (!handOverlayAnyAlive()) return;
-  const plan = handOverlayContract.planWindows(screen.getAllDisplays());
-  const planKey = JSON.stringify(plan.map((p) => [p.displayId, p.bounds]));
-  const currentKey = JSON.stringify([...handOverlayWindows.entries()]
-    .filter(([, w]) => w && !w.isDestroyed())
-    .map(([id, w]) => [id, (() => { const b = w.getBounds(); return { x: b.x, y: b.y, width: b.width, height: b.height }; })()]));
-  if (planKey === currentKey) return;
-  closeHandOverlayWindows('ekran değişti');
-  if (handOverlayContract.feedVerdict(handOverlayLastFeedAt, Date.now()).action === 'keep') {
-    openHandOverlayWindows();
-  }
-}
-
-function hookHandOverlayScreenEvents() {
-  if (handOverlayScreenHooked) return;
-  handOverlayScreenHooked = true;
-  screen.on('display-added', rebuildHandOverlayWindows);
-  screen.on('display-removed', rebuildHandOverlayWindows);
-  screen.on('display-metrics-changed', rebuildHandOverlayWindows);
-}
-
-function startHandOverlayWatchdog() {
-  if (handOverlayWatchdog) return;
-  handOverlayWatchdog = setInterval(() => {
-    const verdict = handOverlayContract.feedVerdict(handOverlayLastFeedAt, Date.now());
-    if (verdict.action === 'close') closeHandOverlayWindows(`akış kesildi (${verdict.reason})`);
-  }, handOverlayContract.WATCHDOG_TICK_MS);
-}
-
-function stopHandOverlayWatchdog() {
-  if (handOverlayWatchdog) { clearInterval(handOverlayWatchdog); handOverlayWatchdog = null; }
-}
-
-/**
- * Tespit kaynağından telemetri: nöbetten geçen olaylar TÜM overlay pencerelerine
- * yayınlanır (hangi ekranın çizeceğine renderer kendi sınırlarıyla karar verir —
- * patlama/iz ekran kenarından taşabilir, tek alıcıya yollamak kenarı kırpardı).
- * Katman kapalıyken geçerli akış pencereleri AÇAR (ayar açıksa).
- */
-function feedHandOverlay(rawEvents) {
-  const list = Array.isArray(rawEvents) ? rawEvents : [rawEvents];
-  const events = [];
-  for (const raw of list) {
-    const ev = handOverlayContract.normalizeEvent(raw);
-    if (ev) events.push(ev);
-  }
-  if (!events.length) return { ok: false, error: 'geçerli olay yok' };
-  handOverlayLastFeedAt = Date.now();
-  if (!handOverlayAnyAlive()) {
-    if (!handOverlayPrefs().overlay.enabled) return { ok: false, error: 'overlay ayarı kapalı' };
-    openHandOverlayWindows();
-  }
-  for (const win of handOverlayWindows.values()) {
-    if (win && !win.isDestroyed()) win.webContents.send('handOverlay:events', events);
-  }
-  return { ok: true, accepted: events.length };
-}
-
-/** Ayar değişikliği ANINDA uygulanır (görev kartı madde 3). */
-function applyHandOverlaySettings() {
-  const prefs = handOverlayPrefs();
-  if (!prefs.overlay.enabled) {
-    closeHandOverlayWindows('ayar kapatıldı');
-    return;
-  }
-  // Yoğunluk canlı: açık pencerelere yeni config it. Kapalıyken bir şey açılmaz —
-  // pencereyi ayar değil, canlı telemetri akışı açar (feedHandOverlay).
-  for (const win of handOverlayWindows.values()) {
-    if (win && !win.isDestroyed()) win.webContents.send('handOverlay:config', prefs.overlay);
-  }
-}
+const handOverlayWindows = windowManager.handOverlayWindows;
+function handTuningConfig(prefs) { return windowManager.handTuningConfig(prefs); }
+function handOverlayPrefs() { return windowManager.handOverlayPrefs(); }
+function handOverlayAnyAlive() { return windowManager.handOverlayAnyAlive(); }
+function openHandOverlayWindows() { return windowManager.openHandOverlayWindows(); }
+function closeHandOverlayWindows(reason) { return windowManager.closeHandOverlayWindows(reason); }
+function rebuildHandOverlayWindows() { return windowManager.rebuildHandOverlayWindows(); }
+function hookHandOverlayScreenEvents() { return windowManager.hookHandOverlayScreenEvents(); }
+function startHandOverlayWatchdog() { return windowManager.startHandOverlayWatchdog(); }
+function stopHandOverlayWatchdog() { return windowManager.stopHandOverlayWatchdog(); }
+function feedHandOverlay(rawEvents) { return windowManager.feedHandOverlay(rawEvents); }
+function applyHandOverlaySettings() { return windowManager.applyHandOverlaySettings(); }
 
 // ---------------------------------------------------------------------------
 // HAND-A2 — "EL KONTROLÜ" D MİMARİSİ: yaşam döngüsü + izin akışı + acil durdurma
@@ -14587,61 +13521,9 @@ function broadcastHandControlStatus() {
   return st;
 }
 
-function handDetectAlive() {
-  return Boolean(handControl.win && !handControl.win.isDestroyed());
-}
-
-/** Gizli tespit penceresi — ADP-816/A1 kalıbının kamerasız, görünmez hali.
- *  backgroundThrottling KAPALI şart: gizli pencerede rAF/detect döngüsü
- *  kısılırsa imleç 1 fps'e düşer (R3 koşu-8 dersinin öteki yüzü). */
-function openHandDetectWindow() {
-  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
-  if (handDetectAlive()) return { ok: true, reused: true };
-  const win = new BrowserWindow({
-    width: 340,
-    height: 260,
-    show: false, // GİZLİ — hiç gösterilmez
-    skipTaskbar: true,
-    focusable: false,
-    title: 'CrewPane — El kontrolü motoru',
-    webPreferences: { ...sharedWebPreferences(), backgroundThrottling: false },
-  });
-  tagTestWindow(win, 'CrewPane — El kontrolü motoru'); // E2E-MUTE-01
-  win.on('closed', () => {
-    handControl.win = null;
-    if (handControl.phase !== 'off') {
-      // Pencere beklenmedik öldüyse motor da ölmüştür: dürüst duruma dön.
-      stopHandControl('tespit penceresi kapandı');
-      handControl.phase = 'off';
-      handControl.warm = null;
-      broadcastHandControlStatus();
-    }
-  });
-  win.loadURL(`${appBaseUrl}/hand-detect`);
-  handControl.win = win;
-  handControl.phase = handControl.phase === 'off' ? 'warming' : handControl.phase;
-  return { ok: true };
-}
-
-/** Isınma — uygulama açılışında kamerasız (Eren onayı: R3 §5-Q5).
- *  Boot'la yarışmasın diye kısa gecikmeyle. */
-function scheduleHandControlWarmup(attempt = 0) {
-  setTimeout(() => {
-    try {
-      if (handDetectAlive()) return;
-      if (!appBaseUrl) {
-        // Sunucu henüz ayakta değil — sınırlı tekrar (sessiz sonsuz döngü yok).
-        if (attempt < 10) scheduleHandControlWarmup(attempt + 1);
-        else logLine('hand-control ısınma vazgeçti: uygulama adresi hiç gelmedi');
-        return;
-      }
-      openHandDetectWindow();
-      broadcastHandControlStatus();
-    } catch (err) {
-      logLine(`hand-control ısınma açılamadı: ${err.message}`);
-    }
-  }, attempt === 0 ? 8000 : 5000);
-}
+function handDetectAlive() { return windowManager.handDetectAlive(); }
+function openHandDetectWindow() { return windowManager.openHandDetectWindow(); }
+function scheduleHandControlWarmup(attempt = 0) { return windowManager.scheduleHandControlWarmup(attempt); }
 
 /** Kamera izni — R1 §5.1 SIRASI: main'de askForMediaAccess ÖNCE (motor değil;
  *  ilk-çağrı kaybı R1 §2.2), ret'te deep-link. TR metin builder extendInfo'da. */
@@ -14967,31 +13849,7 @@ function onHandDetectFrame(event, payload) {
   }
 }
 
-/** Spike/regression window — the isolated ADP-001 xterm.js renderer. */
-function createSpikeWindow() {
-  const win = new BrowserWindow({
-    width: 980,
-    height: 640,
-    show: !AUTOTEST,
-    backgroundColor: '#0d0f17',
-    webPreferences: sharedWebPreferences(),
-  });
-
-  if (AUTOTEST) {
-    win.webContents.on('console-message', (e) => {
-      const msg = (e && typeof e === 'object' && 'message' in e) ? e.message : e;
-      logLine('[renderer console] ' + msg);
-    });
-  }
-  win.webContents.on('render-process-gone', (_e, details) => {
-    logLine('RENDERER GONE: ' + JSON.stringify(details));
-  });
-
-  // Pass the autotest flag via query param (reliable at renderer eval time).
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'),
-    AUTOTEST ? { search: 'autotest=1' } : undefined);
-  return win;
-}
+function createSpikeWindow() { return windowManager.createSpikeWindow(); }
 
 // ---------------------------------------------------------------------------
 // Lifecycle
