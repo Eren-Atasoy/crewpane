@@ -1,0 +1,144 @@
+{
+  "_why": "ADP-887 — MODEL FİYATLARININ TEK KAYNAĞI. Fiyatı koda GÖMME; tokenCost.cjs bu dosyayı okur, UI de buradan türetilen sayıyı gösterir. Fiyat değişince YALNIZ burası güncellenir (+ source.measuredAt).",
+  "_howToUpdate": "1) claude-api skill'ini (ya da platform.claude.com/docs/en/pricing) aç · 2) models.* input/output alanlarını güncelle · 3) source.measuredAt'i BUGÜNE çek · 4) version'ı +1 yap · 5) `node --test electron/tokenCost.test.cjs` koş (test fiyatı değil ŞEKLİ doğrular).",
+  "version": 5,
+  "currency": "USD",
+  "unit": "per_million_tokens",
+  "source": {
+    "name": "Anthropic platform pricing (claude-api skill, cached table)",
+    "measuredAt": "2026-08-08",
+    "url": "https://platform.claude.com/docs/en/pricing",
+    "note": "Bu rakamlar BİRİNCİ-TARAF Claude API listesidir. Bedrock/Vertex/Foundry ayrı fiyatlıdır ve burada YOKTUR.",
+    "_verifiedADP956": "2026-08-08 — claude-api skill fiyat tablosuna karşı satır satır DOĞRULANDI, HİÇBİR DEĞER DEĞİŞMEDİ: Haiku 4.5 $1/$5 · Opus 5 $5/$25 (fast $10/$50) · Fable 5 $10/$50 · Sonnet 5 $3/$15 (tanıtım $2/$10, 2026-08-31'e kadar). Önbellek çarpanları da doğrulandı (okuma 0.1× · 5dk 1.25× · 1saat 2.0×). Defterlerde geçen 5 modelin 5'i de tabloda: fiyatlanamayan jeton SIFIR. OpenRouter gibi yeniden-satıcılar KIYAS ÖLÇÜTÜ DEĞİLDİR — bu defter Claude Code'un birinci-taraf kullanımıdır, fatura Anthropic liste fiyatından çıkar."
+  },
+  "cacheMultipliers": {
+    "_why": "Önbellek fiyatı ayrı bir sayı DEĞİL, girdi fiyatının katıdır (Anthropic prompt-caching dokümanı). Böylece taban fiyat değişince önbellek fiyatı kendiliğinden doğru kalır.",
+    "_measuredADP956": "🔴 GERÇEK KULLANIMDA ÖLÇÜLDÜ (~/.claude defterlerinin TAMAMI, 215.624 satır): cache_creation'ın %100'ü 1 SAATLİK (1.257.805.432 jeton; 5dk = 0). Yani faturada baskın çarpan write1h=2.0× — okumanın (0.1×) YİRMİ katı. Sonuç: az sayıda yazma jetonu faturanın büyük kısmını yapar (ölçülen bir Haiku oturumunda jetonun %28,7'si paranın %83,4'ü). Bu çarpanı düşürmek/yuvarlamak faturayı SESSİZCE yanlış yapar.",
+    "read": 0.1,
+    "write5m": 1.25,
+    "write1h": 2.0
+  },
+  "contextEconomics": {
+    "_why": "TOK-A — \"bu oturumu tazelemek ne kazandırır?\" sorusunun SABİTLERİ. Bunlar fiyat değil ÖLÇÜM: kaç jetonluk bağlamla taze bir oturum başlıyor, ısınması kaç jeton yazıyor, hangi bağlamdan sonra tazelemek kazanıyor. Dolar BURADA yazılı DEĞİL — jeton × yukarıdaki fiyat/çarpan ile türetilir, yani fiyat değişince rakam kendiliğinden doğru kalır.",
+    "_measuredTOKOPT01": "🔴 GERÇEK DEFTERLE ÖLÇÜLDÜ (TOK-OPT-01, ~/.claude/projects TAMAMI: 2.880 dosya · 2.585 oturum · ~115K istek, requestId ile tekilleştirildi). (a) İlk 25 istekte medyan bağlam 90K → taze oturumun tabanı budur. (b) İlk isteğin önbellek YAZMASI medyan 22.786 jeton (p90 27.060; crewpane 17,7K · chatflow 30,7K) → \"ısınma\" bedeli. (c) Bağlam 200K'yı (≈100+ istek) geçtikten sonra taze açmak ≥4 istekte amorti ediyor → eşik 200K. (d) Önbellek penceresi 1 SAAT: 5-60dk boşluktan sonra dönen isteğin yazma medyanı 518 jeton (HIT), >60dk sonra 251.661 jeton (MISS, tam yeniden-ısıtma) — 437 olayın faturası $1.894, olay başına medyan $3.45 / p90 $8.61. Bu sabitleri elle \"yuvarlamak\" ipucu satırını sessizce yanlış yapar; değiştirmek için ölçümü YENİDEN koş.",
+    "freshBaselineCtxTokens": 90000,
+    "freshWarmupWriteTokens": 22786,
+    "refreshCtxThresholdTokens": 200000,
+    "dispatch": {
+      "_why": "TOK-B (D-03) — DAĞITIM POLİTİKASININ eşikleri: yeni iş gelince \"aynı pane'de sürdür\" mü \"taze oturum\" mu. Kural TOK-OPT-01'den gelir ve buradan OKUNUR (koda gömülü eşik yok). Bayatlık penceresi burada TEKRAR yazılmaz: motorun ölçülmüş `engines.<motor>.cacheTtlMinutes` değeri kullanılır (claude 60dk; codex ÖLÇÜLMEDİ → o motorda bayatlık kuralı hiç tetiklenmez).",
+      "_measuredTOKOPT01": "(a) mandatoryRefreshRequests=300: 13 mega-oturum (500+ istek) tüm harcamanın %37'si → zorunlu tazeleme freni. (b) 200K bağlam eşiği yukarıdaki refreshCtxThresholdTokens ile AYNI ölçümdür (≥4 istekte amorti). (c) minRefreshCtxTokens=100.000 — TOK-OPT-01 öneri 2'nin tabanı: taze bir oturumun KENDİ tabanı ölçülen 90K'dır, bunun altındaki bir bağlamı tazelemek onu DAHA BÜYÜK bir bağlamla değiştirmek olur (kazanç negatif). Bu yüzden bayatlık ve ilişkisizlik kuralları bu tabanın ALTINDA tetiklenmez; ≥300 istek freni tabandan bağımsızdır.",
+      "minRefreshCtxTokens": 100000,
+      "mandatoryRefreshRequests": 300,
+      "leader": {
+        "_why": "LDR-F1 — LİDER OTURUMUNUN OTOMATİK TAZELENMESİ: ZAMANLAMA parametreleri. 🔴 Burada bir TAZELEME EŞİĞİ YOKTUR ve olmamalıdır: karar eşiği yukarıdaki refreshCtxThresholdTokens ve mandatoryRefreshRequests'tir; liderde tek fark o kararın ZAMANLA sorulmasıdır (LDR-R1 §5.3). Bu blok yalnız 'ne zaman uyarılır / başarısızsa ne zaman tekrar denenir' sorusunu cevaplar.",
+        "_measuredLDRR1": "warnRatio=0,85 → 0,85 × 200K = 170K'da rozet sarıya döner; ölçülen canlı oturumda (a4c562da) bağlam 170K→200K bandını oturumun 29. dakikasında geçiyor, yani uyarı 'geç kalmış bildirim' olmasın diye karar eşiğinin ALTINDA başlar. cooldownMinutes=15 → taze bir oturumun KENDİ tabanı ölçülen ~90K'dır; art arda tazeleme bağlamı küçültmez, yalnız devir turu + ısınma harcar (sonsuz döngü freni).",
+        "warnRatio": 0.85,
+        "cooldownMinutes": 15,
+        "backoffMinutes": [2, 5, 15, 30],
+        "maxAttempts": 6
+      },
+      "relatedness": {
+        "_measuredD03": "🔴 GERÇEK TRANSKRİPTLERLE KALİBRE EDİLDİ (~/.claude/projects: 596 oturum · 304 'ilgili' çift = aynı oturumun ardışık iki kullanıcı promptu · 4.000 'ilişkisiz' çift = farklı oturumların ilk promptları). HAM örtüşme İŞE YARAMIYOR: eşik 0,05'te ilişkisiz çiftlerin %44,6'sı 'ilgili' çıkıyor — çünkü dağıtım prompt'larının HEPSİ aynı kalıp blokları taşıyor. Kalıp ayıklanınca (son corpusWindow metninde belge-frekansı > boilerplateDfCut olan kelimeler atılır) aynı eşikte: ilgiliyi bulma %60,3 · yanlış 'ilgili' %8,3 (tüm korpusla %4,3). 🔴 ASİMETRİ: gerçekten ilgili çiftlerin ~%40'ı eşiğin ALTINDA kalır ('devam', 'şimdi de X') → 'İLİŞKİSİZ' hükmü TEK BAŞINA tazeleme tetikleyemez; politika onu ancak bağlam tabanıyla BİRLİKTE kullanır ve tazelemeyi devir özetiyle yapar.",
+        "minOverlap": 0.05,
+        "minContentTokens": 8,
+        "minCorpusDocs": 10,
+        "corpusWindow": 50,
+        "boilerplateDfCut": 0.2
+      }
+    }
+  },
+  "models": {
+    "claude-fable-5": { "label": "Fable 5", "input": 10, "output": 50 },
+    "claude-mythos-5": { "label": "Mythos 5", "input": 10, "output": 50 },
+    "claude-opus-5": {
+      "label": "Opus 5",
+      "input": 5,
+      "output": 25,
+      "fastMode": { "input": 10, "output": 50 }
+    },
+    "claude-opus-4-8": {
+      "label": "Opus 4.8",
+      "input": 5,
+      "output": 25,
+      "fastMode": { "input": 10, "output": 50 }
+    },
+    "claude-opus-4-7": { "label": "Opus 4.7", "input": 5, "output": 25 },
+    "claude-opus-4-6": { "label": "Opus 4.6", "input": 5, "output": 25 },
+    "claude-opus-4-5": { "label": "Opus 4.5", "input": 5, "output": 25 },
+    "claude-sonnet-5": {
+      "label": "Sonnet 5",
+      "input": 3,
+      "output": 15,
+      "introPrice": {
+        "_why": "Tanıtım fiyatı 2026-08-31'e kadar geçerli; o tarihten SONRA otomatik olarak liste fiyatına döner (tarih kodda değil BURADA).",
+        "until": "2026-08-31",
+        "input": 2,
+        "output": 10
+      }
+    },
+    "claude-sonnet-4-6": { "label": "Sonnet 4.6", "input": 3, "output": 15 },
+    "claude-sonnet-4-5": { "label": "Sonnet 4.5", "input": 3, "output": 15 },
+    "claude-haiku-4-5": { "label": "Haiku 4.5", "input": 1, "output": 5 }
+  },
+  "aliases": {
+    "_why": "Motorun yazdığı ham model kimliği ↔ tablodaki anahtar. Tarih sonekli tam kimlikler (claude-haiku-4-5-20251001) normalizeModelId() içinde kırpılır; buraya YALNIZ kırpmayla çözülmeyenler yazılır.",
+    "opus": "claude-opus-5",
+    "sonnet": "claude-sonnet-5",
+    "haiku": "claude-haiku-4-5",
+    "fable": "claude-fable-5"
+  },
+  "engineTables": {
+    "_why": "TOK-01 — MOTOR BAŞINA FİYAT TABLOSU. Kökteki `models`/`aliases`/`cacheMultipliers` Anthropic'indir; başka bir motorun fiyatı ASLA oraya karıştırılmaz (iki sağlayıcının önbellek çarpanları bile farklıdır). `engines.<motor>.pricingTable` bu bloktaki adı gösterir.",
+    "openai": {
+      "source": {
+        "name": "OpenAI platform pricing (birinci taraf)",
+        "measuredAt": "2026-08-10",
+        "url": "https://developers.openai.com/api/docs/pricing",
+        "note": "TOK-01 — Eren'in ekran kanıtı ('1.18M jeton · +31.69M önbellek · FİYATLANMADI') bu tablo YOK olduğu içindi: jeton doğruydu, para satırı boştu. Rakamlar OpenAI'nin kendi liste sayfasından okundu; ChatGPT abonelik kipinde yine DOLAR YAZILMAZ (yalnız 'API'de ne ederdi' karşılığı hesaplanır)."
+      },
+      "cacheMultipliers": {
+        "_why": "OpenAI'de önbellek OKUMA girdinin 0.1'i (liste sayfasında her modelde birebir doğrulandı: 5.00→0.50 · 2.00→0.20 · 1.25→0.125 · 0.05→0.005). Anthropic'ten FARKI: önbelleğe YAZMA için ek ücret YOKTUR — yazılan jeton normal girdi fiyatından geçer, yani çarpan 1.0 (Anthropic'te 1.25×/2.0×). Bu yüzden çarpanlar motorla birlikte taşınır.",
+        "read": 0.1,
+        "write5m": 1.0,
+        "write1h": 1.0
+      },
+      "models": {
+        "gpt-5.6-sol": { "label": "GPT-5.6 Sol", "input": 5, "output": 30 },
+        "gpt-5.6-terra": { "label": "GPT-5.6 Terra", "input": 2, "output": 12 },
+        "gpt-5.6-luna": { "label": "GPT-5.6 Luna", "input": 0.2, "output": 1.2 },
+        "gpt-5.5": { "label": "GPT-5.5", "input": 5, "output": 30 },
+        "gpt-5.4": { "label": "GPT-5.4", "input": 2.5, "output": 15 },
+        "gpt-5.4-mini": { "label": "GPT-5.4 mini", "input": 0.75, "output": 4.5 },
+        "gpt-5.4-nano": { "label": "GPT-5.4 nano", "input": 0.2, "output": 1.25 },
+        "gpt-5.2": { "label": "GPT-5.2", "input": 1.75, "output": 14 },
+        "gpt-5.1": { "label": "GPT-5.1", "input": 1.25, "output": 10 },
+        "gpt-5": { "label": "GPT-5", "input": 1.25, "output": 10 },
+        "gpt-5-mini": { "label": "GPT-5 mini", "input": 0.25, "output": 2 },
+        "gpt-5-nano": { "label": "GPT-5 nano", "input": 0.05, "output": 0.4 }
+      },
+      "aliases": {
+        "_why": "🔴 BİLEREK EKSİK BIRAKILANLAR: `gpt-5.3` ve `*-pro` türevleri (gpt-5.5-pro, gpt-5.4-pro, gpt-5.2-pro, gpt-5-pro) kaynak liste sayfasında YOKTU. Bir üst/alt modelin fiyatını onlara VERMEK uydurmadır → tabloya yazılmadılar; defterde görülürlerse kart 'model-not-priced' der ve JETON SAYISININ DOĞRU olduğunu ayrıca söyler. `gpt-5.5` fiyatı 272K altı bağlam içindir; üstü ayrı fiyatlıdır ve burada YOK.",
+        "sol": "gpt-5.6-sol",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-5.6-luna"
+      }
+    }
+  },
+  "engines": {
+    "_why": "Motor = faturayı KİM ödüyor. Abonelik motorunda DOLAR GÖSTERİLMEZ (sahte maliyet yasak); jeton sayısı yine gösterilir.",
+    "claude": {
+      "label": "Claude Code",
+      "pricingTable": "models",
+      "billingProbe": "claude-oauth",
+      "cacheTtlMinutes": 60,
+      "_ttlMeasured": "TOK-OPT-01: bu motorun önbellek yazmalarının %100'ü ephemeral_1h (ADP-956 ile bağımsız teyit) ve 5-60dk boşluklarda yeniden-ısıtma GÖRÜLMEDİ → pencere 60 dk. \"5 dakika\" varsayımı bu makinede YANLIŞLANDI."
+    },
+    "codex": {
+      "label": "Codex",
+      "pricingTable": "openai",
+      "billingProbe": "codex-auth",
+      "cacheTtlMinutes": null,
+      "_ttlMeasured": "ÖLÇÜLMEDİ — codex defterinde önbellek penceresi TOK-OPT-01'de ölçülmedi. null = \"bilmiyorum\" → kart bu motorda bayat-önbellek rozetini GÖSTERMEZ (uydurma eşik yasak)."
+    }
+  }
+}

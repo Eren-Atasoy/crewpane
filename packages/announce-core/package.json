@@ -1,0 +1,10 @@
+{
+  "name": "@crewpane/announce-core",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Uygulama-içi duyuru sözleşmesinin TEK kaynağı (ADP-675 → ADP-716). CrewPane ve AgentShot bu paketi tüketir; AgentVoice aynı sözleşmenin Python ikizini (packages/announce-core-py) tüketir. Kopya-fork YASAK — sözleşme conformance/cases.json ile kilitlidir.",
+  "main": "index.cjs",
+  "scripts": {
+    "test": "node --test *.test.cjs"
+  }
+}

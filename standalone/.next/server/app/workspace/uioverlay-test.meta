@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/workspace/layout,_N_T_/workspace/uioverlay-test/layout,_N_T_/workspace/uioverlay-test/page,_N_T_/workspace/uioverlay-test"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/workspace/uioverlay-test/__PAGE__",
+    "/workspace/uioverlay-test",
+    "/workspace",
+    "/_index",
+    "/_head"
+  ]
+}

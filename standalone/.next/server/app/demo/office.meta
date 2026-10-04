@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/demo/layout,_N_T_/demo/office/layout,_N_T_/demo/office/page,_N_T_/demo/office"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/demo/office/__PAGE__",
+    "/demo/office",
+    "/demo",
+    "/_index",
+    "/_head"
+  ]
+}

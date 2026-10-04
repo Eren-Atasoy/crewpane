@@ -1,0 +1,3 @@
+module.exports=[833867,a=>{"use strict";var b=a.i(245281);a.s(["noWorkersMessage",0,function(a,b){return a>0?`0 uygun worker — delegasyon BAŞLAMADI: verilen ${a} aday lider/lider-rol\xfc olduğu i\xe7in elendi (lider alt-g\xf6rev alamaz; department=${b})`:`0 uygun worker — delegasyon BAŞLAMADI (department=${b}): roster \xe7\xf6z\xfclemedi — Supabase erişilemedi, department adı yanlış ya da bu departmanda employees-bağlı ajan yok (ADP-290 yetim koruması: employees satırı olmayan agents roster'a giremez)`},"workersForSpawn",0,function(a,c){return a.filter(a=>a.agentId!==c&&!(0,b.isLeaderRoleSlug)(a.role))}])}];
+
+//# sourceMappingURL=src_app_lib_workersForSpawn_ts_0n6h9_s._.js.map

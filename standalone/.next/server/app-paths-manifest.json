@@ -1,0 +1,22 @@
+{
+  "/_global-error/page": "app/_global-error/page.js",
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/focus-pane/route": "app/api/focus-pane/route.js",
+  "/api/reports/[filename]/route": "app/api/reports/[filename]/route.js",
+  "/api/reports/route": "app/api/reports/route.js",
+  "/demo/office/page": "app/demo/office/page.js",
+  "/design/page": "app/design/page.js",
+  "/favicon.ico/route": "app/favicon.ico/route.js",
+  "/hand-detect/page": "app/hand-detect/page.js",
+  "/hand-overlay/page": "app/hand-overlay/page.js",
+  "/jarvis-widget/page": "app/jarvis-widget/page.js",
+  "/msgbox-test/page": "app/msgbox-test/page.js",
+  "/notif-test/page": "app/notif-test/page.js",
+  "/page": "app/page.js",
+  "/popout/page": "app/popout/page.js",
+  "/reports/page": "app/reports/page.js",
+  "/rgcap-test/page": "app/rgcap-test/page.js",
+  "/setup/page": "app/setup/page.js",
+  "/workspace/page": "app/workspace/page.js",
+  "/workspace/uioverlay-test/page": "app/workspace/uioverlay-test/page.js"
+}

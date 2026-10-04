@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "functions": {
+    "/api/reports": {},
+    "/api/reports/[filename]": {},
+    "/reports": {}
+  }
+}

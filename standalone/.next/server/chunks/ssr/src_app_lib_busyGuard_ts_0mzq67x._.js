@@ -1,0 +1,3 @@
+module.exports=[195228,a=>{"use strict";let b=new Set(["done","failed","timeout","undelivered","incomplete"]);function c(a,b){let c=[],d=[];for(let e of a??[])(b.has(e.agentId)?d:c).push(e);return{free:c,busyWorkers:d}}a.s(["busyAgentIds",0,function(a){let c=new Set;for(let d of a??[])if(d&&Array.isArray(d.subtasks))for(let a of d.subtasks)a&&a.workerAgentId&&!b.has(a.status)&&c.add(a.workerAgentId);return c},"partitionByBusy",0,c,"pickFreeFirst",0,function(a,b,d){let{free:e,busyWorkers:f}=c(a??[],b),g=Math.max(0,Math.floor(d)||0);return 0===e.length?{chosen:[],skippedBusy:[],allBusy:(a??[]).length>0,free:e,busyWorkers:f}:{chosen:e.slice(0,g),skippedBusy:f,allBusy:!1,free:e,busyWorkers:f}}])}];
+
+//# sourceMappingURL=src_app_lib_busyGuard_ts_0mzq67x._.js.map

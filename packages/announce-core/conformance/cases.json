@@ -1,0 +1,371 @@
+{
+  "_doc": [
+    "ADP-716 — DUYURU SÖZLEŞMESİNİN ÇALIŞAN TANIMI.",
+    "Bu dosya bir belge değil, bir TESTTİR. Üç ürünün duyuru davranışı buradan doğrulanır:",
+    "  • JS  (CrewPane + AgentShot) → packages/announce-core/index.test.cjs",
+    "  • Py  (AgentVoice)             → packages/announce-core-py/tests/conformance_check.py",
+    "İki uygulamadan biri diğerinden saparsa BU vakalar kırılır — 'aynı sözleşme' iddiası",
+    "böylece kanıtlanabilir olur. Yeni bir davranış kuralı önce BURAYA yazılır."
+  ],
+  "schemaVersion": 2,
+
+  "normalize": [
+    {
+      "name": "asgari geçerli duyuru — eksikler varsayılanlanır",
+      "input": { "id": "a1", "title": "Başlık" },
+      "expect": {
+        "id": "a1", "level": "info", "title": "Başlık", "body": "",
+        "publishedAt": null, "startsAt": null, "expiresAt": null,
+        "action": null, "dismissible": true, "i18n": null
+      }
+    },
+    {
+      "name": "id YOK → duyuru DÜŞER (okundu defteri anahtarsız tutulamaz)",
+      "input": { "title": "Başlık" },
+      "expect": null
+    },
+    {
+      "name": "başlık YOK → duyuru DÜŞER",
+      "input": { "id": "a2" },
+      "expect": null
+    },
+    {
+      "name": "id sanitize: yol/enjeksiyon karakterleri atılır, küçük harfe iner",
+      "input": { "id": "../Bakim 2026/#x", "title": "T" },
+      "expect": { "id": "..bakim2026x" }
+    },
+    {
+      "name": "id sanitize sonrası boş kalırsa duyuru DÜŞER",
+      "input": { "id": "@@@ ###", "title": "T" },
+      "expect": null
+    },
+    {
+      "name": "seviye beyaz listesi — tanınmayan seviye 'info' olur",
+      "input": { "id": "a3", "title": "T", "level": "PANIC" },
+      "expect": { "level": "info" }
+    },
+    {
+      "name": "geçerli seviye korunur",
+      "input": { "id": "a4", "title": "T", "level": "critical" },
+      "expect": { "level": "critical" }
+    },
+    {
+      "name": "GÜVENLİK: javascript: aksiyonu — duyuru YAŞAR, yalnız düğme düşer",
+      "input": { "id": "a5", "title": "T", "body": "zararsız metin", "action": { "label": "Tıkla", "url": "javascript:alert(1)" } },
+      "expect": { "id": "a5", "body": "zararsız metin", "action": null }
+    },
+    {
+      "name": "GÜVENLİK: http:// (şifresiz) aksiyon reddedilir",
+      "input": { "id": "a6", "title": "T", "action": { "label": "Aç", "url": "http://example.com" } },
+      "expect": { "action": null }
+    },
+    {
+      "name": "GÜVENLİK: file:/data: aksiyon reddedilir",
+      "input": { "id": "a7", "title": "T", "action": { "label": "Aç", "url": "data:text/html,<script>x</script>" } },
+      "expect": { "action": null }
+    },
+    {
+      "name": "https aksiyon geçer; etiket boşsa varsayılan 'Aç'",
+      "input": { "id": "a8", "title": "T", "action": { "url": "https://crewpane.dev/durum" } },
+      "expect": { "action": { "label": "Aç", "url": "https://crewpane.dev/durum" } }
+    },
+    {
+      "name": "GÜVENLİK: HTML/script gövdede DÜZ METİN olarak kalır (render eden yok)",
+      "input": { "id": "a9", "title": "T", "body": "<script>window.pwned=1</script> merhaba" },
+      "expect": { "body": "<script>window.pwned=1</script> merhaba" }
+    },
+    {
+      "name": "bilinmeyen alanlar duyuruyu DÜŞÜRMEZ (ileri uyumluluk)",
+      "input": { "id": "a10", "title": "T", "gelecekAlani": { "x": 1 }, "priority": 9, "audience": ["x"] },
+      "expect": { "id": "a10", "title": "T" }
+    },
+    {
+      "name": "tarihler ISO'dan epoch ms'e; bozuk tarih null (sınır yok)",
+      "input": { "id": "a11", "title": "T", "publishedAt": "2026-07-29T10:00:00Z", "expiresAt": "yarin" },
+      "expect": { "publishedAt": 1785319200000, "expiresAt": null }
+    },
+    {
+      "name": "ÇEVRİMDIŞI KOPYA: normalize IDEMPOTENT — epoch sayısı tarih olarak korunur",
+      "input": { "id": "a11b", "title": "T", "publishedAt": 1785319200000, "expiresAt": 1785405600000 },
+      "expect": { "publishedAt": 1785319200000, "expiresAt": 1785405600000 }
+    },
+    {
+      "name": "tarih alanı boolean/nesne ise null (çöp tarih sınır olamaz)",
+      "input": { "id": "a11c", "title": "T", "publishedAt": true, "expiresAt": { "x": 1 } },
+      "expect": { "publishedAt": null, "expiresAt": null }
+    },
+    {
+      "name": "hedef normalize: sürümler doğrulanır, bozuk sürüm null olur",
+      "input": { "id": "a12", "title": "T", "target": { "apps": ["AgentShot", "agentshot"], "minVersion": "0.1.0", "maxVersion": "abc", "channels": ["Stable"] } },
+      "expect": { "target": { "apps": ["agentshot"], "channels": ["stable"], "plans": null, "minVersion": "0.1.0", "maxVersion": null } }
+    },
+    {
+      "name": "i18n: EN bloğu normalize edilir",
+      "input": { "id": "a13", "title": "TR başlık", "body": "TR gövde", "i18n": { "en": { "title": "EN title", "body": "EN body" } } },
+      "expect": { "i18n": { "en": { "title": "EN title", "body": "EN body" } } }
+    },
+    {
+      "name": "i18n: bilinmeyen dil atılır, tanınan kalır",
+      "input": { "id": "a14", "title": "T", "i18n": { "de": { "title": "DE" }, "en": { "title": "EN" } } },
+      "expect": { "i18n": { "en": { "title": "EN" } } }
+    },
+    {
+      "name": "i18n: tamamen boş/bozuk blok null olur (duyuru DÜŞMEZ)",
+      "input": { "id": "a15", "title": "T", "i18n": { "en": { "title": "   " } } },
+      "expect": { "id": "a15", "i18n": null }
+    },
+    {
+      "name": "i18n dizi/çöp ise yok sayılır",
+      "input": { "id": "a16", "title": "T", "i18n": ["en"] },
+      "expect": { "i18n": null }
+    },
+    {
+      "name": "dismissible yalnız açık false ile kapanır",
+      "input": { "id": "a17", "title": "T", "dismissible": false },
+      "expect": { "dismissible": false }
+    },
+    {
+      "name": "dizi girdi duyuru DEĞİLDİR",
+      "input": ["id", "title"],
+      "expect": null
+    },
+    {
+      "name": "string girdi duyuru DEĞİLDİR",
+      "input": "duyuru",
+      "expect": null
+    }
+  ],
+
+  "feed": [
+    {
+      "name": "iki şekil de kabul edilir: {announcements:[…]}",
+      "input": { "version": 2, "announcements": [{ "id": "f1", "title": "T" }] },
+      "expectIds": ["f1"]
+    },
+    {
+      "name": "iki şekil de kabul edilir: çıplak dizi",
+      "input": [{ "id": "f2", "title": "T" }],
+      "expectIds": ["f2"]
+    },
+    {
+      "name": "bozuk öğeler SESSİZCE düşer, sağlamlar YAŞAR",
+      "input": { "announcements": [{ "id": "f3", "title": "T" }, null, 42, { "title": "idsiz" }, { "id": "f4", "title": "T2" }] },
+      "expectIds": ["f3", "f4"]
+    },
+    {
+      "name": "aynı id tekilleştirilir (ilk kazanır)",
+      "input": [{ "id": "dup", "title": "birinci" }, { "id": "dup", "title": "ikinci" }],
+      "expectIds": ["dup"]
+    },
+    {
+      "name": "tamamen bozuk feed → BOŞ liste (çökme yok)",
+      "input": { "hello": "world" },
+      "expectIds": []
+    },
+    {
+      "name": "null feed → BOŞ liste",
+      "input": null,
+      "expectIds": []
+    },
+    {
+      "name": "HTML dönen feed (yanlış URL) → BOŞ liste",
+      "input": "<!doctype html><html>404</html>",
+      "expectIds": []
+    },
+    {
+      "name": "gelecekteki envelope sürümü İSTEMCİYİ KIRMAZ (sürüme dallanma yok)",
+      "input": { "version": 99, "kind": "announcements", "announcements": [{ "id": "f5", "title": "T" }] },
+      "expectIds": ["f5"]
+    }
+  ],
+
+  "select": [
+    {
+      "name": "hedefsiz duyuru HERKESE gider",
+      "feed": [{ "id": "s1", "title": "T" }],
+      "ctx": { "app": "agentvoice", "version": "1.0.0", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s1"]
+    },
+    {
+      "name": "uygulama hedefi: yalnız listelenen ürün görür",
+      "feed": [{ "id": "s2", "title": "T", "target": { "apps": ["agentshot"] } }],
+      "ctx": { "app": "agentvoice", "version": "1.0.0", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "uygulama hedefi: listelenen ürün GÖRÜR",
+      "feed": [{ "id": "s3", "title": "T", "target": { "apps": ["agentshot", "agentvoice"] } }],
+      "ctx": { "app": "agentvoice", "version": "1.0.0", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s3"]
+    },
+    {
+      "name": "maxVersion DAHİL: 0.2.20'den eskiler görsün → 0.2.19 GÖRÜR",
+      "feed": [{ "id": "s4", "title": "T", "target": { "maxVersion": "0.2.19" } }],
+      "ctx": { "app": "crewpane", "version": "0.2.19", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s4"]
+    },
+    {
+      "name": "maxVersion: güncel sürüm GÖRMEZ",
+      "feed": [{ "id": "s5", "title": "T", "target": { "maxVersion": "0.2.19" } }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "minVersion DAHİL alt sınır",
+      "feed": [
+        { "id": "s6", "title": "T", "target": { "minVersion": "1.0.0" } },
+        { "id": "s7", "title": "T", "target": { "minVersion": "1.0.1" } }
+      ],
+      "ctx": { "app": "agentvoice", "version": "1.0.0", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s6"]
+    },
+    {
+      "name": "sürüm aralığı (min+max) birlikte",
+      "feed": [{ "id": "s8", "title": "T", "target": { "minVersion": "0.1.0", "maxVersion": "0.1.9" } }],
+      "ctx": { "app": "agentshot", "version": "0.1.3", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s8"]
+    },
+    {
+      "name": "sürüm okunamıyorsa SÜRÜM-HEDEFLİ duyuru gösterilmez (yanlış kişiye gitmesin)",
+      "feed": [{ "id": "s9", "title": "T", "target": { "maxVersion": "9.9.9" } }],
+      "ctx": { "app": "agentshot", "version": "bilinmiyor", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "kanal hedefi: dev kanalı duyurusu stable'a GİTMEZ",
+      "feed": [{ "id": "s10", "title": "T", "target": { "channels": ["dev"] } }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "kanal hedefi: dev istemci GÖRÜR",
+      "feed": [{ "id": "s11", "title": "T", "target": { "channels": ["dev"] } }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "dev", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s11"]
+    },
+    {
+      "name": "SÜRESİ GEÇMİŞ duyuru GÖSTERİLMEZ",
+      "feed": [{ "id": "s12", "title": "T", "expiresAt": "2026-07-29T11:59:59Z" }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "bitiş anı DAHİL DEĞİL: tam bitiş anında ARTIK görünmez",
+      "feed": [{ "id": "s13", "title": "T", "expiresAt": "2026-07-29T12:00:00Z" }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "henüz BAŞLAMAMIŞ duyuru gösterilmez (zamanlanmış yayın)",
+      "feed": [{ "id": "s14", "title": "T", "startsAt": "2026-07-29T12:00:01Z" }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "başlamış + bitmemiş pencere GÖSTERİLİR",
+      "feed": [{ "id": "s15", "title": "T", "startsAt": "2026-07-29T00:00:00Z", "expiresAt": "2026-07-30T00:00:00Z" }],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["s15"]
+    },
+    {
+      "name": "ÇEVRİMDIŞI KOPYA turu: süresi geçmiş duyuru İKİNCİ normalize'dan sonra da GİZLİ",
+      "feed": [{ "id": "s16", "title": "T", "expiresAt": 1767225600000 }],
+      "ctx": { "app": "agentvoice", "version": "1.0.4", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": []
+    },
+    {
+      "name": "sıralama: önce kritiklik, sonra yeni→eski",
+      "feed": [
+        { "id": "o1", "title": "T", "level": "info", "publishedAt": "2026-07-29T09:00:00Z" },
+        { "id": "o2", "title": "T", "level": "critical", "publishedAt": "2026-07-01T09:00:00Z" },
+        { "id": "o3", "title": "T", "level": "info", "publishedAt": "2026-07-29T11:00:00Z" },
+        { "id": "o4", "title": "T", "level": "warning", "publishedAt": "2026-07-29T10:00:00Z" }
+      ],
+      "ctx": { "app": "crewpane", "version": "0.2.20", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["o2", "o4", "o3", "o1"]
+    },
+    {
+      "name": "ürün + sürüm + zaman birlikte: yalnız tam uyan geçer",
+      "feed": [
+        { "id": "m1", "title": "T", "target": { "apps": ["agentvoice"], "maxVersion": "1.0.0" } },
+        { "id": "m2", "title": "T", "target": { "apps": ["agentvoice"], "maxVersion": "0.9.0" } },
+        { "id": "m3", "title": "T", "target": { "apps": ["crewpane"] } },
+        { "id": "m4", "title": "T", "expiresAt": "2026-01-01T00:00:00Z" }
+      ],
+      "ctx": { "app": "agentvoice", "version": "1.0.0", "channel": "stable", "now": "2026-07-29T12:00:00Z" },
+      "expectIds": ["m1"]
+    }
+  ],
+
+  "localize": [
+    {
+      "name": "EN istemci EN metni görür",
+      "input": { "id": "l1", "title": "TR başlık", "body": "TR gövde", "i18n": { "en": { "title": "EN title", "body": "EN body" } } },
+      "locale": "en",
+      "expect": { "title": "EN title", "body": "EN body" }
+    },
+    {
+      "name": "TR istemci TABAN metni görür",
+      "input": { "id": "l2", "title": "TR başlık", "body": "TR gövde", "i18n": { "en": { "title": "EN title", "body": "EN body" } } },
+      "locale": "tr",
+      "expect": { "title": "TR başlık", "body": "TR gövde" }
+    },
+    {
+      "name": "en-US / EN_us gibi bölge ekleri 'en'e indirgenir",
+      "input": { "id": "l3", "title": "TR", "i18n": { "en": { "title": "EN" } } },
+      "locale": "en-US",
+      "expect": { "title": "EN" }
+    },
+    {
+      "name": "bilinmeyen dil → TABAN dile düşer (boş ekran YOK)",
+      "input": { "id": "l4", "title": "TR", "i18n": { "en": { "title": "EN" } } },
+      "locale": "de-DE",
+      "expect": { "title": "TR" }
+    },
+    {
+      "name": "YARIM çeviri: yalnız başlık çevrilmişse gövde TABAN dilde kalır",
+      "input": { "id": "l5", "title": "TR başlık", "body": "TR gövde", "i18n": { "en": { "title": "EN title" } } },
+      "locale": "en",
+      "expect": { "title": "EN title", "body": "TR gövde" }
+    },
+    {
+      "name": "çevirisi olmayan duyuru her dilde TABAN metni gösterir",
+      "input": { "id": "l6", "title": "Yalnız TR", "body": "Gövde" },
+      "locale": "en",
+      "expect": { "title": "Yalnız TR", "body": "Gövde" }
+    },
+    {
+      "name": "aksiyon etiketi çevrilir, URL AYNI kalır",
+      "input": { "id": "l7", "title": "T", "action": { "label": "Güncelle", "url": "https://crewpane.dev/indir" }, "i18n": { "en": { "actionLabel": "Update" } } },
+      "locale": "en",
+      "expect": { "actionLabel": "Update", "actionUrl": "https://crewpane.dev/indir" }
+    },
+    {
+      "name": "aksiyon etiketi çevrilmemişse taban etiket kalır",
+      "input": { "id": "l8", "title": "T", "action": { "label": "Güncelle", "url": "https://crewpane.dev/indir" }, "i18n": { "en": { "title": "EN" } } },
+      "locale": "en",
+      "expect": { "actionLabel": "Güncelle", "actionUrl": "https://crewpane.dev/indir" }
+    }
+  ],
+
+  "unread": [
+    {
+      "name": "okundu defteri (harita) okunmuşları eler",
+      "ids": ["u1", "u2", "u3"],
+      "read": { "u2": 123456 },
+      "expectIds": ["u1", "u3"]
+    },
+    {
+      "name": "boş defter → hepsi okunmamış",
+      "ids": ["u1", "u2"],
+      "read": {},
+      "expectIds": ["u1", "u2"]
+    },
+    {
+      "name": "hepsi okunmuş → boş",
+      "ids": ["u1"],
+      "read": { "u1": 1 },
+      "expectIds": []
+    }
+  ]
+}

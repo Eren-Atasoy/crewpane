@@ -1,0 +1,3 @@
+(globalThis.TURBOPACK||(globalThis.TURBOPACK=[])).push(["object"==typeof document?document.currentScript:void 0,210759,e=>{"use strict";var r=e.i(33965);e.s(["noWorkersMessage",0,function(e,r){return e>0?`0 uygun worker — delegasyon BAŞLAMADI: verilen ${e} aday lider/lider-rol\xfc olduğu i\xe7in elendi (lider alt-g\xf6rev alamaz; department=${r})`:`0 uygun worker — delegasyon BAŞLAMADI (department=${r}): roster \xe7\xf6z\xfclemedi — Supabase erişilemedi, department adı yanlış ya da bu departmanda employees-bağlı ajan yok (ADP-290 yetim koruması: employees satırı olmayan agents roster'a giremez)`},"workersForSpawn",0,function(e,a){return e.filter(e=>e.agentId!==a&&!(0,r.isLeaderRoleSlug)(e.role))}])}]);
+
+//# sourceMappingURL=15-410ygje9v8.js.map

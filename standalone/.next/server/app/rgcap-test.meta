@@ -1,0 +1,15 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/rgcap-test/layout,_N_T_/rgcap-test/page,_N_T_/rgcap-test"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/rgcap-test/__PAGE__",
+    "/rgcap-test",
+    "/_index",
+    "/_head"
+  ]
+}

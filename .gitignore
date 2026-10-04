@@ -1,0 +1,124 @@
+# ---------------------------------------------------------------
+# Dependencies
+# standalone/ and mobile-web/ ship their runtime node_modules,
+# so only the root one is ignored.
+# ---------------------------------------------------------------
+/node_modules/
+/.pnp
+/.pnp.js
+.yarn/
+.npm/
+.pnpm-store/
+
+# ---------------------------------------------------------------
+# Build output & packaging
+# standalone/.next is the shipped frontend and IS tracked.
+# ---------------------------------------------------------------
+/.next/
+/dist/
+/out/
+/build/
+/release/
+/app.asar.unpacked/
+*.asar
+*.tsbuildinfo
+.eslintcache
+.cache/
+.turbo/
+coverage/
+.nyc_output/
+
+# ---------------------------------------------------------------
+# Environment & secrets
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.keystore
+*.jks
+secrets/
+credentials*.json
+service-account*.json
+
+# ---------------------------------------------------------------
+# Supabase local state
+# ---------------------------------------------------------------
+supabase/.temp/
+supabase/.branches/
+supabase/.env
+supabase/seed.local.sql
+
+# ---------------------------------------------------------------
+# Per-workspace runtime state written by the app itself
+# (installed skills, drafts, engine skill folders)
+# ---------------------------------------------------------------
+/.crewpane/
+/.claude/
+/.gemini/
+/.qwen/
+/.codex/
+/.cursor/
+/.factory/
+/.goose/
+/.amp/
+/.opencode/
+/.windsurf/
+/.aider*
+/.continue/
+/.agents/
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+/QWEN.md
+
+# ---------------------------------------------------------------
+# Private notes & scratch
+# ---------------------------------------------------------------
+/docs/ideas/
+/docs/refactor-findings.md
+/notes/
+scratch/
+tmp/
+temp/
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------
+# Editors & IDEs
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-*
+.history/
+
+# ---------------------------------------------------------------
+# OS files
+# ---------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

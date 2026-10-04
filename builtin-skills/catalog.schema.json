@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://crewpane.dev/schemas/crewpane-builtin-skill-catalog-0.1.json",
+  "title": "CrewPane dahili skill katalogu (v1)",
+  "description": "SKILL-LIBRARY-DESIGN.md §2.4. Bu dosya OKUNAN sozlesmedir; UYGULAYAN kapi scripts/skillCatalogLint.cjs'tir (npm run lint:catalog). Semadaki her kural orada mekanik bir kontrole karsilik gelir — ikisi ayrisirsa KAPI hakli sayilir.",
+  "type": "object",
+  "required": ["catalogVersion", "generatedAt", "skills"],
+  "additionalProperties": false,
+  "properties": {
+    "catalogVersion": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "App surumuyle artar. Degisince Merkez 'N skill guncellendi — incele' der; kendiliginden UZERINE YAZMAZ (§2.5)."
+    },
+    "generatedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "skills": { "type": "array", "items": { "$ref": "#/$defs/skill" } }
+  },
+  "$defs": {
+    "skill": {
+      "type": "object",
+      "required": ["name", "description", "license", "source", "sha256", "sizeBytes", "requires", "riskNotes"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+          "maxLength": 64,
+          "description": "= dizin adi = SKILL.md frontmatter `name`. Ucu de AYNI olmak zorunda."
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "description": "SPDX tanimlayici / ifade / LicenseRef-*. ZORUNLU: bos veya SPDX-disi ise kapi REDDEDER (Kapi-1, ISTISNA YOK). Katalogdaki deger SKILL.md frontmatter'indaki `license` ile HARFI HARFINE ayni olmalidir."
+        },
+        "source": {
+          "type": "object",
+          "required": ["kind", "url", "upstreamCommit", "fetchedAt"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "enum": ["hermes-hub", "anthropic", "openai", "huggingface", "nvidia", "self"] },
+            "url": { "type": "string", "pattern": "^https://" },
+            "upstreamCommit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+            "fetchedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+          }
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "builtin-skills/<name>/SKILL.md dosyasinin sha256'si. Kurulu kopyada saklanir → hem guncelleme hem kullanici catallamasi tespit edilir (§2.5)."
+        },
+        "sizeBytes": { "type": "integer", "minimum": 1, "maximum": 32768 },
+        "requires": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          "description": "Kurulum oncesi gereken kullanici kaynagi, or. [\"gemini-key\"] (§4.3). Yoksa []."
+        },
+        "defaultEnabled": {
+          "type": "boolean",
+          "description": "SKL-PONYTAIL-02. YOKSA `true` sayilir (bugunku davranis: acilista TOHUMLANIR). `false` yazilirsa acilis tohumlayicisi o skilli KURMAZ — katalogda gorunur, kullanici Skill Merkezi'nden tek tikla kurar. YALNIZ ILK kurulumu kapatir: kullanici elle kurduktan sonra guncelleme/tazeleme normal yolundan akar. Bu alan bir GORUNURLUK anahtari degil bir RIZA anahtaridir: calisma bicimini degistiren (cikti kalitesini etkileyen) skiller icin kullanilir."
+        },
+        "suggestedRoles": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+          "description": "SKL-PONYTAIL-02. Skillin ISE YARADIGI rol slug'lari (`src/app/lib/agentIdentity.ts` ROLE_LABELS anahtarlari, or. backend/frontend/code-review). Skill Merkezi'nde 'Onerilen roller' etiketi olarak cizilir. TAVSIYEDIR, KAPI DEGIL: listede olmayan bir rol skilli yine de kurabilir — urun kullaniciyi kisitlamaz, bilgilendirir. Listede OLMAMAK 'bu rolde onerilmez' demektir; ayri bir negatif alan YOKTUR."
+        },
+        "riskNotes": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Insanin okuyacagi TEK satir; bos olabilir. Kapi-2b injection bulgusu KABUL edilmisse burada `injection:<desen-id>` jetonuyla ACIKCA beyan edilir — beyansiz bulgu KIRMIZI yanar."
+        }
+      }
+    }
+  },
+  "x-deliberately-absent": {
+    "engines": "§2.4: bugun 7/7 motor skill dizini beyan ediyor → alan her satirda ayni ve bilgisiz. Motor rozetleri skills.engine.* ailesinden CANLI olcumden gelir. Katalogda dondurulmus motor listesi bayatlar. Alan YAZILIRSA kapi hata verir.",
+    "signature": "v1 butunlugu app kod imzasindan MIRAS (§2.6); ayri kriptografik katalog imzasi Faz-2 — var gibi anlatilmayacak."
+  }
+}

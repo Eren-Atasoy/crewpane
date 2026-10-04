@@ -1,0 +1,277 @@
+{
+  "catalogVersion": "0.6.0",
+  "generatedAt": "2026-09-15",
+  "skills": [
+    {
+      "name": "adversarial-ux-test",
+      "description": "Roleplay a hostile, impatient user to find where a flow breaks, then triage what broke. Use on a UI before it ships (\"kullanici bunu nasil kirar\", \"UX zayif noktalari\", \"dusman kullanici testi\"). Do NOT use for API-only changes with no human surface.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "f16bb17591618e627a88c44abe143986b45f03ca5fcfc5def638ee47fd803960",
+      "sizeBytes": 9586,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "architecture-diagram",
+      "description": "Dark-themed architecture and infrastructure diagrams as one self-contained HTML file with inline SVG. Use when a system, cloud topology or deployment needs a picture (\"mimari diyagram ciz\", \"sistem semasi\", \"altyapi gorseli\", \"rapora gorsel koy\"). Do NOT use for scientific, physical or hand-drawn styles.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "5c9c7823e4c5e44f2ed81ae177d7b315dfe57a72453f70b449e1f322e6285095",
+      "sizeBytes": 6716,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "code-wiki",
+      "description": "Generate a wiki for a codebase — overview, architecture, per-module deep-dives, Mermaid class and sequence diagrams, every claim traced to real source. Use on an unfamiliar or undocumented repo (\"bu repo ne yapiyor\", \"mimari dokumani cikar\", \"wiki uret\"). Do NOT use for a single-file question; read the file and answer inline.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "29a90b761ab783b9081c70eff59f178cbd627c22f73d7263a9cda7e70750a1b0",
+      "sizeBytes": 15087,
+      "requires": [],
+      "riskNotes": "Gövde 12KB uyarı sınırının üstünde (body-large) — tetiklendiğinde bağlam maliyeti yüksek."
+    },
+    {
+      "name": "docker-management",
+      "description": "Docker operations — containers, images, volumes, networks, Compose, disk cleanup, behind a confirmation gate for anything destructive. Use for local stack work (\"container ayaga kaldir\", \"docker loglari\", \"disk doldu\", \"compose ile calistir\"). Do NOT prune or remove volumes without an explicit human yes.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "05cf3a5f9029cbdec1722bcdc1fae494b260011e31523b40f8626e1b0ad10a15",
+      "sizeBytes": 12593,
+      "requires": [],
+      "riskNotes": "Yikici komutlar icerir (system prune -a --volumes, compose down -v, volume rm). Gövdeye insan-onayi kapisi EKLENDI; pane skip-permissions ile kostugu icin bu kapi tek koruma."
+    },
+    {
+      "name": "document-to-action-items",
+      "description": "Turn a document into cited action items — obligations, owners, deadlines, each carrying a quote from the source. Use for contracts, specs, meeting notes and long threads (\"bu dokumandan gorev cikar\", \"kimin sorumlulugu\", \"son tarihleri listele\"). Do NOT use when the document is already a task list.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "41d67346f64595ba33e789f285d620c2eade0de5c8d4a27b3faca5b0e6abf656",
+      "sizeBytes": 4629,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "dogfood",
+      "description": "Exploratory QA of a running app — use it like a real user, hunt bugs, capture evidence, file a triaged report. Use before shipping a UI change (\"gercek tiklama testi\", \"uygulamayi kendin dene\", \"QA yap\", \"bug avla\"). Do NOT use as a substitute for unit tests, or for a backend change with no human surface.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "aa305d4fd999f2c77ef5de9b27a0a0686940f0f7c6e870645f837b065677d6f8",
+      "sizeBytes": 7312,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "humanizer",
+      "description": "Rewrite AI-sounding text so it reads like a person wrote it, without changing what it says. Use before sending Discord replies, release notes, site copy, announcements and report summaries in Turkish or English (\"insanlastir\", \"AI kokusunu al\", \"dogal yaz\", \"yapay zeka gibi durmasin\", \"humanize\", \"de-slop\"). Do NOT use on evidence lines, command output, code, quoted customer text, prices or legal wording.",
+      "license": "MIT",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/crewpane/crewpane",
+        "upstreamCommit": "9862685",
+        "fetchedAt": "2026-09-07"
+      },
+      "sha256": "2eacb6ab0cc1b4fdc4f5b36d0cbf7d502871a948426b9359348857d576126cbc",
+      "sizeBytes": 17867,
+      "requires": [],
+      "riskNotes": "Türetme (MIT): blader/humanizer 9862685f + Hermes portu e818025 — telif satırları frontmatter ve docs/THIRD-PARTY-SKILLS.md'de. Gövde 12KB uyarı sınırının üstünde (body-large). Skill METİN düzenler; kanıt/komut/log bölümlerinde KULLANILMAZ."
+    },
+    {
+      "name": "one-three-one-rule",
+      "description": "1-3-1 decision briefs — state the problem, give exactly three real options with trade-offs, recommend one. Use when a choice has to go to a human (\"karar lazim\", \"secenekleri sun\", \"hangisini yapalim\", \"kisa tut, karar + sonuc\") or at an architecture or tooling fork. Do NOT use when there is only one viable path; just say so.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "de30154cd201d7d1b9b8c1b6b73a437b9f7ec1344fb884f9f6335637a5684fac",
+      "sizeBytes": 5323,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "ponytail",
+      "description": "Az-kod disiplini — calisan en tembel cozumu zorlar. Once \"bu is hic gerekli mi\", sonra \"bu depoda zaten var mi\" (reuse), sonra stdlib, platformun kendi ozelligi, kurulu bagimlilik, tek satir; ancak o zaman yeni kod. Kod yazarken, eklerken, refactor ederken, kutuphane secerken kullan (\"ponytail\", \"tembel mod\", \"en basit cozum\", \"az kod\", \"yagni\", \"asiri muhendislik\", \"sisirme\", \"bagimlilik ekleme\"). Kodla ilgisi olmayan istekte (duz metin, ceviri, ozet) KULLANMA. Seviye lite/full/ultra, varsayilan full. Bilerek birakilan kisayollarin defterini de bu skill tutar (\"ponytail borc\", \"ne erteledik\", \"kisayollari listele\").",
+      "license": "MIT",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/DietrichGebert/ponytail",
+        "upstreamCommit": "e3ba2aa",
+        "fetchedAt": "2026-09-15"
+      },
+      "sha256": "c3be37370a7aa7e57d3eb10af19eff5e1a1787af00cbc3f77fd02277fc95fbed",
+      "sizeBytes": 10087,
+      "defaultEnabled": false,
+      "suggestedRoles": [
+        "backend",
+        "frontend",
+        "storebuilder-frontend",
+        "code-automation",
+        "tools",
+        "rnd"
+      ],
+      "requires": [],
+      "riskNotes": "Uyarlama (MIT): DietrichGebert/ponytail e3ba2aa — telif satiri frontmatter ve docs/THIRD-PARTY-SKILLS.md'de. YALNIZ METIN: ust kaynagin kanca/betik/MCP/eklenti parcalari ALINMADI (SessionStart kancasi ~/.claude/settings.json'a statusLine komutu yazdirmaya yonlendiriyordu). Kalici kip dosyasi/ortam degiskeni YOK. Skill kodu SADELESTIRIR; kapilari, dogrulamayi ve kanit uretimini sadelestirmemesi icin govdeye dokunulmazlar listesi eklendi."
+    },
+    {
+      "name": "ponytail-review",
+      "description": "Yalnizca asiri muhendislik avlayan inceleme — neyin SILINEBILECEGINI bulur. Yeniden yazilmis stdlib, gereksiz bagimlilik, tek uygulamasi olan soyutlama, kimsenin kullanmadigi esneklik. Bulgu basina tek satir (yer, ne kesilecek, yerine ne gelecek) ve sonunda net kazanc. Kullanici \"asiri muhendislik mi\", \"neyi silebiliriz\", \"sadelestirme incelemesi\", \"bloat bul\", \"depoyu tara\" derse ya da ponytail-review istenirse kullan. Dogruluk hatasi, guvenlik acigi ve performans bu incelemenin KAPSAMI DISIDIR — onlar normal incelemeye gider.",
+      "license": "MIT",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/DietrichGebert/ponytail",
+        "upstreamCommit": "e3ba2aa",
+        "fetchedAt": "2026-09-15"
+      },
+      "sha256": "223c444dc9a5a2daa5553ba0646791c63e27e638019696c4b1a2d1cec643d9f8",
+      "sizeBytes": 5539,
+      "defaultEnabled": false,
+      "suggestedRoles": [
+        "code-review",
+        "qa"
+      ],
+      "requires": [],
+      "riskNotes": "Uyarlama (MIT): DietrichGebert/ponytail e3ba2aa. Upstream ponytail-audit ile birlestirildi (satirlarin %38i birebir ayniydi). Kapsam yalniz asiri muhendislik; dogruluk/guvenlik/performans KAPSAM DISI. Depo-geneli tarama pahali — govdede kapsam daraltma ve dizin dislama kurali var."
+    },
+    {
+      "name": "requesting-code-review",
+      "description": "Pre-commit verification — static security scan, baseline-aware quality gates, an independent review pass, and a bounded fix loop. Use before \"commit\", \"push\", \"ship\", \"bitti\", \"review et\", \"commit oncesi kontrol\", or after any change touching 2+ files. Do NOT use for documentation-only or pure config edits.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "4754b7792a78407f1e0582a8b465e9840f29597ed1ea0678677bcd9db0e5f7fd",
+      "sizeBytes": 11559,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "simple-english",
+      "description": "Rewrite English text into ASD-STE100 Simplified Technical English — short sentences, approved words, one idea per sentence. Use for docs, UI copy, error messages and runbooks read by non-native speakers (\"sade ingilizce yaz\", \"dokumani basitlestir\", \"hata mesajini netlestir\"). Do NOT use for Turkish copy or for marketing voice.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "b85728a3a3c83c0b1b053fc20b314a27c0e3b84e5b07f9ce02645f5e4eeac733",
+      "sizeBytes": 22152,
+      "requires": [],
+      "riskNotes": "Gövde 12KB uyarı sınırının üstünde (body-large)."
+    },
+    {
+      "name": "social-media-content-calendar",
+      "description": "Plan a multi-platform social campaign — brief, content pillars, per-platform posts, a dated calendar. Use for a launch or a recurring content push (\"icerik takvimi\", \"sosyal medya plani\", \"lansman postlari\"). Do NOT use for a single one-off post.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "7dbdf6294fa0257a9d26df68e9406edf1bb47b61781a5e91718ab5f610d7d8d5",
+      "sizeBytes": 4609,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "spike",
+      "description": "Throwaway experiment before committing to a build — timebox it, answer one question, then delete the code. Use when an approach is unproven (\"once deneyelim\", \"spike yap\", \"bu kutuphane ise yarar mi\", \"prototip cikar\") and the answer changes the design. Do NOT use for work whose output must ship; that is a normal task with tests.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "ccbef9b01c5da08492414e3cfca2213c6374bbdce6086e3d100eec3fb8bf908a",
+      "sizeBytes": 9686,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "systematic-debugging",
+      "description": "Four-phase root cause debugging — understand a bug before fixing it. Use when a defect must be root-caused rather than patched (\"bu bug neden oluyor\", \"kok nedeni bul\", \"hata ayikla\", \"tahminle duzeltme yok\"), when a test fails for an unclear reason, or when a fix did not hold. Do NOT use for a known one-line typo or a purely cosmetic change.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "b7e7f3ee21c5316f16b79b21e5c771ed56f8589226a9be3322d8a16cb6ee94b3",
+      "sizeBytes": 15504,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "test-driven-development",
+      "description": "TDD discipline — RED-GREEN-REFACTOR, the failing test before the code. Use when writing new behaviour or fixing a bug that needs a regression test (\"once test yaz\", \"TDD ile yap\", \"bunun testi var mi\", \"regresyon testi ekle\"). Also the rule that forbids loosening a test to make it pass. Do NOT use for exploratory spikes that will be thrown away.",
+      "license": "MIT",
+      "source": {
+        "kind": "hermes-hub",
+        "url": "https://github.com/NousResearch/hermes-agent",
+        "upstreamCommit": "e818025",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "fa996e19f38fc785f84ccc7547d973f44a957b145ac98228caa91bd6d4602c50",
+      "sizeBytes": 12133,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "video-arastir",
+      "description": "YouTube videosunu DUSUK-TOKEN arastir — urun CLI tek Gemini cagrisi yapar, ajana yalniz ozet + zaman damgalari + maliyet satiri doner (~300 token). Kullan — \"su videoyu arastir\", \"rakip videosunu ozetle\", \"YouTube videosundan ne ogrenebiliriz\", \"bu egitim videosunda hangi API/kod kullanilmis\". KULLANMA — YouTube disi kaynak (Vimeo/Loom/mp4 dosyasi) v1 kapsami disinda; videoyu ELLE indirme, kare cikarma, transcript yapistirma.",
+      "license": "LicenseRef-CrewPane-Proprietary",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/crewpane/crewpane",
+        "upstreamCommit": "7e69c1ac",
+        "fetchedAt": "2026-08-18"
+      },
+      "sha256": "c0cab25b26405c16fdc54d10f0a8b09b880d8b4945f82c26d8d1ee8d938d1758",
+      "sizeBytes": 3816,
+      "requires": [
+        "gemini-key"
+      ],
+      "riskNotes": ""
+    }
+  ]
+}

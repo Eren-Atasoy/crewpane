@@ -1,0 +1,9 @@
+# Normalize line endings in the repo (fixes the "LF will be replaced by CRLF" noise).
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.node binary
+*.zip binary

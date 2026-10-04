@@ -1,0 +1,22 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/api/focus-pane/route": "/api/focus-pane",
+  "/api/reports/[filename]/route": "/api/reports/[filename]",
+  "/api/reports/route": "/api/reports",
+  "/demo/office/page": "/demo/office",
+  "/design/page": "/design",
+  "/favicon.ico/route": "/favicon.ico",
+  "/hand-detect/page": "/hand-detect",
+  "/hand-overlay/page": "/hand-overlay",
+  "/jarvis-widget/page": "/jarvis-widget",
+  "/msgbox-test/page": "/msgbox-test",
+  "/notif-test/page": "/notif-test",
+  "/page": "/",
+  "/popout/page": "/popout",
+  "/reports/page": "/reports",
+  "/rgcap-test/page": "/rgcap-test",
+  "/setup/page": "/setup",
+  "/workspace/page": "/workspace",
+  "/workspace/uioverlay-test/page": "/workspace/uioverlay-test"
+}

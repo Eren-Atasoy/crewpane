@@ -1,0 +1,57 @@
+{
+  "_why": "ADP-909 — Whisper'ın KONUŞMA-DIŞI sese ürettiği bilinen kalıplar. Model bu cümleleri sesten değil, eğitim külliyatındaki YouTube altyazılarından üretir; Türkçede tam olarak bunlar çıkar. VERİ DOSYASIDIR: yeni bir kalıp görülünce KOD DEĞİŞMEZ, buraya bir satır eklenir.",
+  "_howMatched": "Eşleşme TAM METİN üzerindedir, ALT DİZE DEĞİL. Metin normalize edilir (Türkçe-duyarlı küçük harf, noktalama atılır, boşluk sadeleşir) ve arka arkaya tekrar eden aynı cümleler teke indirilir; geriye kalan TAMAMI bir kalıba eşitse metin reddedilir. Bu yüzden kullanıcının GERÇEKTEN söylediği 'abone sayısını kontrol et' gibi cümleler ETKİLENMEZ — içinde kalıp geçse bile tamamı kalıp değildir.",
+  "_evidence": "docs/agent-results/ADP-909-inferno.md — her kalıp ÜRETİM yolunda (whisper-server large-v3-turbo + base, gerçek oda tonu / gürültü) gözlemlendi ya da bilinen Whisper artefaktı olarak eklendi.",
+  "version": 1,
+  "patterns": [
+    {
+      "text": "abone olmayı unutmayın",
+      "note": "Eren'in ADP-909 şikâyetinde bildirdiği cümle. YouTube outro kalıbı.",
+      "observed": "reported"
+    },
+    { "text": "abone olmayı unutma", "observed": "reported" },
+    { "text": "kanala abone olmayı unutmayın", "observed": "reported" },
+    { "text": "beğenmeyi ve abone olmayı unutmayın", "observed": "reported" },
+    {
+      "text": "izlediginiz icin tesekkur ederim",
+      "note": "ADP-909'da final modelde 5 ayrı klipte ÖLÇÜLDÜ (oda tonu ×6..×80, pembe/beyaz gürültü).",
+      "observed": "measured"
+    },
+    { "text": "izlediginiz icin tesekkurler", "observed": "reported" },
+    { "text": "izlediginiz icin tesekkur ederiz", "observed": "reported" },
+    {
+      "text": "bu videolara da yorumlara da begenmeyi unutmayin",
+      "note": "ADP-909'da taslak modelde ÖLÇÜLDÜ (kahverengi gürültü 8 sn). Şikâyetin birebir sınıfı.",
+      "observed": "measured"
+    },
+    {
+      "text": "bu videoyu begenmeyi izlemeye calisin",
+      "note": "ADP-909'da taslak modelde ÖLÇÜLDÜ (pembe gürültü, fan tonu).",
+      "observed": "measured"
+    },
+    { "text": "bu videoyu begenmeyi unutmayin", "observed": "reported" },
+    { "text": "begenmeyi unutmayin", "observed": "reported" },
+    {
+      "text": "altyazi mk",
+      "note": "ADP-312'den beri bilinen; ADP-909'da dijital sessizlik + gerçek oda tonunda yeniden ÖLÇÜLDÜ. Noktalama atıldığı için 'Altyazı M.K.' buraya düşer.",
+      "observed": "measured"
+    },
+    { "text": "altyazi m k turkiye", "observed": "reported" },
+    { "text": "altyazi ve ceviri mk", "observed": "reported" },
+    {
+      "text": "bu videonunize iyi bakin",
+      "note": "ADP-909'da taslak modelde ÖLÇÜLDÜ (kahverengi gürültü).",
+      "observed": "measured"
+    },
+    {
+      "text": "yine gelmeye baslayin",
+      "note": "ADP-909'da taslak modelde ÖLÇÜLDÜ (dijital sessizlik + oda tonu).",
+      "observed": "measured"
+    },
+    { "text": "yine gelin", "observed": "measured" },
+    { "text": "bir sonraki videoda gorusmek uzere", "observed": "reported" },
+    { "text": "kanalima hos geldiniz", "observed": "reported" },
+    { "text": "amara org tarafindan olusturulmustur", "observed": "reported" },
+    { "text": "turkce altyazi", "observed": "reported" }
+  ]
+}

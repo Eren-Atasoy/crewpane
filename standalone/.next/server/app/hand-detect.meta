@@ -1,0 +1,15 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/hand-detect/layout,_N_T_/hand-detect/page,_N_T_/hand-detect"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/hand-detect/__PAGE__",
+    "/hand-detect",
+    "/_index",
+    "/_head"
+  ]
+}

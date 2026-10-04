@@ -1,0 +1,15 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/hand-overlay/layout,_N_T_/hand-overlay/page,_N_T_/hand-overlay"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/hand-overlay/__PAGE__",
+    "/hand-overlay",
+    "/_index",
+    "/_head"
+  ]
+}

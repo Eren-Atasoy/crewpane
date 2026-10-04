@@ -1,0 +1,168 @@
+{
+  "version": 3,
+  "pages404": true,
+  "appType": "app",
+  "caseSensitive": false,
+  "basePath": "",
+  "redirects": [
+    {
+      "source": "/:path+/",
+      "destination": "/:path+",
+      "internal": true,
+      "priority": true,
+      "statusCode": 308,
+      "regex": "^(?:/((?:[^/]+?)(?:/(?:[^/]+?))*))/$"
+    }
+  ],
+  "headers": [],
+  "onMatchHeaders": [],
+  "rewrites": {
+    "beforeFiles": [],
+    "afterFiles": [],
+    "fallback": []
+  },
+  "dynamicRoutes": [
+    {
+      "page": "/api/reports/[filename]",
+      "regex": "^/api/reports/([^/]+?)(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)(?:/)?$"
+    }
+  ],
+  "staticRoutes": [
+    {
+      "page": "/",
+      "regex": "^/(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/(?:/)?$"
+    },
+    {
+      "page": "/_global-error",
+      "regex": "^/_global\\-error(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_global\\-error(?:/)?$"
+    },
+    {
+      "page": "/_not-found",
+      "regex": "^/_not\\-found(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/_not\\-found(?:/)?$"
+    },
+    {
+      "page": "/api/focus-pane",
+      "regex": "^/api/focus\\-pane(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/focus\\-pane(?:/)?$"
+    },
+    {
+      "page": "/api/reports",
+      "regex": "^/api/reports(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/reports(?:/)?$"
+    },
+    {
+      "page": "/demo/office",
+      "regex": "^/demo/office(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/demo/office(?:/)?$"
+    },
+    {
+      "page": "/design",
+      "regex": "^/design(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/design(?:/)?$"
+    },
+    {
+      "page": "/favicon.ico",
+      "regex": "^/favicon\\.ico(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/favicon\\.ico(?:/)?$"
+    },
+    {
+      "page": "/hand-detect",
+      "regex": "^/hand\\-detect(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/hand\\-detect(?:/)?$"
+    },
+    {
+      "page": "/hand-overlay",
+      "regex": "^/hand\\-overlay(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/hand\\-overlay(?:/)?$"
+    },
+    {
+      "page": "/jarvis-widget",
+      "regex": "^/jarvis\\-widget(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/jarvis\\-widget(?:/)?$"
+    },
+    {
+      "page": "/msgbox-test",
+      "regex": "^/msgbox\\-test(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/msgbox\\-test(?:/)?$"
+    },
+    {
+      "page": "/notif-test",
+      "regex": "^/notif\\-test(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/notif\\-test(?:/)?$"
+    },
+    {
+      "page": "/popout",
+      "regex": "^/popout(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/popout(?:/)?$"
+    },
+    {
+      "page": "/reports",
+      "regex": "^/reports(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/reports(?:/)?$"
+    },
+    {
+      "page": "/rgcap-test",
+      "regex": "^/rgcap\\-test(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/rgcap\\-test(?:/)?$"
+    },
+    {
+      "page": "/setup",
+      "regex": "^/setup(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/setup(?:/)?$"
+    },
+    {
+      "page": "/workspace",
+      "regex": "^/workspace(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/workspace(?:/)?$"
+    },
+    {
+      "page": "/workspace/uioverlay-test",
+      "regex": "^/workspace/uioverlay\\-test(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/workspace/uioverlay\\-test(?:/)?$"
+    }
+  ],
+  "dataRoutes": [],
+  "rsc": {
+    "header": "rsc",
+    "varyHeader": "rsc, next-router-state-tree, next-router-prefetch, next-router-segment-prefetch",
+    "prefetchHeader": "next-router-prefetch",
+    "didPostponeHeader": "x-nextjs-postponed",
+    "contentTypeHeader": "text/x-component",
+    "suffix": ".rsc",
+    "prefetchSegmentHeader": "next-router-segment-prefetch",
+    "prefetchSegmentSuffix": ".segment.rsc",
+    "prefetchSegmentDirSuffix": ".segments",
+    "clientParamParsing": false,
+    "dynamicRSCPrerender": false
+  },
+  "rewriteHeaders": {
+    "pathHeader": "x-nextjs-rewritten-path",
+    "queryHeader": "x-nextjs-rewritten-query"
+  }
+}

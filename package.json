@@ -1,0 +1,52 @@
+{
+  "name": "crewpane",
+  "productName": "CrewPane",
+  "version": "0.2.48",
+  "private": true,
+  "description": "CrewPane Electron shell — embeds the autonomous agent workspace and terminal runtime.",
+  "main": "main.js",
+  "desktopName": "CrewPane.desktop",
+  "homepage": "https://crewpane.dev",
+  "scripts": {
+    "start": "cross-env CREWPANE_MODE=prod CREWPANE_INSTANCE=dev CREWPANE_ALLOW_LOCAL_APP_DB=1 CREWPANE_ALLOW_MIXED_TARGETS=1 electron .",
+    "start:win": "start.bat",
+    "test": "node --test tests/architecture.test.cjs tests/units.test.cjs tests/smoke.test.cjs tests/characterization.test.cjs",
+    "test:arch": "node --test tests/architecture.test.cjs",
+    "test:units": "node --test tests/units.test.cjs",
+    "test:smoke": "node --test tests/smoke.test.cjs",
+    "test:char": "node --test tests/characterization.test.cjs",
+    "snapshots:update": "cross-env UPDATE_SNAPSHOTS=1 node --test tests/characterization.test.cjs",
+    "lint": "eslint main.js preload.js src sync telemetry platform packages tests scripts i18n",
+    "lint:fix": "eslint --fix main.js preload.js src sync telemetry platform packages tests scripts i18n",
+    "format:check": "prettier --check tests scripts",
+    "ipc:inventory": "node tests/helpers/ipcInventory.cjs",
+    "clean:tasks": "node scripts/clean_tasks.cjs",
+    "db:push:cloud": "node scripts/cloud-db-push.cjs --lockdown"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "6.0.0",
+    "archiver": "^7.0.1",
+    "electron-updater": "^6.8.9",
+    "koffi": "3.1.6",
+    "node-pty": "1.1.0"
+  },
+  "gitCommit": "cdc779328",
+  "crewpaneTelemetry": {
+    "CREWPANE_SENTRY_DSN_PROD": "",
+    "CREWPANE_POSTHOG_KEY_PROD": "",
+    "CREWPANE_POSTHOG_HOST": "https://eu.i.posthog.com"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.39.5",
+    "cross-env": "10.1.0",
+    "dependency-cruiser": "18.5.0",
+    "electron": "39.8.5",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.5",
+    "globals": "17.13.0",
+    "prettier": "3.9.9",
+    "zod": "3.25.76"
+  }
+}

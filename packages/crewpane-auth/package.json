@@ -1,0 +1,11 @@
+{
+  "name": "@crewpane/auth",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CrewPane ID masaüstü auth kütüphanesi (ADR-027): PKCE+state giriş akışı (signIn/handleCallback/getSession/refresh/signOut — ADP-382/G2), safeStorage token deposu ve offline lisans-jetonu doğrulama (ADP-383/G3). Giriş yalnız sistem tarayıcısında; gömülü webview YASAK (no-embedded-webview.test.cjs zorlar). AgentShot/AgentVoice/CrewPane bu paketi tüketir; kopya-fork YASAK.",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "scripts": {
+    "test": "node --test *.test.cjs"
+  }
+}

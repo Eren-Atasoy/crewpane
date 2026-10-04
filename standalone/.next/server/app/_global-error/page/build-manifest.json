@@ -1,0 +1,18 @@
+{
+  "devFiles": [],
+  "ampDevFiles": [],
+  "polyfillFiles": [
+    "static/chunks/03~yq9q893hmn.js"
+  ],
+  "lowPriorityFiles": [],
+  "rootMainFiles": [
+    "static/chunks/0b15q7buow.zo.js",
+    "static/chunks/0bynig0y079a6.js",
+    "static/chunks/0yh~nwe6641bi.js",
+    "static/chunks/0qvbm.0fmjqri.js",
+    "static/chunks/0g6h6yvof17_7.js",
+    "static/chunks/turbopack-0ez7arizef0k3.js"
+  ],
+  "pages": {},
+  "ampFirstPages": []
+}

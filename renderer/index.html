@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self';" />
+    <title>CrewPane — Terminal Spike (AD-001)</title>
+    <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #0d0f17; }
+      #title {
+        font: 12px ui-monospace, Menlo, monospace;
+        color: #7c8cff; padding: 6px 10px; background: #11141f;
+        border-bottom: 1px solid #222639;
+      }
+      #terminal { position: absolute; top: 28px; left: 0; right: 0; bottom: 0; padding: 6px; }
+    </style>
+  </head>
+  <body>
+    <div id="title">CrewPane · AD-001 spike · node-pty ⇄ xterm.js (contextIsolation + sandbox)</div>
+    <div id="terminal"></div>
+    <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+    <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

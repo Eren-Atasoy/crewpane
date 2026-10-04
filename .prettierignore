@@ -1,0 +1,9 @@
+node_modules/
+standalone/
+mobile-web/
+app.asar.unpacked/
+logs/
+scratch/
+demo-site/
+tests/__snapshots__/
+*.min.js
