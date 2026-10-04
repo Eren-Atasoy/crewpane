@@ -24,165 +24,34 @@ const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
 const net = require('node:net');
-// NET-01 — undici'nin happy-eyeballs katmanı `autoSelectFamilyAttemptTimeout`
-// VARSAYILAN 250ms: yavaş ağda (ör. canlı yayın upload'ı bant genişliğini
-// yerken) her connect denemesi 250ms'de kesiliyor → tüm IPv4'ler ETIMEDOUT,
-// IPv6'lar EHOSTUNREACH → "fetch failed" (Ayarlar → Anlamaya göre arama'daki
-// model indirme onay kartı dahil, main-process'teki TÜM fetch kullanıcıları
-// etkileniyordu). Ölçüm kanıtı (Optimus repro'su): huggingface.co HEAD ve
-// registry.npmjs.org aynı istekte 250ms'de başarısız oldu, 5000ms'de anında
-// 200 döndü. Burada 2500ms: happy-eyeballs faydası korunur, yavaş ağda gerçek
-// bağlantıya yeter. En erken noktada (ilk fetch'lerden ÖNCE) set edilmeli.
-net.setDefaultAutoSelectFamilyAttemptTimeout(2500);
 const http = require('node:http');
 const crypto = require('node:crypto'); // ADP-293 — mobil query requestId'leri
 const { spawn, execFile } = require('node:child_process');
 const pty = require('node-pty');
-// ADP-206 — instance isolation. PIN the resolved instance id (PROD=packaged,
-// DEV=source; CREWPANE_INSTANCE override wins) into the env BEFORE any local module
-// that derives a config path. Every child this process spawns — agent panes, the
-// embedded Next server, the MCP servers — inherits CREWPANE_INSTANCE, so a DEV
-// launch lives entirely in ~/.crewpane-dev + its own tmux session and NEVER reads,
-// restores, or tears down PROD's running panes. Must precede the requires below so
-// load-time consts (e.g. delegationBridge's BRIDGE_DIR) resolve under the right id.
+
 const instancePaths = require('./src/config/instancePaths.cjs');
 const supabaseTarget = require('./src/config/supabaseTarget.cjs'); // ADP-305 — test instance → e2e DB (kablo: encode/decodeArgv)
 const backendTarget = require('./src/config/backendTarget.cjs'); // ADP-621 — kanal bazlı uygulama DB hedefi
-// CFG-01 — "hangi backend?" sorusunun TEK boğazı; main ve ayrı-süreç MCP'ler AYNI kodu koşar.
 const publicBackendEnv = require('./src/config/publicBackendEnv.cjs');
 const appDbIdentity = require('./src/config/appDbIdentity.cjs'); // ADP-622 — app DB'ye hangi KİMLİKLE bağlanılır
 const mixedTargetGuard = require('./src/config/mixedTargetGuard.cjs'); // ENV-01 — kimlik ↔ app DB karışımının reddi
 const crewpaneEnv = require('./src/config/crewpaneEnv.cjs'); // ADP-244 Faz 3 — env ikizleri (tek türetme noktası)
-// ADP-244 Faz 3 — PIN NOKTASI: instance ÇÖZÜMÜ tek kaynaktan yapılır (instancePaths →
-// CREWPANE_INSTANCE), ama pin İKİ adla da yazılır ki Faz 4'te (config dizini taşınırken)
-// okuyucu tarafı saf bir ad-swap'i olsun. İkiz-OKUMA hâlâ YASAK (crewpaneEnv.readEnv
-// bu base'de atar): iki ad ayrışırsa süreç PROD dizinini TEST sanabilir.
-// ENV-08 — argv: tek-örnek kilidinin "Ayrı test profiliyle aç" yolu app.relaunch
-// ile `--instance=test` taşır; env oraya taşınamaz, argv taşınır (argv > env).
-crewpaneEnv.dualWrite(process.env, 'INSTANCE', instancePaths.resolveInstanceId({ isPackaged: app.isPackaged, argv: process.argv }));
-// ENV-01 (ENV-R1 §5.2) — TEK ANAHTARLI HAT SEÇİMİ: `CREWPANE_ENV=local|dev|prod`.
-//
-// ⚠️ SIRA KRİTİK, iki yönlü:
-//   • INSTANCE pin'inden SONRA — profil `instancePaths`'in çözümüne dokunmaz ama
-//     müşteri kilidi (`isCustomerBuild`) baked damgayı okur.
-//   • `publicSupabaseEnv()`in İLK ÇAĞRISINDAN ÖNCE — o fonksiyonun `_publicSupabaseEnvCache`i
-//     TEK ATIŞtır (main.js:446). Profil geç uygulanırsa hedef zaten önbelleğe alınmış olur
-//     ve bu satır SESSİZCE ETKİSİZ kalır (ENV-R1 risk 2).
-//
-// Profil YENİ BİR ÇÖZÜMLEYİCİ DEĞİL: yalnız `process.env`e 6 PUBLIC anahtar yazar,
-// kararı hâlâ `backendTarget`/`publicBackendEnv`/`crewpaneId` verir. Yazım sayesinde
-// alt süreçler (pane pty'leri, MCP çocukları) da AYNI hattı miras alır.
 const envProfileModule = require('./src/config/envProfile.cjs');
-const ENV_PROFILE = envProfileModule.applyEnvProfile({
-  target: process.env,
-  configDir: path.join(__dirname, '..', 'config'),
-  join: path.join,
-  readFile: (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } },
-  // Müşteri kopyasında hat env ile OYNATILAMAZ. `require` burada bedava (cache'li).
-  customerBuild: require('./src/config/buildChannel.cjs').isCustomerBuild(),
-  // ENV-06 (ENV-04 §F4) — PAKET KAPISI. `configDir` paketli kopyada asar içine bakar
-  // (`Contents/Resources/config`) ve o klasör pakete BİLEREK girmez → anahtar verilmişse
-  // aşağıdaki fail-closed dalı uygulamayı HİÇ AÇTIRMIYORDU. Paketli koşuda hat baked
-  // damgadan gelir; profil bir kaynak-ağacı aracıdır, burada yok sayılır (iz loglanır).
-  packaged: app.isPackaged,
-});
-if (ENV_PROFILE.errors.length) {
-  // FAIL-FAST: tanınmayan değer / beyaz-liste dışı anahtar / ayrışan ikiz ad. Hiçbiri
-  // "sessizce bugünkü davranışa dön" ile geçiştirilemez — bugünkü davranış PROD kimlik
-  // sunucusuna bağlanmaktır (ENV-R1 §0). LOG_PATH henüz açılmadı → stderr + diyalog.
-  const detail = ENV_PROFILE.errors.join('\n\n');
-  try { process.stderr.write(`[env] ⛔ profil hatası:\n${detail}\n`); } catch { /* best-effort */ }
-  try { dialog.showErrorBox('CrewPane — ortam profili hatalı', detail); } catch { /* headless */ }
-  app.exit(1);
-}
-// ADP-832 (ADR-W5) + ENV-08 — TEK-ÖRNEK KİLİDİ, HER PLATFORMDA. Burası mümkün olan
-// EN ERKEN nokta: instance çözümü yukarıda pinlendi (yani veri kökü artık belli) ama
-// henüz hiçbir modül o köke YAZMADI (bridge.json handshake'i, live-panes defteri,
-// loglar). İkinci kopyanın hasarı tam olarak o yazımlarla başlıyor → kapı onlardan önce.
-//
-// ENV-08 (28.08 olayı) — macOS/Linux da kapsamda: DMG'den/AppTranslocation'dan açılan
-// İKİNCİ prod kopya macOS'ta hiçbir kapıya takılmadan ~/.crewpane'i paylaşıp
-// bridge.json'ı eziyordu ("yalnız win32" kuralının gerekçesi kopya bundle'lar için
-// yanlıştı — singleInstanceLock.cjs başlığı). Paralel e2e düzeni bozulmaz: her koşu
-// mkdtemp CREWPANE_HOME alır → ayrı veri kökü = ayrı kilit kapsamı.
-// Kilidin neden Electron'un DAHİLİ `requestSingleInstanceLock`'u OLMADIĞI ve neden
-// kapsamın veri kökü olduğu: singleInstanceLock.cjs başlığı (ölçüm ADP-832 §2.1).
-//
-// ENV-08-FIX-01 — KARAR BURADA, YÜZEY READY'DEN SONRA. Çağrı bu erken noktada
-// KALIYOR (ikinci kopya veri köküne tek bayt yazamadan reddedilsin) ama modül,
-// düğmeli diyaloğu ve ona bağlı çıkış/devralmayı `app.whenReady()` SONRASINA
-// erteler: ready ÖNCESİ macOS'ta kutu hiç çizilmiyordu ve kopya görünmez asılı
-// kalıyordu (REL-0243-QA §3 F-A). Ertelenen kopya bu satırdan sonra boot'una
-// devam eder — sakıncası yok: veri köküne yazan her şey aşağıdaki
-// `app.whenReady()` bloğunun İÇİNDEDİR (`initLog()` dahil) ve kilidin kancası
-// EN ERKEN kaydedilen whenReady olduğu için hepsinden ÖNCE koşar.
 const singleInstanceLock = require('./src/core/singleInstanceLock.cjs');
-// ADP-833 (ADR-W6) — Windows deep-link taşıyıcısı: argv. Şema öneki burada
-// `appScheme.cjs`ten INLINE okunuyor çünkü `APP_URL_PREFIX` sabiti bu satırdan
-// ÇOK sonra tanımlanıyor (TDZ) ve kilit kapısı mümkün olan en erken noktada
-// çalışmak zorunda. Modül önbelleği sayesinde ikinci `require` bedava.
 const deepLinkArgv = require('./src/services/deepLinkArgv.cjs');
-// ADP-835 (790 K1/K2) — rename'in platform boğazı. Windows'ta Defender/Search
-// hedefi açık tutunca EPERM/EBUSY gelir; retry olmadan log rotasyonu DURUR ve
-// ofis durumu SESSİZCE kaydedilmez. darwin'de davranış bit-bit aynı (tek atış).
 const { renameWithRetrySync } = require('./platform/atomicWrite.cjs');
-// ADP-837 (P7, 793 B12) — WINDOWS BİLDİRİM KİMLİĞİ. `app.setAppUserModelId()`
-// yalnız SONRAKİ bildirimleri/pencereleri etkiler → mümkün olan en erken nokta
-// burasıdır (tek-örnek kilidinin hata kutusu bile bu kimlikle çıksın). macOS'ta
-// modül ilk satırda döner: `app` nesnesine dokunulmaz, davranış bit-bit aynı.
-// Neden gerekli ve neden sabit string: electron/platform/appIdentity.cjs başlığı.
-require('./platform/appIdentity.cjs').applyAppUserModelId({
-  app,
-  instanceId: instancePaths.instanceId(),
-  log: (m) => { try { process.stderr.write(`[app-identity] ${m}\n`); } catch { /* best-effort */ } },
-});
-// WIN-DUP-INSTANCE-01 — kilit kapısının erken satırları (log dosyası açılana kadar).
-const singleInstanceEarlyLog = [];
-const singleInstanceGate = singleInstanceLock.enforce({
+const safeStorageIdentity = require('./src/security/safeStorageIdentity.cjs');
+const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
+
+// ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
+const { runBootstrap } = require('./src/main/bootstrap/index.js');
+
+const bootstrapCtx = {
   app,
   dialog,
-  dataRoot: instancePaths.instanceHome(),
-  instanceId: instancePaths.instanceId(),
   argv: process.argv,
   cwd: process.cwd(),
-  // ADP-833 — argv bu öneki taşıyorsa ikinci kopya OS'un teslimat aracıdır:
-  // hata kutusu gösterilmez, yalnız odak isteği bırakılıp sessizce çıkılır.
-  deepLinkPrefix: require('./src/core/appScheme.cjs').appSchemePrefix(),
-  // HATA-03 — kilit diyaloğunun DİLİ. Bu kapı `applyAppLocale()`ten ÇOK önce
-  // koşuyor (kasten: ikinci kopya veri köküne tek bir bayt yazmadan durdurulmalı),
-  // o yüzden kullanıcının SAKLI tercihi burada okunamaz — ayar dosyasına dokunmak
-  // tam da engellemeye çalıştığımız yazma olurdu. Kalan doğru kaynak işletim
-  // sisteminin dili. `app.getLocale()` whenReady öncesi boş dönebilir; ICU her
-  // zaman hazır olduğu için `Intl` sağlam yedektir (ölçüm: tr-TR Windows'ta 'tr-TR').
-  locale: (() => {
-    const i18n = require('./i18n/index.cjs');
-    const pinned = process.env.CREWPANE_SYSTEM_LOCALE;
-    if (typeof pinned === 'string' && pinned.trim()) return i18n.localeFromSystem(pinned.trim());
-    let sys = '';
-    try { sys = app.getLocale() || ''; } catch { /* whenReady öncesi */ }
-    if (!sys) {
-      try { sys = Intl.DateTimeFormat().resolvedOptions().locale || ''; } catch { /* ICU yok */ }
-    }
-    return i18n.localeFromSystem(sys);
-  })(),
-  // logLine() bu satırda henüz TANIMLI DEĞİL (aşağıda) ve log dosyası da açılmadı →
-  // erken kapının sesi stderr'e gider; paketli koşuda Windows'ta `--enable-logging`
-  // ile görünür, kaynaktan koşuda doğrudan terminalde.
-  // WIN-DUP-INSTANCE-01 — satırlar AYRICA TAMPONLANIR ve log dosyası açılınca oraya
-  // basılır (`flushSingleInstanceLog`). FB-1012'de 7 kopyanın kilidi NASIL geçtiği
-  // (devralma mı, fail-open mı, bayat hüküm mü) ölçülemedi: karar yalnız stderr'e
-  // gidiyordu ve müşteri logunda tek satır yoktu. Destek log'u artık kararı taşır.
-  log: (m) => {
-    try { process.stderr.write(`[single-instance] ${m}\n`); } catch { /* best-effort */ }
-    try { singleInstanceEarlyLog.push(m); } catch { /* best-effort */ }
-  },
-  // Sahip tarafı: ikinci kopya odak isteği bırakınca pencereyi öne al. `appWindow`
-  // bu noktada henüz BAĞLANMADI (let, aşağıda) — açılış yarışında istek gelirse
-  // ReferenceError yerine sessiz log istiyoruz, o yüzden try/catch.
-  focusWindow: (record) => {
-    // ADP-833 (ADR-W6) — ÖNCE GİRİŞ DÖNÜŞÜ, sonra pencere. Sıra bilerek böyle:
-    // pencere henüz yoksa (açılış yarışı) bile giriş kodu KAYBOLMAMALI —
-    // `handleAuthUrl` gate hazır değilse onu sıraya alır (pendingAuthUrls).
+  handleFocusWindow: (record) => {
     try {
       consumeArgvDeepLink(record && record.argv, 'focus-request');
     } catch (e) {
@@ -191,12 +60,6 @@ const singleInstanceGate = singleInstanceLock.enforce({
     try {
       let win = appWindow;
       if (!win || win.isDestroyed()) {
-        // WIN-DUP-INSTANCE-01 — PENCERE YOKSA YENİDEN AÇ. Windows'ta X ana pencereyi
-        // kapatıp süreci yaşatıyordu (HATA-14); ikinci kopyada "Kapat"a basan
-        // kullanıcı buraya geliyor ve eskiden HİÇBİR ŞEY olmuyordu → "demek açık
-        // CrewPane yok" diye bir sonraki denemede "Yine de aç"a basıyordu (FB-1012:
-        // 7 kopya). Açılış tamamlandıysa (`appBaseUrl` dolu) pencere yeniden
-        // yaratılır — Dock/`activate` yolunun yaptığının aynısı, tek fonksiyon.
         if (!appBaseUrl) {
           process.stderr.write('[single-instance] odak isteği geldi ama pencere henüz yok (açılış sürüyor)\n');
           return;
@@ -209,114 +72,20 @@ const singleInstanceGate = singleInstanceLock.enforce({
       if (win.isMinimized()) win.restore();
       win.show();
       win.focus();
-      // Windows ön-plan çalma kurallarına takılırsak en azından görev çubuğu yansın.
       try { win.flashFrame(true); } catch { /* best-effort */ }
     } catch (e) {
       try { process.stderr.write(`[single-instance] focus error: ${e.message}\n`); } catch { /* ignore */ }
     }
   },
-});
-// ADP-592 — KEYCHAIN KİMLİĞİ. macOS'ta safeStorage master anahtarı
-// `${app.getName()} Safe Storage` öğesinde yaşar ve öğeyi YARATAN ikili ACL'e
-// yazılır. Bugüne kadar HER kanal aynı adı ('crewpane-shell') kullanıyordu:
-// imzasız dev Electron öğeyi yaratıp ACL'i kendi cdhash'ine çaktı, imzalı ürün
-// app'i ACL'de olmadığı için macOS her açılışta şifre sordu (üstelik safeStorage
-// SENKRON — main thread diyalog yanıtlanana kadar donuyordu). Adı kanala göre
-// ayırınca kaynak/dev/test koşuları ürünün öğesine bir daha DOKUNAMAZ.
-//
-// Ad değişimi Electron'un varsayılan yol köklerini de kaydırır (userData/logs/…) —
-// hiçbir kullanıcı verisi taşınmasın diye kökler adı değiştirmeden ÖNCE okunup
-// hemen sonra aynı değerlere geri sabitlenir. `app.setName` ready'DEN ÖNCE
-// çağrılmalı: Electron keychain servis adını ilk safeStorage kullanımında (lazy)
-// çözer, ondan sonra sabittir.
-const safeStorageIdentity = require('./src/security/safeStorageIdentity.cjs');
-const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
-const SAFE_STORAGE_SCOPE = safeStorageIdentity.safeStorageAppName({
-  isPackaged: app.isPackaged,
-  instanceId: instancePaths.instanceId(),
-});
-{
-  const pinned = [];
-  for (const key of ['userData', 'sessionData', 'logs', 'crashDumps']) {
-    try { pinned.push([key, app.getPath(key)]); } catch { /* bu yol bu platformda yok */ }
-  }
-  app.setName(SAFE_STORAGE_SCOPE);
-  for (const [key, value] of pinned) {
-    try { fs.mkdirSync(value, { recursive: true }); } catch { /* best-effort */ }
-    try { app.setPath(key, value); } catch { /* best-effort — yol zaten doğruysa sorun değil */ }
-  }
-}
-// ADP-699 — TEST instance'ı GERÇEK login keychain'e ASLA inmez (yapısal kapı).
-// Karar KİMLİĞE değil DURUMA bağlı: `instanceId === 'test'` yalnız e2e/otomasyon
-// koşularında doğrudur (prod ve dev kanalları etkilenmez, gerçek anahtarlarını
-// kullanmaya devam eder). İki şeyi birden önler:
-//   (a) her e2e koşusunun login keychain'ine "CrewPane Test Safe Storage" öğesi
-//       yazması (öğe 2026-07-24'te gerçekten yaratılmıştı),
-//   (b) `HOME`'u tmp'ye alan spec'lerde (adp232c/adp694) Security framework hiçbir
-//       keychain bulamayınca macOS'un kullanıcı ekranına "Keychain Not Found —
-//       … Reset To Defaults" diyaloğunu basması (login keychain'i sıfırlama riski).
-// Harness tarafı da aynı switch'i CLI'dan geçirir (e2e/keychainIsolation.cjs); bu
-// katman, o modülü kullanmayı UNUTAN yeni bir spec'i de kapsar. ÖLÇÜLDÜ: switch
-// açıkken safeStorage çalışmaya devam eder (isEncryptionAvailable=true, encrypt/
-// decrypt turu tamam, anahtar süreçler arası sabit) ama keychain öğesi yaratılmaz.
-if (instancePaths.instanceId() === 'test') {
-  try { app.commandLine.appendSwitch('use-mock-keychain'); } catch { /* best-effort */ }
-}
-// ADP-812 — asistanın SESİ kullanıcı tıklamasına bağlı olamaz. Sesli yanıt artık
-// renderer'da <audio> ile çalıyor (afplay süreci ~0.9 s masraflıydı); Chromium'un
-// varsayılan autoplay politikası ise DOM kullanıcı-hareketi ister. Uyandırma
-// sözcüğü, global kısayol (⌘⇧J) ve mobil köprü yollarında böyle bir hareket YOK →
-// politika kapalı bırakılırsa cevap SESSİZCE çalmaz. Bu switch yalnız UYGULAMANIN
-// KENDİ sayfası için geçerlidir (uzak içerik yüklemiyoruz).
-try { app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required'); } catch { /* best-effort */ }
-// WIN-FIX-01 (W4 · main kırıntısı) — ARKA PLAN KISITLAMASINI KAPAT (yalnız win32).
-// Chromium görünür olmayan/arka planda kalan bir webContents'in zamanlayıcılarını
-// ve render'ını kısar. Bizim iç tarayıcımız bir <webview> misafiridir ve sekme
-// değiştirildiğinde ya da pencere odağı kaybettiğinde tam olarak o duruma düşer;
-// Windows'ta bu kısıtlama daha agresif uygulanır ve "sekme açık, adres yüklendi,
-// ama boş beyaz" tablosunu (WIN-R1 §W4) üretebilir.
-//
-// ⚠️ DÜRÜSTÇE: bu bir HAFİFLETMEDİR, ÖLÇÜLMÜŞ bir kök-neden düzeltmesi DEĞİL —
-// gerçek Windows'ta doğrulanması Eren'in test listesinde (WIN-FIX-01 §M4).
-// Riski düşük ve bilinir: arka plan sekmeleri kısılmaz, yani biraz daha CPU
-// harcarlar. `win32` guard'ı bilinçli: macOS davranışı BİT-BİT aynı kalsın
-// (ADP-891/ADP-906'nın dersi tersiydi — geliştirme makinesinde HİÇ KOŞMAYAN dal
-// sevk etmek; burada koşmayan dal macOS'un DEĞİŞMEMESİ demek, istenen bu).
-if (process.platform === 'win32') {
-  try { app.commandLine.appendSwitch('disable-renderer-backgrounding'); } catch { /* best-effort */ }
-  try { app.commandLine.appendSwitch('disable-background-timer-throttling'); } catch { /* best-effort */ }
-}
-// ADP-268 — the SHELL's build commit, resolved once. Packaged: electron-builder
-// bakes `gitCommit` into the app's package.json via extraMetadata (prod/dev/test
-// -builder.cjs — same mechanism as `crewpaneBuild`). From source: ask git
-// directly. Compared against the renderer bundle's inlined commit by the header
-// BuildBadge so a stale standalone (prep not re-run) is visible at a glance.
-//
-// ADP-316 — ALWAYS a string. An all-digit short hash (1953451) baked through the
-// old `-c.extraMetadata.…` CLI path landed as a Number, so the badge's `!==`
-// against the renderer's string commit was true for a build that was in fact
-// identical → amber MISMATCH on a clean build. prod-builder.cjs keeps it a string
-// now; this coercion is the belt to that braces and also rescues apps packaged
-// before the fix.
-const SHELL_COMMIT = (() => {
-  if (app.isPackaged) {
-    try { return String(require('./package.json').gitCommit ?? '').trim() || null; } catch { return null; }
-  }
-  try {
-    return require('node:child_process')
-      .execSync('git rev-parse --short HEAD', { cwd: __dirname, stdio: ['ignore', 'pipe', 'ignore'] })
-      .toString().trim() || null;
-  } catch { return null; }
-})();
-// ADP-272 — if THIS app was launched from inside a Claude Code session (an installer or
-// `open` run from a Bash tool call), the process carries CLAUDE_CODE_CHILD_SESSION=1 and
-// the launcher's CLAUDE_CODE_SESSION_ID. A claude that sees CHILD_SESSION=1 answers but
-// never persists its transcript, so no pane conversation survived a restart. agentRunner's
-// sanitizeEnv strips these per-spawn; scrub the process env too, because other spawn sites
-// (embedded Next server, MCP servers) pass `process.env` straight through.
-for (const k of ['CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH', 'CLAUDE_EFFORT', 'CLAUDECODE']) {
-  delete process.env[k];
-}
+};
+
+runBootstrap(bootstrapCtx);
+
+const ENV_PROFILE = bootstrapCtx.envProfile;
+const singleInstanceGate = bootstrapCtx.singleInstanceGate;
+const singleInstanceEarlyLog = bootstrapCtx.singleInstanceEarlyLog;
+const SAFE_STORAGE_SCOPE = bootstrapCtx.safeStorageScope;
+const SHELL_COMMIT = bootstrapCtx.shellCommit;
 // ADP-013 — agent runner core: command whitelist (RCE guard), spawn validation,
 // status derivation. Pure/Electron-free so it is unit-tested separately
 // (electron/agentRunner.test.cjs). See ADR-002.
