@@ -46,6 +46,7 @@ const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 // ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
 const { createWindowManager } = require('./src/main/windows');
+const { registerSystemIpc } = require('./src/features/system');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6314,6 +6315,36 @@ async function verifyAppApiKey(service) {
 }
 
 function wireIpc() {
+  // ── Sistem IPC Yüzeyi (Faz 3.5 — Sıra 1): clip, file, feedback, announce ────────
+  registerSystemIpc({
+    ipcMain,
+    shell,
+    clipboard,
+    nativeImage,
+    feedbackBridge,
+    readFeedbackSeen,
+    writeFeedbackSeen,
+    readWorkspaceFile,
+    writeWorkspaceFile,
+    listWorkspaceDir,
+    openFolderDialog,
+    allowPaneRoot,
+    readEditorState,
+    writeEditorState,
+    clipHistory,
+    ptys,
+    clipboardImageRoute,
+    saveTempImage,
+    announcements,
+    agentSettings,
+    announceStateForRenderer,
+    runAnnounceCheck,
+    pushAnnounceState,
+    announceHiddenThisSession,
+    getAnnounceState: () => announceState,
+    logLine,
+  });
+
   // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
   // anahtar bu sınırı hiçbir yönde geçmez.
   ipcMain.handle('appkey:verify', async (_event, service) => verifyAppApiKey(String(service || '')));
@@ -7581,14 +7612,6 @@ function wireIpc() {
   // İki adım bilerek ayrı: "karttan kaldır" ile "diskten de sil" farklı kararlardır.
   ipcMain.handle('attachment:removeBytes', (_event, relPath) => attachmentStore().removeBytes(relPath));
 
-  // FDBK-01 — UYGULAMA İÇİ GERİ BİLDİRİM. Üçü de SALT-OKUNUR ve dar kapsamlı:
-  // log kesiti MASKELENMİŞ döner (kullanıcı göndermeden önce aynı metni görür),
-  // çekim listesi/önizlemesi yalnız AgentShot klasörünü görür. Kayıt INSERT'ini
-  // renderer kendi supabase istemcisiyle yapar (kimlik + şema orada çözülü).
-  ipcMain.handle('feedback:logExcerpt', (_event, opts) => feedbackBridge().logExcerpt(opts || {}));
-  ipcMain.handle('feedback:recentShots', (_event, opts) => feedbackBridge().recentShots(opts || {}));
-  ipcMain.handle('feedback:shotPreview', (_event, opts) => feedbackBridge().shotPreview(opts || {}));
-
   // ADP-736 — YEREL sprite kütüphanesi (~/.crewpane/sprites). Pakete TEK ve
   // marka-güvenli set girer (herkes aynı DMG'yi indirir); kişisel/telifli avatarlar
   // kullanıcının kendi diskinde yaşar → uygulama silinip yeniden kurulsa da DURUR ve
@@ -8371,9 +8394,6 @@ function wireIpc() {
       { ok: false },
     ));
 
-  ipcMain.handle('file:read', (_event, p) => readWorkspaceFile(p));
-  ipcMain.handle('file:write', (_event, payload) => writeWorkspaceFile(payload));
-  ipcMain.handle('file:list', (_event, dir) => listWorkspaceDir(dir));
   // ADP-206 — editor code-intelligence: git diff (committed vs working) + workspace file
   // list (⌘P) + content grep (⌘⇧F). Read-only `git` against the configured workspace root.
   // TASK-MQTIX5XW2HFST — confine the path to an active root (parity with search), then let
@@ -8421,32 +8441,11 @@ function wireIpc() {
     const hits = r.hits.filter((h) => withinActiveRoots(h.file)).map((h) => ({ ...h, file: displayPath(h.file) }));
     return { ...r, hits };
   });
-  // ADP-103 — open the OS directory picker and add the chosen dir as a new active root.
-  ipcMain.handle('file:openDialog', (event) =>
-    openFolderDialog(BrowserWindow.fromWebContents(event.sender)));
-  // ADP-108 — live-watch: grant the editor read access to a watched pane's cwd and
-  // return cwd/home/workspaceRoot so the renderer can rebase the agent's relative
-  // path to the absolute file it wrote (the pane is main-spawned → sandbox intact).
-  ipcMain.handle('file:allowPaneRoot', (_event, paneId) => allowPaneRoot(paneId));
-  // ADP-109 — editor start-experience persistence (last-session + recent). Stored in
-  // userData, NOT localStorage: the embedded Next server binds a RANDOM free port each
-  // launch, so the renderer ORIGIN (http://127.0.0.1:<port>) changes every restart and
-  // localStorage would be wiped → no cross-restart restore. A userData JSON file is
-  // origin-stable, so "open folder → restart → it's still there" genuinely works.
-  ipcMain.on('file:editorState:get', (event) => { event.returnValue = readEditorState(); });
-  ipcMain.handle('file:editorState:set', (_event, state) => writeEditorState(state));
   // ADP-437 — office layout persistence (userData JSON; origin-stable across the
   // random-port restarts). SYNC get so the office reads it during mount (same
   // rationale as editorState); async set on every layout/floor/asset change.
   ipcMain.on('office:state:get', (event) => { event.returnValue = readOfficeState(); });
   ipcMain.handle('office:state:set', (_event, state) => writeOfficeState(state));
-  // FDBK-F1 — geri bildirim bildirim FİLİGRANI ({ [kod]: updated_at }). ADP-109/437
-  // ile AYNI gerekçe, ÖLÇÜLDÜ: filigran localStorage'a yazıldığında rastgele port →
-  // değişen origin yüzünden HER AÇILIŞTA siliniyor ve zil, kullanıcının açık olan
-  // TÜM kayıtlarını uygulamanın her başlangıcında yeniden duyuruyordu (filigranın
-  // var olma sebebinin tam tersi). userData JSON origin-kararlıdır.
-  ipcMain.on('feedback:seen:get', (event) => { event.returnValue = readFeedbackSeen(); });
-  ipcMain.handle('feedback:seen:set', (_event, state) => writeFeedbackSeen(state));
 
   // ADP-242 — uzun-sprint kalıcılığı. Renderer'ın fs erişimi yok; run durumu her
   // transition'da buraya iner ve sprintStore atomik yazar (tmp+rename). Path'i HEP
@@ -11402,72 +11401,6 @@ function wireIpc() {
     try { imageStore.dispose(); } catch { /* çıkışı geciktirme */ }
   });
 
-  ipcMain.handle('clip:list', () => {
-    try {
-      return { ok: true, items: clipHistory.list() };
-    } catch (err) {
-      logLine(`clip:list failed: ${err.message}`);
-      return { ok: false, items: [], reason: 'list-failed' };
-    }
-  });
-
-  ipcMain.handle('clip:remove', (_event, id) => ({ ok: clipHistory.remove(String(id || '')) }));
-  ipcMain.handle('clip:clear', () => ({ ok: true, removed: clipHistory.clear() }));
-
-  /**
-   * ADP-935 — bir geçmiş öğesini TESLİM ET.
-   *
-   * İki iş yapar ve SIRASI önemlidir:
-   *   1. içeriği SİSTEM PANOSUNA geri koyar (Eren'in istediği: "tıkla → panoya
-   *      koy"), önce `markSelfWrite` damgasıyla — yoksa poll kendi yazdığımızı
-   *      yeni bir kopya sanar ve geçmiş kendini besleyen bir döngüye girer
-   *      (ADP-933 §2.2: metin + TransientType birlikte YAZILAMIYOR, yani panonun
-   *      üstünde "bu bizim" diye bir işaret bırakmanın yolu yok — damga tek çare).
-   *   2. çağırana pane'e NASIL indireceğini söyler; teslimi renderer yapar ki pty
-   *      yazımı `pty:input`ten geçsin (ADP-667/692 tuş damgaları dürüst kalsın).
-   *
-   * Görüntüde karar `clipboard:pasteFocused` ile AYNI tablodan (ADP-925):
-   * motorun kendi pano-görüntü yolu varsa kontrol baytı, yoksa temp PNG yolu.
-   */
-  ipcMain.handle('clip:deliver', (_event, opts) => {
-    const id = opts && typeof opts === 'object' ? String(opts.itemId || '') : '';
-    const paneId = opts && typeof opts === 'object' ? opts.paneId : null;
-    const item = clipHistory.get(id);
-    if (!item) return { ok: false, reason: 'not-found' };
-
-    if (item.kind === 'text') {
-      try {
-        clipHistory.markSelfWrite('text', item.text);
-        clipboard.writeText(item.text);
-      } catch (err) {
-        // Panoya yazamamak teslimatı İPTAL ETMEZ: pane'e yapıştırma asıl iştir.
-        logLine(`clip:deliver clipboard write failed: ${err.message}`);
-      }
-      return { ok: true, kind: 'text', text: item.text };
-    }
-
-    try {
-      clipHistory.markSelfWrite('image', item.png);
-      clipboard.writeImage(nativeImage.createFromBuffer(item.png));
-    } catch (err) {
-      logLine(`clip:deliver clipboard image write failed: ${err.message}`);
-    }
-    const entry = paneId ? ptys.get(paneId) : null;
-    // WIN-IMG-01 — AYNI platformlu tablodan (iki yüzey ayrışamaz): Windows/Linux'ta
-    // motor-tuşu hücresi YOK ⇒ geçici PNG + yol yapıştırma.
-    const route = clipboardImageRoute.routeClipboardPaste({
-      platform: process.platform,
-      engine: entry ? entry.command : null,
-      hasImage: true,
-      hasText: false,
-    });
-    if (route.kind === 'engine-keys') return { ok: true, kind: 'engine-keys', keys: route.keys };
-    const saved = saveTempImage({ data: item.png, type: 'image/png', name: 'clip-image' });
-    if (saved.ok) return { ok: true, kind: 'image', path: saved.path, bytes: saved.bytes };
-    logLine(`clip:deliver image save failed: ${saved.reason || 'unknown'}`);
-    return { ok: false, reason: saved.reason || 'image-save-failed' };
-  });
-
   ipcMain.handle('engine:check', async () => {
     try {
       return await engineCheck.checkEngines();
@@ -12213,70 +12146,6 @@ function wireIpc() {
     }
     pushUpdateState();
     return updateStateForRenderer();
-  });
-
-  // ADP-675 — DUYURU IPC yüzeyi. Renderer yalnız ID gönderir; URL/adres ASLA
-  // renderer'dan gelmez (update:download ile aynı capability modeli).
-  ipcMain.handle('announce:get', () => announceStateForRenderer());
-  ipcMain.handle('announce:checkNow', () => runAnnounceCheck('manual'));
-  ipcMain.handle('announce:markRead', (_event, id) => {
-    const key = announcements.cleanId(id);
-    if (key) {
-      const s = agentSettings.readSettings();
-      const read = s.announcementsRead && typeof s.announcementsRead === 'object' ? s.announcementsRead : {};
-      // Defter sınırlı tutulur: feed tavanının 4 katı yeter, en eski okundu kayıtları
-      // düşer (süresi geçmiş duyuru zaten feed'den çıkacağı için geri gelemez).
-      const next = { ...read, [key]: Date.now() };
-      const keys = Object.keys(next);
-      const MAX_READ = announcements.MAX_ITEMS * 4;
-      if (keys.length > MAX_READ) {
-        for (const k of keys.sort((a, b) => next[a] - next[b]).slice(0, keys.length - MAX_READ)) delete next[k];
-      }
-      agentSettings.writeSettings({ announcementsRead: next });
-    }
-    pushAnnounceState();
-    return announceStateForRenderer();
-  });
-  ipcMain.handle('announce:hide', (_event, id) => {
-    // Şeridin ✕'i: OTURUMLUK gizleme (diske yazılmaz). Duyuru merkezde okunmamış
-    // kalır ve app yeniden açılınca şerit geri gelir — kritik mesajı kaçırmayalım.
-    const key = announcements.cleanId(id);
-    if (key) announceHiddenThisSession.add(key);
-    pushAnnounceState();
-    return announceStateForRenderer();
-  });
-  ipcMain.handle('announce:openAction', (_event, id) => {
-    // Aksiyon URL'ini MAIN çözer: renderer bir ID söyler, adresi feed'in normalize
-    // edilmiş kopyasından okuruz ve https'i BİR KEZ DAHA doğrularız (derinlemesine
-    // savunma — ele geçmiş renderer rastgele site açtıramaz).
-    const key = announcements.cleanId(id);
-    const item = announceState.items.find((a) => a.id === key);
-    if (!item || !item.action || !announcements.isSafeActionUrl(item.action.url)) {
-      return { ok: false, reason: 'no-action' };
-    }
-    shell.openExternal(item.action.url);
-    logLine(`announce: aksiyon açıldı (${key}) → ${item.action.url}`);
-    return { ok: true, url: item.action.url };
-  });
-  ipcMain.handle('announce:openLink', (_event, id, url) => {
-    // Duyuru GÖVDESİNDEKİ link. Renderer bir adres SÖYLER ama main ona güvenmez:
-    // adres https olmalı VE main'in kendi normalize kopyasındaki gövdede GEÇMELİ.
-    // Böylece ele geçmiş bir renderer keyfî site açtıramaz (yalnız Eren'in yazdığı
-    // metinde gerçekten duran adresler açılabilir).
-    const key = announcements.cleanId(id);
-    const item = announceState.items.find((a) => a.id === key);
-    const target = typeof url === 'string' ? url.trim() : '';
-    // ADP-716 — gövde artık ÇOK DİLLİ olabilir: kullanıcı EN metnindeki linke basmış
-    // olabilir. Kabul edilen küme = TABAN gövde + TÜM çeviriler (hepsi Eren'in
-    // yazdığı metin); dil seçimi güvenlik kapısını daraltmasın da genişletmesin de.
-    const bodies = [item ? item.body : '', ...Object.values((item && item.i18n) || {}).map((t) => t.body || '')];
-    if (!item || !announcements.isSafeActionUrl(target) || !bodies.some((b) => b.includes(target))) {
-      logLine(`announce: link REDDEDİLDİ (${key}) → ${String(url).slice(0, 120)}`);
-      return { ok: false, reason: 'not-in-body' };
-    }
-    shell.openExternal(target);
-    logLine(`announce: gövde linki açıldı (${key}) → ${target}`);
-    return { ok: true, url: target };
   });
 
   // A-10 — "Yenilikler" (changelog) IPC yüzeyi. Salt-okunur: renderer hiçbir
