@@ -63,6 +63,11 @@ const { registerMemoryIpc } = require('./src/features/memory');
 const { registerHandIpc } = require('./src/features/hand');
 const { registerSyncIpc } = require('./src/features/sync');
 const { registerMobileIpc } = require('./src/features/mobile');
+const {
+  registerEngineIpc,
+  registerEngineAuthIpc,
+  registerEngineProfilesIpc,
+} = require('./src/features/auth');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -10367,40 +10372,6 @@ function wireIpc() {
     try { imageStore.dispose(); } catch { /* çıkışı geciktirme */ }
   });
 
-  ipcMain.handle('engine:check', async () => {
-    try {
-      return await engineCheck.checkEngines();
-    } catch {
-      return { engines: engineCheck.DEFAULT_ENGINES.map((id) => ({
-        id, name: id, found: false, path: null,
-        installUrl: engineCheck.INSTALL_HINTS[id] || null,
-      })), anyFound: false };
-    }
-  });
-
-  // ENG-10 — MOTOR YETENEK MATRİSİ (Ayarlar motor kartı + entegrasyon hub'ı).
-  // Pane rozetleri pane KAYDINDAN okunur; Ayarlar'da ise henüz açılmış bir pane
-  // YOKTUR — kullanıcı "bu motoru seçersem neyi kaybederim?" diye SEÇMEDEN ÖNCE
-  // sorar. Cevap aynı descriptor'dan gelir, o yüzden iki yüzey ayrışamaz.
-  // Sır/dosya yolu DÖNMEZ: yalnız hüküm + motorun kendi beyan metni.
-  ipcMain.handle('engine:capabilityMatrix', () => {
-    try {
-      const reg = capabilityRegistry();
-      const engines = {};
-      for (const id of reg.engineIds()) {
-        engines[id] = {
-          engine: id,
-          label: (reg.getEngine(id) || {}).label || id,
-          matrix: paneCapabilityMatrix.buildMatrix(id, { registry: reg }),
-        };
-      }
-      return { ok: true, engines };
-    } catch (err) {
-      logLine(`engine:capabilityMatrix error: ${err && err.message}`);
-      return { ok: false, engines: {} };
-    }
-  });
-
   // ADP-625 — İLK AÇILIŞ DOKTORU (ADP-616 §5.4): "bu kurulum çalışır durumda mı?"
   // Tek çağrı, beş kontrol, üç renk. Eksik dizinleri OLUŞTURUR (idempotent), geri
   // kalanını yalnız RAPORLAR — hiçbir kontrol kapı değildir, uygulama her hâlükârda
@@ -10514,532 +10485,62 @@ function wireIpc() {
     if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('engineProfiles:changed', { at: Date.now() });
   };
 
-  ipcMain.handle('engineAuth:status', async () => {
-    try {
-      // ADP-936 — AKTİF profilin durumu (varsayılanda çağrı bit-bit eskisi).
-      const engines = await Promise.all(
-        authEngineIds().map((id) => engineAuth.readStatus(id, authDeps(id, activeProfileOf(id)))),
-      );
-      return { engines };
-    } catch (err) {
-      logLine(`engineAuth:status failed: ${engineAuth.maskSecrets(String(err && err.message))}`);
-      // Rozet "bilinmiyor" der — Ayarlar bir probe hatası yüzünden açılmazlık etmez.
-      return { engines: authEngineIds().map((id) => ({ engine: id, installed: false, loggedIn: false, error: 'probe-failed' })) };
-    }
+  // ── Engine, Engine Auth, and Multi-Account Profiles IPC (Faz 3.5 — Sıra 7) ─
+  registerEngineIpc({
+    ipcMain,
+    engineCheck,
+    capabilityRegistry,
+    paneCapabilityMatrix,
+    engineOffering,
+    engineDelegation,
+    engineLeadership,
+    enginePlanned,
+    authEngineIds,
+    readProfileStatus,
+    activeProfileOf,
+    authDeps,
+    engineAuth,
+    logLine,
   });
 
-  // ENG-19 — LİDER-UYGUNLUK: "takımı hangi motor yönetsin?"
-  //
-  // İKİ BOYUT TEK CEVAPTA: (1) YETENEK — motor liderin işini yapabilir mi
-  // (descriptor'dan türetilir, motor adına bakılmaz); (2) GİRİŞ — bugün gerçekten
-  // koşabilir mi (motorun KENDİ durum komutundan, ADP-597 kuralı). İkisi ayrı
-  // uçlardan sorulsaydı renderer'da üçüncü bir karar yeri doğardı ve "hangi motor
-  // önerilir" sorusu iki farklı cevap alabilirdi.
-  //
-  // Sır DÖNMEZ: yalnız hüküm + motorun kendi beyan metni + giriş DURUMU
-  // (hesap/e-posta bu uçtan geçmez; o `engineAuth:status`ın işi).
-  // ENG-21 — MOTOR SUNULABİLİRLİĞİ: "picker bu motoru göstersin mi, seçilebilir mi?"
-  //
-  // İKİ AYRI SORU TEK CEVAPTA (ikisi de ENG-15'in kırmızısıydı, ikisi de rozet
-  // olarak kullanıcıya HİÇ gösterilmiyordu):
-  //   • `offered`    — ENG-05 `engines.enabled` hükmü ("kablolu ama KAPALI" rafı).
-  //                    Kaynak: ürünle gelen katalog (migration aynası). Renderer
-  //                    `engines` TABLOSUNU da okur ve okuyabildiyse ÜSTÜNE YAZAR —
-  //                    operatörün kararı ürünün varsayılanını yener.
-  //   • `delegation` — ENG-17 hükmü ("bu motora otomatik iş verilebilir mi").
-  //                    Motor AÇIK olsa bile bu KAPALI olabilir (crush: pane'de
-  //                    koşar, süpervizör onu izleyemez) — iki soru KARIŞTIRILMAZ.
-  //
-  // Sır DÖNMEZ; yalnız hüküm + gerekçe metni.
-  ipcMain.handle('engine:availability', () => {
-    try {
-      const reg = capabilityRegistry();
-      const offered = engineOffering.seedEnabledMap();
-      const engines = {};
-      for (const id of reg.engineIds()) {
-        const verdict = engineDelegation.delegationVerdict(id);
-        engines[id] = {
-          engine: id,
-          label: (reg.getEngine(id) || {}).label || id,
-          offered: offered[id] === true,
-          delegation: {
-            class: verdict.class,
-            capable: verdict.capable,
-            badge: verdict.badge,
-            blockers: verdict.blockers.map((b) => ({ id: b.id, why: b.why })),
-            warnings: verdict.warnings.map((w) => ({ id: w.id, why: w.why })),
-          },
-        };
-      }
-      const closed = Object.keys(engines).filter((id) => !engines[id].offered);
-      const noWork = Object.keys(engines).filter((id) => !engines[id].delegation.capable);
-      // ENG-ENABLE-01 — kontrol kolu ÇEKİLDİYSE log SÖYLER: "motor niye hazır değil?"
-      // sorusunun cevabı bir env değişkeniyse bu sessiz kalmamalı.
-      const lever = engineOffering.offeringOffSet(process.env);
-      logLine(
-        `engine:availability → kapalı=${closed.join(',') || '-'} iş-verilemez=${noWork.join(',') || '-'}` +
-          (lever ? ` (kontrol kolu AÇIK: CREWPANE_ENGINE_OFFERING_OFF=${[...lever].join(',')})` : ''),
-      );
-      return { ok: true, engines, source: 'catalog' };
-    } catch (err) {
-      logLine(`engine:availability error: ${err && err.message}`);
-      // Fail-OPEN bilerek: hüküm veremiyorsak picker BOŞALMAZ (kullanıcı hiçbir
-      // ajan kuramaz hâle gelmemeli). Kapı yine de spawn'da duruyor (pty:spawn).
-      return { ok: false, engines: {}, source: 'error' };
-    }
+  registerEngineAuthIpc({
+    ipcMain,
+    shell,
+    engineAuth,
+    engineProfiles,
+    authEngineIds,
+    activeProfileOf,
+    authDeps,
+    pushAuthEvent,
+    pushProfilesEvent,
+    stampProfileIdentity,
+    profilesHome,
+    getActiveLogin: () => activeLogin,
+    setActiveLogin: (val) => { activeLogin = val; },
+    logLine,
   });
 
-  ipcMain.handle('engine:leadership', async () => {
-    try {
-      const reg = capabilityRegistry();
-      const ids = reg.engineIds();
-      const authIds = new Set(authEngineIds());
-      // Giriş yalnız auth defteri olan motorda ÖLÇÜLEBİLİR; olmayan motor
-      // 'unknown' kalır — "bağlı değil" DEMEZ (ölçememek bir cevap değildir).
-      const statuses = await Promise.all(
-        ids.map((id) =>
-          authIds.has(id)
-            ? engineAuth.readStatus(id, authDeps(id, activeProfileOf(id))).catch(() => null)
-            : Promise.resolve(null),
-        ),
-      );
-      const candidates = ids.map((engine, i) => ({ engine, status: statuses[i] }));
-      const seam = { registry: reg };
-      const recommendation = engineLeadership.recommendLeaderEngine(candidates, seam);
-      const engines = {};
-      for (const entry of recommendation.ranked) {
-        engines[entry.engine] = {
-          engine: entry.engine,
-          label: (reg.getEngine(entry.engine) || {}).label || entry.engine,
-          class: entry.class,
-          auth: entry.auth,
-          eligible: entry.eligible,
-          blockers: [...entry.blockers],
-          gaps: [...entry.gaps],
-          // ENG-HONEST-CARD-01 — lider sınıfını değiştirecek planlı kart (yoksa null);
-          // kart "Lider olamaz · yolda" çipini YALNIZ bu doluysa çizer.
-          planned: enginePlanned.plannedCardFor(entry.engine, 'leader'),
-          requirements: entry.requirements.map((r) => ({
-            id: r.id, capability: r.capability, severity: r.severity, state: r.state, reason: r.reason,
-          })),
-        };
-      }
-      const order = recommendation.ranked.map((e) => e.engine);
-      logLine(
-        `engine:leadership → öneri=${recommendation.engine || 'YOK'} sınıf=${recommendation.class || '-'} ` +
-          `sıra=${order.join('>')}${recommendation.warning ? ` uyarı=${recommendation.warning.kind}` : ''}`,
-      );
-      return {
-        ok: true,
-        engines,
-        order,
-        recommended: recommendation.engine,
-        recommendedClass: recommendation.class,
-        warning: recommendation.warning,
-      };
-    } catch (err) {
-      logLine(`engine:leadership error: ${err && err.message}`);
-      // Fail-closed: hüküm veremiyorsak hiçbir motoru "lider olur" diye SUNMA.
-      return { ok: false, engines: {}, order: [], recommended: null, recommendedClass: null, warning: null };
-    }
-  });
-
-  ipcMain.handle('engineAuth:login', async (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) {
-      // ENG-FIX-B1/F3 — catch dalıyla AYNI SINIF: erken dönüş de olay basmazsa
-      // renderer'ın iyimser 'starting' kartı hiç kapanmaz.
-      pushAuthEvent({ engine, state: 'error', error: 'unsupported-engine' });
-      return { ok: false, error: 'unsupported-engine' };
-    }
-    if (activeLogin) { try { activeLogin.cancel(); } catch { /* yok say */ } activeLogin = null; }
-    // ADP-936 — hangi HESABA giriliyor. İstenmezse AKTİF profil (eski davranış).
-    const profileId = engineProfiles.isProfileId(req && req.profileId) ? req.profileId : activeProfileOf(engine);
-    try {
-      const session = engineAuth.startLogin(engine, {
-        ...authDeps(engine, profileId),
-        onUpdate: (snap) => {
-          pushAuthEvent(snap);
-          // Tarayıcıyı BİZ açarız (CLI'ın BROWSER'ı no-op'a çekildi) — kullanıcı
-          // terminali görmediği gibi URL'i elle kopyalamak zorunda da kalmaz.
-          if (snap.state === 'awaiting-browser' && snap.url && /^https?:\/\//.test(snap.url)) {
-            shell.openExternal(snap.url).catch(() => { /* açılmazsa UI'daki "Bağlantıyı aç" düğmesi kalır */ });
-          }
-          if (snap.state === 'done' || snap.state === 'error' || snap.state === 'cancelled') activeLogin = null;
-          // ACCT-FIX-01 — GİRİŞ ANINDA KİMLİK DAMGASI. `snap.status` bu profilin env'iyle
-          // okunmuş `auth status`tur ve o an paylaşımlı `~/.claude.json`u yazan profil
-          // KENDİSİDİR → tek doğru okuma anı. Damga deftere yazılır; Ayarlar/rozet/kopya
-          // uyarısı bundan sonra damgayı gösterir (RESEARCH-ACCT-01 §6.1/1).
-          if (snap.state === 'done') stampProfileIdentity(engine, profileId, snap.status, 'login');
-          // ADP-936 — giriş bitince Hesaplar listesi kendiliğinden tazelensin.
-          if (snap.state === 'done' || snap.state === 'logged-out') pushProfilesEvent();
-        },
-      });
-      activeLogin = session;
-      return { ok: true, session: session.snapshot(), profileId };
-    } catch (err) {
-      const reason = engineAuth.maskSecrets(String((err && err.message) || err));
-      logLine(`engineAuth:login failed: ${reason}`);
-      // ENG-FIX-B1/F3 — AKIŞ BAŞLAYAMADIYSA DA HABER VER. IPC dönüşü yalnız çağırana
-      // ulaşır; ekrandaki akış kartı `engineAuth:changed` olayını dinliyor. Olay
-      // gitmeyince renderer kendi iyimser 'starting' durumunda SONSUZA KADAR asılı
-      // kalıyordu (ENG-LOGIN-R1 §2.2). Mobil/CLI çağıranlar için de aynı dürüstlük.
-      pushAuthEvent({ engine, state: 'error', error: reason });
-      return { ok: false, error: 'başlatılamadı' };
-    }
-  });
-
-  // Tarayıcı sayfasının verdiği kod (yalnız claude akışı). Tek yön: stdin'e yazılır,
-  // hiçbir yere kaydedilmez, log'a düşmez.
-  ipcMain.handle('engineAuth:submitCode', (event, req) => {
-    if (!activeLogin) return { ok: false, error: 'aktif giriş yok' };
-    return activeLogin.submitCode(req && req.code);
-  });
-
-  ipcMain.handle('engineAuth:cancel', () => {
-    if (!activeLogin) return { ok: true };
-    const r = activeLogin.cancel();
-    activeLogin = null;
-    return r;
-  });
-
-  // ── ENG-08 — API ANAHTARI YEDEĞİ ──────────────────────────────────────────
-  // Abonelik yolu birincildir; bu uç YALNIZ descriptor'ı `auth.apiKey` beyan eden
-  // motorlarda anlamlıdır (etmeyende engineAuth 'no-api-key-flow' der). Anahtar
-  // vault'a yazılır, motorun KENDİ komutuyla doğrulanır, doğrulanmazsa GERİ ALINIR.
-  // Dönen yüzey sır TAŞIMAZ; log satırları maskeden geçer.
-  ipcMain.handle('engineAuth:setApiKey', async (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine', status: null };
-    const profileId = engineProfiles.isProfileId(req && req.profileId) ? req.profileId : activeProfileOf(engine);
-    try {
-      const r = await engineAuth.setApiKey(engine, req && req.key, authDeps(engine, profileId));
-      pushAuthEvent({ engine, state: r.ok ? 'done' : 'error', status: r.status, error: r.ok ? null : r.error });
-      pushProfilesEvent();
-      // ENG-CURSOR-APIKEY-01 — motorun KENDİ ret cümlesi (sadeleştirilmiş, maskeli) UI'a
-      // kadar taşınır; bu yüzey cevabı yeniden şekillendirdiği için alan burada da
-      // ADIYLA geçirilir (yoksa main'de üretilen mesaj sessizce çöpe giderdi).
-      return { ok: r.ok, error: r.error || null, engineMessage: r.engineMessage || null, status: r.status };
-    } catch (err) {
-      logLine(`engineAuth:setApiKey failed: ${engineAuth.maskSecrets(String(err && err.message))}`);
-      return { ok: false, error: 'anahtar kaydedilemedi', status: null };
-    }
-  });
-
-  ipcMain.handle('engineAuth:clearApiKey', async (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine', status: null };
-    const profileId = engineProfiles.isProfileId(req && req.profileId) ? req.profileId : activeProfileOf(engine);
-    try {
-      const r = await engineAuth.clearApiKey(engine, authDeps(engine, profileId));
-      pushAuthEvent({ engine, state: 'logged-out', status: r.status });
-      pushProfilesEvent();
-      return r;
-    } catch (err) {
-      logLine(`engineAuth:clearApiKey failed: ${engineAuth.maskSecrets(String(err && err.message))}`);
-      return { ok: false, error: 'anahtar silinemedi', status: null };
-    }
-  });
-
-  ipcMain.handle('engineAuth:logout', async (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine' };
-    // ADP-936 — hangi HESAPTAN çıkılıyor. İstenmezse AKTİF profil (eski davranış).
-    const profileId = engineProfiles.isProfileId(req && req.profileId) ? req.profileId : activeProfileOf(engine);
-    try {
-      const r = await engineAuth.logout(engine, authDeps(engine, profileId));
-      // ACCT-FIX-01 — çıkış yapılan hesabın damgası düşer (eski ad ekranda kalmasın).
-      if (r.ok) {
-        try { engineProfiles.clearProfileIdentity(profilesHome(), engine, profileId); } catch { /* defter best-effort */ }
-      }
-      pushAuthEvent({ engine, state: r.ok ? 'logged-out' : 'error', status: r.status });
-      pushProfilesEvent();
-      return r;
-    } catch (err) {
-      logLine(`engineAuth:logout failed: ${engineAuth.maskSecrets(String(err && err.message))}`);
-      return { ok: false, error: 'çıkış yapılamadı', status: null };
-    }
-  });
-
-  // ── ADP-936 — HESAPLAR (Ayarlar → AI Motorları; ENG-UX-T5'te birleşti) ────
-  //
-  // Renderer'a çıkan tek şey: profil KİMLİĞİ + motorun KENDİ durum komutundan
-  // okunmuş oturum bilgisi. Dizin YOLU, Keychain yuvası ve elbette jeton ASLA
-  // dışarı çıkmaz — çözüm main'de, `engineProfiles` containment kapısının
-  // arkasında. Hesap PAYLAŞIMI özelliği bilerek YOK (ADR §7.3): jetonu dışa
-  // aktaran/içe alan hiçbir uç yazılmadı.
-
-  /** Motor + profil listesi + her profilin GERÇEK oturum durumu. */
-  const engineAccountsSnapshot = async () => {
-    const home = profilesHome();
-    const engines = await Promise.all(
-      authEngineIds().map(async (engine) => {
-        // ENG-08 — ürün metni + akış şekli DEFTERDEN (e2e dikişiyle gelen motorlar
-        // da dahil; `ENGINE_AUTH_META` yalnız kayıtlı motorları taşır).
-        const meta = engineAuth.authDescriptor(engine, { env: process.env }) || {};
-        const list = engineProfiles.listProfiles(home, engine);
-        const active = engineProfiles.activeProfileId(home, engine);
-        const statuses = await Promise.all(list.map((p) => readProfileStatus(engine, p.id)));
-        // ACCT-FIX-01 — GERİYE DOLDURMA (bu özellikten önce giriş yapmış kutular):
-        // kural saf (`engineProfiles.backfillIndex`): motorun TAM OLARAK BİR girişli
-        // profili varsa paylaşımlı dosyadaki kimlik ancak onundur → damga yazılır
-        // (`source:'backfill'`). İki girişli + damgasız → yazılMAZ, tahmin yok.
-        const bf = engineProfiles.backfillIndex(list, statuses);
-        if (bf >= 0 && stampProfileIdentity(engine, list[bf].id, statuses[bf], 'backfill')) {
-          list[bf] = { ...list[bf], identity: engineProfiles.identityFromStatus(statuses[bf], { source: 'backfill' }) };
-        }
-        // ACCT-FIX-01 — satır SAF fonksiyondan (`engineProfiles.profileRow`): kimlik
-        // alanları DAMGADAN (varsa; durum komutu paylaşımlı dosyayı okur ve son giriş
-        // yapan hesabı döner — §3.2), `loggedIn` ve gerisi durum komutundan. Alan
-        // yorumları (ENG-UX-B2/T2 üç durum, HATA-13 org, ENG-F4-01 loginRecorded,
-        // ENG-08 authKind/apiKeySaved/statusNote) o fonksiyonun üstünde.
-        const profiles = list.map((p, i) => engineProfiles.profileRow(p, statuses[i], active));
-        const first = statuses[0];
-        // HATA-13 — AYNI KİMLİKTE İKİNCİ KUTU İŞARETLENİR. Kimlik ancak girişten
-        // SONRA ölçülebiliyor, o yüzden "ekle" anında engellenemez; ölçüldüğü anda
-        // SÖYLENİR (defter sırası: ilk kutu asıl, sonrakiler kopya).
-        const markedProfiles = engineProfiles.markDuplicateAccounts(profiles);
-        return {
-          engine,
-          label: meta.label || engine,
-          needsCode: meta.needsCode === true,
-          signupUrl: meta.signupUrl || null,
-          // Kurulum bilgisi motor bazlı (profil değil) — ilk probdan taşınır.
-          installed: first ? first.installed : null,
-          installCommand: (first && first.installCommand) || null,
-          installUrl: (first && first.installUrl) || null,
-          // ENG-08 — UI akış enum'una göre çizer; ayrıca ÇOKLU HESAP burada kapanır:
-          // `identityEnv` yoksa iki hesap AYNI kimlik yuvasını ezerdi (veri kaybı),
-          // o yüzden "Hesap ekle" gösterilmez ve sebebi ekranda yazar (ENG-R3 §9.3).
-          flow: meta.flow || null,
-          supportsSubscription: !!(first ? first.supportsSubscription : meta.loginArgv),
-          supportsApiKey: !!(first ? first.supportsApiKey : meta.apiKey),
-          // İKİ koşul birden: kimlik izole EDİLEBİLMELİ (`identityEnv`) VE profil
-          // defteri bu motoru TANIMALI. Yalnız birine bakmak, tıklandığında
-          // 'unsupported-engine' dönen ölü bir "Hesap ekle" düğmesi bırakırdı.
-          multiAccount: !!meta.identityEnv && engineProfiles.isEngine(engine),
-          active,
-          profiles: markedProfiles,
-        };
-      }),
-    );
-    return { ok: true, autoSwitchOnLimit: engineProfiles.autoSwitchOnLimit(home), engines };
-  };
-
-  // ACCT-FIX-01 — AÇILIŞTA BİR KEZ GERİYE DOLDURMA, yalnız ÇOK-HESAPLI kurulumda.
-  // Damga normalde giriş anında yazılır; bu özellikten ÖNCE giriş yapmış kutular için
-  // anlık-görüntü (tek-girişli kuralıyla) damgayı tamamlar. Tek hesaplı kullanıcıda
-  // hiçbir şey koşmaz (motor durum komutu bile çağrılmaz) → bugünkü açılış bit-bit aynı.
-  // e2e'de kapalı: sahte motor dikişi olmayan koşularda gerçek CLI'ı çağırmasın.
-  try {
-    const multi = engineProfiles.ENGINES.some((eng) => engineProfiles.listProfiles(profilesHome(), eng).length > 1);
-    if (multi && process.env.CREWPANE_E2E !== '1') {
-      const t = setTimeout(() => { engineAccountsSnapshot().catch(() => { /* prob hatası açılışı ilgilendirmez */ }); }, 15_000);
-      if (t && typeof t.unref === 'function') t.unref();
-    }
-  } catch { /* defter okunamadı → doldurma yok */ }
-
-  ipcMain.handle('engineProfiles:list', async () => {
-    try {
-      return await engineAccountsSnapshot();
-    } catch (err) {
-      logLine(`engineProfiles:list failed: ${engineAuth.maskSecrets(String(err && err.message))}`);
-      return { ok: false, autoSwitchOnLimit: false, engines: [] };
-    }
-  });
-
-  /** Yeni hesap kutusu açar. Giriş akışını çağıran ayrıca başlatır (engineAuth:login). */
-  ipcMain.handle('engineProfiles:add', async (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine' };
-    // HATA-13 — BOŞ KUTU YENİDEN KULLANILIR. Her tıklama yeni bir dizin açıyordu;
-    // giriş yarıda kalınca kullanıcıda hiç girilmemiş kutular birikiyor ve liste
-    // "hangisi hangisi" hâline geliyordu (bildirimdeki asıl şikâyetin ikinci yarısı).
-    try {
-      const existing = engineProfiles.listProfiles(profilesHome(), engine);
-      if (existing.length > 1) {
-        const statuses = await Promise.all(existing.map((p) => readProfileStatus(engine, p.id)));
-        const reuse = engineProfiles.firstEmptyProfileId(
-          existing.map((p, i) => ({ id: p.id, loggedIn: statuses[i] ? statuses[i].loggedIn : null })),
-        );
-        if (reuse) {
-          logLine(`engine account reused empty box engine=${engine} profile=${reuse}`);
-          pushProfilesEvent();
-          return { ok: true, profileId: reuse, reused: true };
-        }
-      }
-    } catch {
-      /* ölçemedik → eski davranış: yeni kutu aç */
-    }
-    const r = engineProfiles.addProfile(profilesHome(), engine, { label: req && req.label });
-    if (r.ok) {
-      // Yol LOG'a da girmez — yalnız kimlik.
-      logLine(`engine account added engine=${engine} profile=${r.profileId}`);
-      pushProfilesEvent();
-      return { ok: true, profileId: r.profileId };
-    }
-    return { ok: false, error: r.error };
-  });
-
-  /**
-   * ACCT-FIX-01 (RESEARCH-ACCT-01 §6.2/1) — bu motorla koşan ve HEDEF profilde OLMAYAN
-   * canlı AJAN pane'leri. Geçiş yalnız defteri değiştirir (env başlangıçta okunur);
-   * kullanıcıya "şu pane'ler hâlâ eski hesapla" listesi bu fonksiyondan çizilir.
-   * Sır yok: pane kimliği + ajan + etiket + profil kimliği + limitte mi.
-   * `limited` = ekranda limit metni VAR (resume daemon'la aynı algılayıcı) YA DA
-   * pane'in profili limit defterinde hâlâ limitli.
-   */
-  const stalePanesFor = (engine, targetProfileId) => {
-    const now = Date.now();
-    let limits = {};
-    try { limits = engineSwitch.readLedger(profilesHome(), now).engines[engine] || {}; } catch { limits = {}; }
-    return engineSwitch.stalePanesFor(ptys, {
-      engine,
-      targetProfileId,
-      limits,
-      now,
-      screenLimited: (e) => !!limitDetect.detectLimitState(resumePtyDaemon.ptyTail(e.buffer)),
-    });
-  };
-
-  /**
-   * Aktif hesabı değiştirir. Canlı pane'ler ETKİLENMEZ (env başlangıçta okunur) —
-   * ACCT-FIX-01: bu yüzden cevap, eski hesapla koşmaya devam eden pane'lerin LİSTESİNİ
-   * de taşır; renderer kullanıcıya sorar, yeniden açma `engineProfiles:respawnPanes` ile.
-   */
-  ipcMain.handle('engineProfiles:switch', (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine' };
-    const r = engineProfiles.setActiveProfile(profilesHome(), engine, req && req.profileId);
-    if (r.ok) {
-      logLine(`engine account switched engine=${engine} profile=${r.active}`);
-      pushProfilesEvent();
-      let stalePanes = [];
-      try { stalePanes = stalePanesFor(engine, r.active); } catch { stalePanes = []; }
-      if (stalePanes.length) {
-        logLine(`engine account switch: ${stalePanes.length} pane still on another profile engine=${engine} target=${r.active} panes=${stalePanes.map((p) => `${p.paneId}:${p.profileId || 'default'}${p.limited ? '!' : ''}`).join(',')}`);
-      }
-      return { ...r, stalePanes };
-    }
-    return r;
-  });
-
-  /**
-   * ACCT-FIX-01 — KULLANICI-ONAYLI RE-SPAWN (manuel yol, ADP-938 otomatik yolun ikizi).
-   * Seçilen pane'ler KAPATILIR ve aynı oturum kimliğiyle (`--resume`), HEDEF profilin
-   * env'iyle yeniden açılır. Sıra ADP-938 ile aynı: önce kapat (bir ajan = bir pane),
-   * sonra spawn. Spawn şekli restart-resume'un KENDİ defterinden (livePaneRegistry)
-   * okunur → restore ile aynı opts; defterde yoksa canlı kayıttan asgari şekil.
-   * Renderer YOL veremez: yalnız pane kimlikleri + profil kimliği geçer.
-   */
-  ipcMain.handle('engineProfiles:respawnPanes', (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine', results: [] };
-    const profileId = req && req.profileId;
-    const known = engineProfiles.listProfiles(profilesHome(), engine).some((p) => p.id === profileId);
-    if (!known) return { ok: false, error: 'unknown-profile', results: [] };
-    const paneIds = Array.isArray(req && req.paneIds) ? req.paneIds.filter((x) => typeof x === 'string' && x) : [];
-    if (!paneIds.length) return { ok: true, results: [] };
-    const results = [];
-    for (const paneId of paneIds) {
-      const entry = ptys.get(paneId);
-      if (!entry || entry.command !== engine || !entry.agentId) {
-        results.push({ paneId, ok: false, error: 'pane-gone' });
-        continue;
-      }
-      // Kayıt KAPATMADAN ÖNCE okunur: killPane defter satırını serbest bırakır.
-      let row = null;
-      try { row = livePaneRegistry.loadRegistry(crewpaneHome()).panes[paneId] || null; } catch { row = null; }
-      const shape = row || {
-        engine: entry.command,
-        cwd: entry.cwd || null,
-        agentId: entry.agentId,
-        department: entry.department || null,
-        label: entry.label || null,
-        role: entry.role || null,
-        disallowSubagent: entry.disallowSubagent === true,
-        sessionId: entry.sessionId || null,
-        model: entry.launchModel || null,
-        provider: entry.launchProvider || null,
-      };
-      const win = entry.win && !entry.win.isDestroyed() ? entry.win : appWindow;
-      try {
-        const base = respawnOptsFromEntry(shape, { where: 'hesap-geçişi' });
-        base.engineProfileId = profileId;
-        base.spawnIntent = 'replace'; // PLAN-FIX-01 (F-4) — eskisinin YERİNE gelir, tavan sorulmaz
-        killPane(paneId, entry, entry.agentId, 'engine account switch (ACCT-FIX-01 manual)');
-        const res = spawnPty(win, base);
-        const ok = !!(res && res.paneId);
-        results.push({
-          paneId,
-          ok,
-          newPaneId: ok ? res.paneId : null,
-          resumed: ok && !!base.sessionId && base.resume === true,
-          error: ok ? null : 'spawn-failed',
-        });
-        logLine(`engine account respawn: pane=${paneId} → ${ok ? res.paneId : 'FAILED'} engine=${engine} profile=${profileId} agent=${entry.agentId} resume=${base.sessionId ? 'yes' : 'no'}`);
-      } catch (e) {
-        results.push({ paneId, ok: false, error: engineAuth.maskSecrets(String((e && e.message) || e)) });
-        logLine(`engine account respawn failed pane=${paneId}: ${engineAuth.maskSecrets(String((e && e.message) || e))}`);
-      }
-    }
-    return { ok: results.every((x) => x.ok), results };
-  });
-
-  ipcMain.handle('engineProfiles:setLabel', (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine' };
-    const r = engineProfiles.setProfileLabel(profilesHome(), engine, req && req.profileId, req && req.label);
-    if (r.ok) pushProfilesEvent();
-    return r;
-  });
-
-  /**
-   * Hesabı kaldırır. SIRA ÖNEMLİ: önce O PROFİLİN env'iyle `logout` (yoksa
-   * Keychain yuvası dizin silinse de sahipsiz kalırdı — yuva adı dizin YOLUNDAN
-   * türüyor, ADP-934 §2.1), sonra defter + dizin.
-   */
-  ipcMain.handle('engineProfiles:remove', async (event, req) => {
-    const engine = req && typeof req.engine === 'string' ? req.engine : '';
-    if (!authEngineIds().includes(engine)) return { ok: false, error: 'unsupported-engine' };
-    const profileId = req && req.profileId;
-    if (profileId === engineProfiles.DEFAULT_PROFILE_ID) return { ok: false, error: 'default-immutable' };
-    try {
-      await engineAuth.logout(engine, authDeps(engine, profileId));
-    } catch {
-      /* çıkış yapılamasa da kaydı düşürüyoruz — kullanıcı "kaldır" dedi */
-    }
-    const r = engineProfiles.removeProfile(profilesHome(), engine, profileId);
-    if (r.ok) {
-      logLine(`engine account removed engine=${engine} profile=${profileId}`);
-      pushProfilesEvent();
-    }
-    return r;
-  });
-
-  /**
-   * HATA-12 — AJANLARIN GÜNCEL MOTOR AYNASI. Renderer `employees.engine`'i zaten
-   * canlı okuyor (useAgentEngines); harita değişince buraya iter ve main onu deftere
-   * KOMŞU bir dosyaya yazar. Tek tüketicisi `restoreLivePanes`: uygulama yeniden
-   * açıldığında pane'i defterin ESKİ motoruyla diriltmesin.
-   *
-   * Neden main burada Supabase'e SORMUYOR: geri yükleme `did-finish-load`'da koşar
-   * (renderer'ın sorgusu daha bitmemiştir) ve çevrimdışı bir açılışta ağ okuması
-   * geri yüklemeyi kırardı. Ayna EN İYİ ÇABADIR: bilmediği ajan için hüküm üretilmez.
-   * Sır/kişisel veri taşımaz — yalnız {agentId: motor}, ve yalnız KAYITLI motorlar
-   * diske iner (agentEngineMirror.sanitize).
-   */
-  ipcMain.handle('agentEngines:sync', (_event, map) => {
-    const res = agentEngineMirror.writeMirror(crewpaneHome(), map);
-    if (!res.ok) logLine(`agentEngines:sync yazılamadı: ${res.error}`);
-    return res;
-  });
-
-  /** "Limitte otomatik geç" tercihi (varsayılan KAPALI — ADR §11/1). */
-  ipcMain.handle('engineProfiles:setAutoSwitch', (event, req) => {
-    const r = engineProfiles.setAutoSwitchOnLimit(profilesHome(), req && req.enabled === true);
-    if (r.ok) pushProfilesEvent();
-    return r;
+  registerEngineProfilesIpc({
+    ipcMain,
+    engineProfiles,
+    engineAuth,
+    engineSwitch,
+    limitDetect,
+    resumePtyDaemon,
+    livePaneRegistry,
+    crewpaneHome,
+    profilesHome,
+    authEngineIds,
+    readProfileStatus,
+    stampProfileIdentity,
+    pushProfilesEvent,
+    ptys,
+    getAppWindow: () => appWindow,
+    spawnPty,
+    killPane,
+    respawnOptsFromEntry,
+    agentEngineMirror,
+    logLine,
   });
 
   // ADP-232 — thin relaunch WITHOUT the rebuild: restart-gated settings (a changed
