@@ -59,6 +59,7 @@ const {
   registerIntegIpc,
   registerSprintIpc,
 } = require('./src/features/services');
+const { registerMemoryIpc } = require('./src/features/memory');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6485,6 +6486,29 @@ function wireIpc() {
     logLine,
   });
 
+  // ── Memory IPC Yüzeyi (Faz 3.5 — Sıra 4) ───────────────────────────────────
+  registerMemoryIpc({
+    ipcMain,
+    memoryGraph,
+    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+    memoryIndexer,
+    memorySearcher,
+    agentSettings,
+    memoryEmbedder,
+    REPO_ROOT,
+    memoryEmbedInstall,
+    memoryEmbedInstaller,
+    memoryRecall,
+    secretRedactor,
+    ptys,
+    agentRunner,
+    memoryTaskBlock,
+    currentSessionId,
+    paneContextScope,
+    engineMemoryScope,
+    logLine,
+  });
+
   // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
   // anahtar bu sınırı hiçbir yönde geçmez.
   ipcMain.handle('appkey:verify', async (_event, service) => verifyAppApiKey(String(service || '')));
@@ -7635,32 +7659,6 @@ function wireIpc() {
   // İki adım bilerek ayrı: "karttan kaldır" ile "diskten de sil" farklı kararlardır.
   ipcMain.handle('attachment:removeBytes', (_event, relPath) => attachmentStore().removeBytes(relPath));
 
-  // ADP-243 (ADR-014 Karar 5) — the in-app "Hafıza" (Memory) view: scan the file-based
-  // memory (agents/shared/global) under the selected workspace and return a node-link
-  // graph {nodes, edges, counts}. Read-only + best-effort (never throws → empty graph).
-  ipcMain.handle('memory:graph', () => {
-    try {
-      return memoryGraph.buildMemoryGraph({ workspaceRoot: agentWorkspaceRoot });
-    } catch (err) {
-      logLine(`memory:graph failed: ${err.message}`);
-      // MEM-01 — çökme de SESSİZ kalmasın: boş grafik + gerekçe döner, ekran
-      // "henüz hafıza yok" değil "yazılamıyor/okunamıyor" der.
-      return { nodes: [], edges: [], counts: {}, scopes: {}, health: { ok: false, reason: 'not_writable', root: null, detail: err.message } };
-    }
-  });
-
-  // ADP-277 (ADR-015) — read ONE fact file's full body by (scope, slug): the read
-  // seam the single-surface fact detail + the human-approved promotion dialog use.
-  // Read-only, path-safe (memoryGraph.readFact), null on anything invalid/missing.
-  ipcMain.handle('memory:fact', (_event, scope, slug) => {
-    try {
-      return memoryGraph.readFact({ workspaceRoot: agentWorkspaceRoot, scope, slug });
-    } catch (err) {
-      logLine(`memory:fact failed: ${err.message}`);
-      return null;
-    }
-  });
-
   // SK-03 (ADR-SKILL-CENTER §8) — SKİLL MERKEZİ'nin okuma ucu. `memory:graph`in
   // kardeşi: dosya-tabanlı skill deposunu (yayın + taslak) tarar ve her skillin
   // BUGÜN hangi motor tarafından görüldüğünü de söyler. SALT OKUNUR — bu uç
@@ -7896,57 +7894,6 @@ function wireIpc() {
     }
   });
 
-  // ADP-870 (SPRINT-MEMORY-SEARCH · Faz 2) — hafıza RAG indeksi. Ağır iş AYRI SÜREÇTE
-  // koşar (memoryIndexWorker.cjs): main burada yalnız çocuğu başlatır ve ilerlemeyi
-  // renderer'a köprüler → uygulama indeksleme sırasında DONMAZ.
-  ipcMain.handle('memoryIndex:status', () => {
-    try {
-      return memoryIndexer().status();
-    } catch (err) {
-      logLine(`memoryIndex:status failed: ${err.message}`);
-      return { running: false, phase: 'error', reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryIndex:start', () => {
-    try {
-      return memoryIndexer().start({ workspaceRoot: agentWorkspaceRoot });
-    } catch (err) {
-      logLine(`memoryIndex:start failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryIndex:stop', () => {
-    try {
-      return memoryIndexer().stop();
-    } catch (err) {
-      logLine(`memoryIndex:stop failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
-
-  // ADP-871 (Faz 3) — hibrit arama: kelime (BM25) + anlam (vektör), RRF ile birleşik.
-  // Bu yüzey ADP-854'ün dosya-adı eşleşmesini (matchReportFiles) DEĞİŞTİRMEZ; onun
-  // yanına gelir. Sonuç yoksa uydurulmaz, "bulamadım" döner.
-  ipcMain.handle('memoryIndex:search', async (_evt, query, k) => {
-    try {
-      return await memorySearcher().search({
-        workspaceRoot: agentWorkspaceRoot,
-        query: String(query || ''),
-        k: Number.isFinite(k) ? Math.max(1, Math.min(20, k)) : 5,
-      });
-    } catch (err) {
-      logLine(`memoryIndex:search failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryIndex:searchStatus', () => {
-    try {
-      return memorySearcher().status();
-    } catch (err) {
-      return { embedderReady: false, unavailable: err.message };
-    }
-  });
-
   // ── SEARCH-2 — GENEL ARAMA (rapor gövdesi · hafıza · görev · ajan oturumları) ──
   // Bu uçlar ADP-871'in `memoryIndex:search`ini DEĞİŞTİRMEZ: o hibrit (anlam+kelime)
   // ve yalnız hafızaya bakar; bu salt kelime ama DÖRT kaynağa bakar. SEARCH-3'te
@@ -7998,253 +7945,6 @@ function wireIpc() {
     } catch (err) {
       logLine(`searchIndex:setSessionsEnabled failed: ${err.message}`);
       return { ok: false, reason: err.message };
-    }
-  });
-
-  // ── ADP-900 — ANLAM KATMANI: ONAYLI KURULUM ────────────────────────────────
-  //
-  // Eren'in kararı: gömme modeli OTOMATİK İNMEZ. Kullanıcı ne kadar veri ineceğini
-  // GÖRÜR ve onaylar. Bu yüzden akış üç ayrı uçtur ve sırası bağlayıcıdır:
-  //   plan    → sunucudan ÖLÇÜLEN boyutlar (HEAD; gövde inmez, diske yazılmaz)
-  //   consent → kullanıcının kararı DİSKE damgalanır (model+boyut anahtarıyla)
-  //   install → damga plana uymuyorsa TEK BAYT inmez (`consent_required`)
-  // Durum ucu (`state`) AĞA ÇIKMAZ: panel açılır açılmaz ölçüm yapmak, "sormadan
-  // internete gitti" demek olurdu — plan yalnız kullanıcı isteyince sorulur.
-  ipcMain.handle('memoryEmbed:state', () => {
-    try {
-      const s = agentSettings.readSettings();
-      const prefs = s.memorySearch || {};
-      // 🔴 WIN-W6A — `available`/`reason` BİLEREK YALNIZ YEREL durumu taşır.
-      // Bu iki alan KURULUM KARTINI sürüyor ("modeli indir" onayı). Barındırılan
-      // dal açıkken `available:true` demek, Windows kullanıcısının yerel modeli
-      // SONRADAN kurma yolunu kapatırdı — yani bir düzeltme, bir gerilemeye
-      // dönüşürdü. Hosted durumu AYRI alanda (`hosted`) gider; panelin bugünkü
-      // davranışı bit-bit korunur, yeni bilgi ise kaybolmaz.
-      const avail = memoryEmbedder.localAvailability({ repoRoot: REPO_ROOT });
-      const effective = memoryEmbedder.availability({ repoRoot: REPO_ROOT });
-      return {
-        ok: true,
-        prefs: {
-          semanticEnabled: prefs.semanticEnabled !== false,
-          autoIndex: prefs.autoIndex !== false,
-          consent: prefs.semanticConsent || null,
-        },
-        // "Kurulu mu" sorusunun cevabı DİSKTEN gelir, ayardan değil.
-        available: avail.ok,
-        reason: avail.ok ? null : avail.reason,
-        // WIN-W6A — yerel yokken anlam katmanını GERÇEKTEN kim koşturuyor
-        // (ya da niye kimse koşturamıyor). Ağa ÇIKMAZ: yalnız anahtar VAR MI diye
-        // bakar, anahtarın geçerli olduğunu iddia etmez.
-        hosted: {
-          active: effective.ok === true && effective.kind === 'hosted',
-          provider: effective.kind === 'hosted' ? effective.provider : null,
-          model: effective.kind === 'hosted' ? effective.model : null,
-          dim: effective.kind === 'hosted' ? effective.dim : null,
-          reason: effective.ok ? null : effective.hostedReason || null,
-          message: effective.ok ? null : effective.message || null,
-          settingsTarget: effective.ok ? null : effective.settingsTarget || null,
-        },
-        model: memoryEmbedder.MODEL_ID,
-        ramMb: memoryEmbedInstall.EXPECTED_RSS_MB,
-        installRoot: memoryEmbedInstall.installRoot(),
-        diskBytes: memoryEmbedInstall.dirSize(memoryEmbedInstall.installRoot()),
-        install: memoryEmbedInstaller().status(),
-        search: memorySearcher().status(),
-      };
-    } catch (err) {
-      logLine(`memoryEmbed:state failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryEmbed:plan', async () => {
-    try {
-      return await memoryEmbedInstall.probePlan({ repoRoot: REPO_ROOT });
-    } catch (err) {
-      logLine(`memoryEmbed:plan failed: ${err.message}`);
-      // Ağ yoksa SAYI UYDURULMAZ; kart dürüst bir hata + "tekrar dene" gösterir.
-      return { ok: false, reason: 'probe_failed', message: err.message };
-    }
-  });
-  ipcMain.handle('memoryEmbed:consent', (_evt, granted, key) => {
-    try {
-      const next = agentSettings.writeSettings({
-        memorySearch: {
-          semanticConsent: { granted: granted === true, key: String(key || ''), at: Date.now() },
-        },
-      });
-      logLine(`memoryEmbed: onay ${granted === true ? 'VERİLDİ' : 'REDDEDİLDİ'} (${key || '-'})`);
-      return { ok: true, consent: next.memorySearch.semanticConsent };
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryEmbed:install', async () => {
-    try {
-      const consent = agentSettings.readSettings().memorySearch?.semanticConsent || null;
-      const res = await memoryEmbedInstaller().start({ consent });
-      if (res.ok) {
-        // Motor bir kez "model yok" dediyse o kararı hatırlıyordu → kurulumdan sonra
-        // yeniden başlatmadan anlam katmanı açılmazdı. Kararı burada düşürüyoruz.
-        try {
-          memorySearcher().reset();
-        } catch {
-          /* servis yoksa sorun değil */
-        }
-      }
-      return res;
-    } catch (err) {
-      logLine(`memoryEmbed:install failed: ${err.message}`);
-      return { ok: false, reason: 'install_failed', message: err.message };
-    }
-  });
-  ipcMain.handle('memoryEmbed:cancel', () => {
-    try {
-      return memoryEmbedInstaller().cancel();
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryEmbed:remove', () => {
-    try {
-      const res = memoryEmbedInstaller().remove();
-      // Onay damgası da düşer: dosyayı silen kullanıcı bir daha sorulmadan
-      // 559 MB'lık indirmenin başlamasını beklemez.
-      agentSettings.writeSettings({ memorySearch: { semanticConsent: null } });
-      try {
-        memorySearcher().reset();
-      } catch {
-        /* servis yoksa sorun değil */
-      }
-      return res;
-    } catch (err) {
-      logLine(`memoryEmbed:remove failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
-  ipcMain.handle('memoryEmbed:setPrefs', (_evt, patch) => {
-    try {
-      const p = patch && typeof patch === 'object' ? patch : {};
-      const memorySearch = {};
-      if (typeof p.semanticEnabled === 'boolean') memorySearch.semanticEnabled = p.semanticEnabled;
-      if (typeof p.autoIndex === 'boolean') memorySearch.autoIndex = p.autoIndex;
-      const next = agentSettings.writeSettings({ memorySearch });
-      return { ok: true, prefs: next.memorySearch };
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  });
-
-  // ADP-862 (st1) — HAFIZA GERİ-ÇAĞIRMA UCU. `memoryIndex:search` ham hibrit sonucu
-  // döndürür; bu uç onun ÜRÜN yüzüdür ve üç şeyi GARANTİ eder (memoryRecall.recall):
-  //   • her sonuç kaynak (dosya + satır) + alıntı taşır,
-  //   • sonuç yoksa uydurulmaz — "Hafızada bunu bulamadım." döner,
-  //   • gösterilen metin İKİ maskeden geçer: kayıtlı entegrasyon sırları
-  //     (secretRedactor, ADP-586) + hafıza dosyalarına düşmüş jeton DESENLERİ
-  //     (memorySecretMask; vault o değerleri bilmez).
-  // Hafıza sekmesi ve raporlar bunu çağırır; ADP-862'nin sesli katmanı da AYNI ucu
-  // çağıracak (ses tarafı bu görevde BİLEREK yapılmadı — uç hazır).
-  ipcMain.handle('memory:recall', async (_evt, query, k) => {
-    try {
-      const res = await memoryRecall.recall({
-        workspaceRoot: agentWorkspaceRoot,
-        query: String(query || ''),
-        k: Number.isFinite(k) ? Math.max(1, Math.min(20, k)) : 5,
-        search: (args) => memorySearcher().search(args),
-      });
-      return secretRedactor.redactDeep(res);
-    } catch (err) {
-      logLine(`memory:recall failed: ${err.message}`);
-      // Uç hiç koşamadı → "bulamadım" DEMEZ (aranmadı ki). Bkz. memoryRecall.cjs
-      // "BULAMADIM ≠ ÖLÇEMEDİM" notu.
-      return { ok: false, found: false, measured: false, results: [], text: memoryRecall.unmeasuredText(err.message), degraded: true, reason: err.message };
-    }
-  });
-
-  /* ─────────────────────────────────────────────────────────────────────────
-     D-07 (SPRINT-TOK-01) — AŞAMA B: HAFIZA SEÇKİSİ GÖREV METNİYLE
-     ─────────────────────────────────────────────────────────────────────────
-     D-04 ölçtü: spawn'daki seçkinin sorgusu ajanın KİMLİĞİydi (görev metni o an
-     yok) → kullanım oranı %5,9, oturumların %41'i hiçbir enjekte kaydı açmadı,
-     rol-sorgusu ile görev-sorgusu seçkileri %80 farklı. Bu uç, seçkiyi işin
-     GERÇEKTEN belli olduğu ana taşır: dağıtım kapısı (delegasyon + board görevi)
-     iş metnini yazmadan hemen önce burayı çağırır.
-
-     SÖZLEŞME (dispatchGate ile aynı dil):
-       • KİMLİK KÖRÜ: `agentId` yalnız HANGİ HAFIZA DİZİNİ sorusunun cevabıdır;
-         seçki ajanın adına/roluna göre dallanmaz (memoryTargeting saf çekirdek).
-       • DOLDURMA YOK: eşiği geçen kayıt yoksa `text:''` döner ve çağıran prompt'a
-         HİÇBİR ŞEY eklemez ("bu göreve uyan hafıza kaydı yok" dürüst hâldir).
-       • İŞ DÜŞMEZ: bu uç hata verse de dağıtım aynen sürer (çağıran best-effort).  */
-  ipcMain.handle('memory:taskBlock', (_evt, payload) => {
-    const empty = (reason) => ({ ok: false, text: '', slugs: [], stats: { reason } });
-    try {
-      const p = payload && typeof payload === 'object' ? payload : {};
-      const paneId = typeof p.paneId === 'string' ? p.paneId : '';
-      const entry = paneId ? ptys.get(paneId) : null;
-      // Kimlik ADRESTİR: önce pane defterinden (güvenilir), yoksa çağıranın beyanı.
-      const agentId = (entry && entry.agentId) || (typeof p.agentId === 'string' ? p.agentId.trim() : '');
-      const taskText = typeof p.text === 'string' ? p.text : '';
-      if (!agentId || !taskText.trim()) return empty('no-scope');
-      if (!agentWorkspaceRoot) return empty('no-workspace');
-      const ledger = agentRunner.memoryLedger();
-      const res = memoryTaskBlock.taskBlock({
-        workspaceRoot: agentWorkspaceRoot,
-        agentId,
-        taskText,
-        cliPath: agentRunner.runnableRecallCli(),
-        ledger,
-        retrieve: agentRunner.spawnRetrieverFor(agentWorkspaceRoot),
-      });
-      if (ledger && res.slugs.length) {
-        const sessionId = paneId ? currentSessionId(paneId) : null;
-        ledger.recordInjection({
-          key: `${paneId || agentId}|${sessionId || ''}`,
-          slugs: res.slugs,
-          agentId,
-          paneId: paneId || null,
-          cwd: (entry && entry.cwd) || null,
-          sessionId,
-          stage: 'task',
-        });
-      }
-      // MEM-SCOPE-01 — AŞAMA B, MOTORUN İNDEKSİ İÇİN. Spawn'da motorun hafıza
-      // indeksinden yalnız KURALLAR + en son güncellenenler taşınır (görev metni o
-      // an yoktur — D-04'ün ölçtüğü kök neden). İş metni İLK BURADA bellidir; göreve
-      // ilgili kayıtların satırları bu tek mesaja eklenir.
-      // 🔴 Bu blok SABİT YÜKÜ ARTIRMAZ: sistem promptuna değil, dağıtılan MESAJA girer.
-      // İş düşmez: bu ek hata verse de dağıtım aynen sürer (best-effort).
-      let engineBlock = null;
-      try {
-        const idxPath = paneContextScope.engineMemoryIndexPath({
-          engineId: (entry && entry.command) || 'claude',
-          cwd: (entry && entry.cwd) || agentWorkspaceRoot,
-        });
-        if (idxPath) {
-          const plan = engineMemoryScope.planMemoryIndex({
-            indexPath: idxPath,
-            query: taskText,
-            cliPath: agentRunner.runnableEngineMemorySearchCli(),
-            // Kurallar spawn'da ZATEN gitti; burada tekrar göndermek hem yer israfı
-            // hem yanıltıcı bir "isabet"tir. Bu çağrı YALNIZ göreve-göre seçkidir.
-            opts: { rulesOnly: false, skipRules: true },
-          });
-          if (plan && plan.text && plan.stats.selected > 0) engineBlock = plan;
-        }
-      } catch (err) {
-        logLine(`memory:taskBlock motor indeksi seçkisi atlandı: ${err.message}`);
-      }
-      const out = engineBlock
-        ? { ...res, text: `${res.text ? `${res.text}\n` : ''}${engineBlock.text.trim()}`, engineMemory: engineBlock.stats }
-        : res;
-      logLine(
-        `memory:taskBlock agent=${agentId} seçilen=${res.stats.kept ?? 0}/${res.stats.considered ?? 0} ` +
-          `eşik=${res.stats.threshold ?? '-'} sebep=${res.stats.reason} ch=${res.stats.chars ?? 0}` +
-          (engineBlock ? ` · motor-indeksi=${engineBlock.stats.selected}/${engineBlock.stats.indexed}` : ''),
-      );
-      return { ok: true, ...out };
-    } catch (err) {
-      logLine(`memory:taskBlock failed: ${err.message}`);
-      return empty(err.message);
     }
   });
 
