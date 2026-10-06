@@ -60,6 +60,7 @@ const {
   registerSprintIpc,
 } = require('./src/features/services');
 const { registerMemoryIpc } = require('./src/features/memory');
+const { registerHandIpc } = require('./src/features/hand');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6509,6 +6510,27 @@ function wireIpc() {
     logLine,
   });
 
+  // ── Hand IPC Yüzeyi (Faz 3.5 — Sıra 5) ─────────────────────────────────────
+  registerHandIpc({
+    ipcMain,
+    screen,
+    BrowserWindow,
+    getHandOverlayWindows: () => (windowManager ? windowManager.handOverlayWindows : new Map()),
+    getHandOverlayPrefs: () => (windowManager ? windowManager.handOverlayPrefs() : { overlay: {} }),
+    handOverlayAnyAlive: () => handOverlayAnyAlive(),
+    closeHandOverlayWindows: (why) => closeHandOverlayWindows(why),
+    feedHandOverlay: (raw) => feedHandOverlay(raw),
+    getWindowManager: () => windowManager,
+    getHandControl: () => handControl,
+    startHandControl: () => startHandControl(),
+    stopHandControl: (why) => stopHandControl(why),
+    handControlStatus: () => handControlStatus(),
+    handControlLive: () => handControlLive(),
+    finishPoseSampler: () => finishPoseSampler(),
+    selectHandCamera: (sel) => selectHandCamera(sel),
+    logLine,
+  });
+
   // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
   // anahtar bu sınırı hiçbir yönde geçmez.
   ipcMain.handle('appkey:verify', async (_event, service) => verifyAppApiKey(String(service || '')));
@@ -7265,44 +7287,6 @@ function wireIpc() {
   // self-update). Decision + effects live in paneKill.cjs (unit-tested).
   ipcMain.on('pty:kill', (_event, paneId) => { killPaneExplicitAndCleanup(paneId); });
 
-  // HAND-A1 — EL KONTROLÜ OVERLAY UÇLARI. Aynı disiplin: yalnız pencere + görüntü.
-  // `feed` tespit kaynağının (D döngüsü / HAND-A2 köprüsü / dev besleyici) tek
-  // giriş kapısıdır; olaylar saf nöbetten (normalizeEvent) geçmeden pencereye ulaşamaz.
-  ipcMain.handle('handOverlay:feed', (_event, events) => {
-    try { return feedHandOverlay(events); }
-    catch (err) { return { ok: false, error: String(err.message || err) }; }
-  });
-  ipcMain.handle('handOverlay:init', (event) => {
-    // Overlay penceresi mount'ta kendini tanır: hangi ekran, hangi yoğunluk.
-    const sender = BrowserWindow.fromWebContents(event.sender);
-    let displayId = null;
-    for (const [id, win] of handOverlayWindows) {
-      if (win === sender) { displayId = id; break; }
-    }
-    const display = screen.getAllDisplays().find((d) => String(d.id) === displayId) || null;
-    return {
-      ok: !!display,
-      displayId,
-      bounds: display ? display.bounds : null,
-      scaleFactor: display ? display.scaleFactor : 1,
-      overlay: handOverlayPrefs().overlay,
-    };
-  });
-  ipcMain.handle('handOverlay:isOpen', () => ({ open: handOverlayAnyAlive(), count: handOverlayWindows.size }));
-  ipcMain.handle('handOverlay:close', () => closeHandOverlayWindows('istek'));
-  ipcMain.handle('handOverlay:cost', (_event, payload) => {
-    // Renderer çizim bedelini bildirir (görev kartı madde 4: bedel ölçülür ve
-    // rapora yazılır). Ekrana değil LOG'a: overlay bir konsol değildir.
-    if (payload && typeof payload === 'object') {
-      if (windowManager) windowManager.setHandOverlayLastCost({ ...payload, at: Date.now() });
-      logLine(`hand overlay bedel: display=${payload.displayId} draw_p50=${payload.drawMsP50}ms draw_p95=${payload.drawMsP95}ms fps=${payload.fps}`);
-    }
-    return { ok: true };
-  });
-  ipcMain.handle('handOverlay:debug', () => {
-    return windowManager ? windowManager.getHandOverlayDebugInfo() : { open: false };
-  });
-
   // HAND-A2 — EL KONTROLÜ UÇLARI. Kare ucu YALNIZ gizli tespit penceresinden
   // kabul edilir (sender kapısı onHandDetectFrame içinde); start/stop/status
   // arayüz pencerelerine açıktır.
@@ -7401,57 +7385,6 @@ function wireIpc() {
     }
     return { ok: true };
   });
-  ipcMain.handle('handControl:start', () => startHandControl());
-  ipcMain.handle('handControl:stop', () => stopHandControl('istek'));
-  ipcMain.handle('handControl:status', () => handControlStatus());
-  // HAND-G2 — arayüz penceresi öndeki sekmenin zoom yüzeyini bildirir
-  // ('office' | 'terminal' | null). Kapalı liste nöbeti normalizeZoomSurface'te:
-  // renderer katalog dışı bir ad yazamaz. Pencere ölünce kayıt düşer.
-  // HAND-G4 — POZ ÖRNEKLE. Verilen süre boyunca kapı metriklerini toplar ve
-  // min/medyan/maks özetini döner. Aynı anda tek örnekleyici; ikinci istek
-  // öncekini SONLANDIRMAZ, kibarca reddedilir (iki gerçek olmasın).
-  ipcMain.handle('handControl:samplePose', (_event, opts) => {
-    const c = handControl;
-    if (!c.engine || !handControlLive()) return Promise.resolve({ ok: false, error: 'el kontrolü açık değil' });
-    if (c.sampler) return Promise.resolve({ ok: false, error: 'zaten bir örnekleme sürüyor' });
-    const ms = Math.max(1000, Math.min(20000, Number(opts && opts.ms) || 4000));
-    const label = typeof (opts && opts.label) === 'string' ? opts.label.slice(0, 40) : 'poz';
-    return new Promise((resolve) => {
-      const box = {
-        sampler: new handPoseSampler.PoseSampler({ ms }),
-        resolve,
-        label,
-        emptyFrames: 0,
-        // Kare akışı durursa örnekleme SONSUZA kadar asılı kalmasın: süre + pay.
-        timer: setTimeout(() => finishPoseSampler(), ms + 1500),
-      };
-      if (box.timer.unref) box.timer.unref();
-      c.sampler = box;
-      logLine(`hand-pose örnekleme başladı: '${label}' ${ms} ms`);
-    });
-  });
-  // HAND-G4 — KANYON KARŞILAŞTIRICI. İki özet girer, metrik metrik bantlar +
-  // ÖRTÜŞMEYENLER + önerilen kesim çıkar. Öneri UYGULANMAZ (karar insanda).
-  ipcMain.handle('handControl:compareSamples', (_event, payload) =>
-    handPoseSampler.compareSamples(payload && payload.a, payload && payload.b));
-
-  ipcMain.handle('handControl:zoomSurface', (event, surface) => {
-    const id = event.sender.id;
-    const norm = normalizeZoomSurface(surface);
-    if (norm) {
-      if (handControl.zoomSurfaces.get(id) !== norm) {
-        handControl.zoomSurfaces.set(id, norm);
-        event.sender.once('destroyed', () => handControl.zoomSurfaces.delete(id));
-      }
-    } else {
-      handControl.zoomSurfaces.delete(id);
-    }
-    return { ok: true, surface: norm };
-  });
-  // HAND-BUG-01 — rozetteki cihaz seçici. Seçim KALICI ayardır (politikayı ezer)
-  // ve motor açıksa kamera ANINDA yeniden açılır: "seçtim ama bir şey değişmedi"
-  // ikinci bir kusur olurdu. null gönderilirse seçim temizlenir (otomatik).
-  ipcMain.handle('handControl:selectCamera', (_event, sel) => selectHandCamera(sel));
 
   // ADP-816 (Faz 4) — TAŞINABİLİR SES WIDGET'I. Pop-out'la aynı disiplin: bu uçlar
   // YALNIZ pencere + görüntü yönetir; ses/kayıt/karar zincirine hiçbiri dokunmaz.
