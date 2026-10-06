@@ -53,6 +53,12 @@ const { registerSpritesIpc } = require('./src/features/sprites');
 const { registerOfficeIpc } = require('./src/features/office');
 const { registerResourceIpc } = require('./src/features/resource');
 const { registerUpdateIpc } = require('./src/features/update');
+const {
+  registerWorktreeIpc,
+  registerBrowserIpc,
+  registerIntegIpc,
+  registerSprintIpc,
+} = require('./src/features/services');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6421,6 +6427,64 @@ function wireIpc() {
     logLine,
   });
 
+  // ── Services IPC Yüzeyi (Faz 3.5 — Sıra 3) ──────────────────────────────────
+  registerWorktreeIpc({
+    ipcMain,
+    ptys,
+    worktreeStore,
+    crewpaneHome,
+    projectRepos,
+    agentWorkspaceRoot,
+    agentSettings,
+    mergeService,
+    worktreeService,
+    invalidateGitBranchCache,
+    logLine,
+  });
+
+  registerBrowserIpc({
+    ipcMain,
+    runBrowserAction,
+    browserGate,
+    browserGuests,
+    isOwnedGuest,
+    guestOwners,
+    setAppWindowGuest: (g) => { appWindowGuest = g; },
+    getAppWindowGuest: () => appWindowGuest,
+    agentGuests,
+    lastUnownedGuest,
+    logLine,
+  });
+
+  registerIntegIpc({
+    ipcMain,
+    supervisorFor,
+    integrations,
+    planDenial,
+    ptys,
+    mcpProcess,
+    crewpaneHome,
+    integrationAutostart,
+    telemetryProvisioning,
+    logLine,
+  });
+
+  registerSprintIpc({
+    ipcMain,
+    sprintStore,
+    supervisorFor,
+    resultRootMod,
+    agentWorkspaceRoot,
+    agentSettings,
+    worktreeStore,
+    crewpaneHome,
+    activeWorktreePaths,
+    ptys,
+    evidencePathMod,
+    REPO_ROOT,
+    logLine,
+  });
+
   // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
   // anahtar bu sınırı hiçbir yönde geçmez.
   ipcMain.handle('appkey:verify', async (_event, service) => verifyAppApiKey(String(service || '')));
@@ -8261,114 +8325,6 @@ function wireIpc() {
     return { ...r, hits };
   });
 
-  // ADP-242 — uzun-sprint kalıcılığı. Renderer'ın fs erişimi yok; run durumu her
-  // transition'da buraya iner ve sprintStore atomik yazar (tmp+rename). Path'i HEP
-  // main kurar (sprintStore id'yi sanitize eder — traversal yüzeyi yok); renderer
-  // yalnız run OBJESİ / id geçirir. Save hatası {ok:false,error} döner — sessiz
-  // kayıp bir sprint'in ölümü demek, renderer loglayıp boss'a bildirebilmeli.
-  ipcMain.handle('sprint:save', (_event, run) => {
-    try {
-      return { ok: true, file: sprintStore.saveSprintRun(run) };
-    } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) };
-    }
-  });
-  // ADP-335 — okuma/listeleme de sınırın içinde: bozuk/yarım bir JSON dosyası (elle düzenleme,
-  // disk dolması) artık uygulamayı çökertmez; renderer {ok:false} alır, ofis ayakta kalır.
-  ipcMain.handle('sprint:load', (_event, id) =>
-    supervisorFor('sprint-store').run('load', () => ({ ok: true, run: sprintStore.loadSprintRun(id) }), { ok: false, reason: 'degraded' }));
-
-  // DF-03 — SPRINT KANIT SONDASI (çok-adaylı). Sprint'in bitiş algısı buraya bağlanır.
-  //
-  // NEDEN MAIN: renderer'ın kanıt sondası `fileApi.read(<workspaceRoot>/<rel>)` idi ve
-  // kurulu makinede workspaceRoot ALT-PROJENİN DEĞİL parent'ın kökü ("CrewPane Apps").
-  // 2026-08-11 gecesi ÖLÇÜLDÜ: `<ws>/docs/agent-results/` VAR ama BOŞ, raporların hepsi
-  // `<ws>/crewpane/docs/agent-results/` altında → 10 sprint görevinin 10'u da
-  // "beklenen çıktı yok" ile başarısız damgalandı ve İKİZLERİ spawn edildi.
-  // Supervisor aynı dosyaları görüyordu çünkü ADP-735'in aday çözümünü kullanıyor.
-  // Bu handler O çözümü (evidencePath.cjs) sprint'e de açar — ikinci bir uygulama YOK.
-  // RES-IDX-01 — SONUÇ KÖKÜ görevin PROJESİNDEN (tek kural, tek yer: resultRoot.cjs).
-  // Renderer dispatch'ten önce sorar; worker'a rapor yolu MUTLAK + TEK yazılır ve
-  // supervisor aynı kökü birincil aday yapar. Çözüm başarısızsa `ok:false` → renderer
-  // eski göreli sözleşmeye düşer (dispatch bloklanmaz). Yalnız OKUR (readdir/stat).
-  ipcMain.handle('sprint:resultRoot', (_event, req) =>
-    supervisorFor('delegation-supervisor').run(
-      'resultRoot',
-      () => {
-        const r = req && typeof req === 'object' ? req : {};
-        const project = typeof r.project === 'string' ? r.project : '';
-        const codes = (Array.isArray(r.codes) ? r.codes : [r.code])
-          .filter((c) => typeof c === 'string' && /^[A-Z0-9-]{3,40}$/i.test(c))
-          .slice(0, 8);
-        const settings = agentSettings.readSettings();
-        const resolved = resultRootMod.resolveResultRoot(project, agentWorkspaceRoot, {
-          settings,
-          store: worktreeStore,
-          homedir: crewpaneHome(),
-          mapping: settings.departmentDirs,
-          log: logLine,
-        });
-        if (!resolved) return { ok: false, error: 'workspace kökü yok' };
-        if (resolved.fallback) {
-          logLine(`resultRoot: proje '${project || '-'}' için dizin yok → ${resolved.source} (${resolved.root}); settings.projectRepos ile eşle`);
-        }
-        return {
-          ok: true,
-          root: resolved.root,
-          source: resolved.source,
-          fallback: resolved.fallback,
-          existing: [...new Set(codes.flatMap((c) => resultRootMod.existingReportsFor(resolved.root, c)))],
-          hasIndexScript: resultRootMod.hasResultsIndexScript(resolved.root),
-        };
-      },
-      { ok: false, error: 'degraded' },
-    ));
-  ipcMain.handle('sprint:evidence', (_event, req) =>
-    supervisorFor('sprint-store').run(
-      'evidence',
-      () => {
-        const r = req && typeof req === 'object' ? req : {};
-        const items = Array.isArray(r.items) ? r.items.slice(0, 64) : [];
-        const mapping = agentSettings.readSettings().departmentDirs;
-        const worktrees = activeWorktreePaths();
-        const out = items.map((it) => {
-          const taskId = String((it && it.taskId) || '');
-          const evidencePath = it && typeof it.evidencePath === 'string' ? it.evidencePath : '';
-          if (!taskId || !evidencePath) return { taskId, found: false };
-          // Ajanın CANLI pane'inin cwd'si en güçlü aday tabanıdır (worker raporunu
-          // oraya göre yazar); pane yoksa diğer kökler zaten yoklanır.
-          let cwd = null;
-          let paneWt = null;
-          if (it.agentId) {
-            for (const [, entry] of ptys) {
-              if (entry && entry.agentId === it.agentId) {
-                cwd = entry.cwd || null;
-                paneWt = typeof entry.worktreePath === 'string' ? entry.worktreePath : null;
-                break;
-              }
-            }
-          }
-          const probe = evidencePathMod.probeEvidence(evidencePath, {
-            cwd,
-            workspaceRoot: agentWorkspaceRoot,
-            department: r.department,
-            mapping,
-            repoRoot: REPO_ROOT,
-            worktreePaths: paneWt ? [paneWt] : worktrees,
-            since: Number.isFinite(it.since) ? it.since : 0,
-          });
-          return {
-            taskId,
-            found: probe.found,
-            path: probe.path || undefined,
-            mtimeMs: probe.mtimeMs || 0,
-            stale: probe.stale === true,
-          };
-        });
-        return { ok: true, items: out };
-      },
-      { ok: false, error: 'degraded', items: [] },
-    ));
   // QUEUE-PERSIST — meşgul-kuyruğu + paused-delegasyon kalıcılığı (sprintStore
   // deseninin tek-dosya hali; path'i HEP main kurar, renderer yalnız durum objesi geçirir).
   ipcMain.handle('dlgqueue:save', (_event, state) => {
@@ -8517,9 +8473,6 @@ function wireIpc() {
     supervisorPending.delete(msg.requestId);
     pending.resolve(msg.ok !== false);
   });
-
-  ipcMain.handle('sprint:list', () =>
-    supervisorFor('sprint-store').run('list', () => ({ ok: true, runs: sprintStore.listSprintRuns() }), { ok: false, reason: 'degraded', runs: [] }));
 
   // ADP-121 (ADR-009 Faz 120a) — Jarvis voice core: STT (Whisper) + brain
   // (claude -p) + TTS (macOS `say`). The renderer widget captures mic + runs the
@@ -9658,151 +9611,6 @@ function wireIpc() {
       return { ok: false, code: 'main', error: String((err && err.message) || err) };
     }
   });
-  // ─── ADP-586 — Entegrasyon Merkezi IPC (Ayarlar → Bağlı Hesaplar) ───────────
-  // Renderer'a DÜZ-METİN ANAHTAR ASLA DÖNMEZ: dönüşler yalnız vault meta görünümüdür
-  // (`meta.masked`). Girdi doğrulama + maskeleme integrationIpc.cjs'te (Electron'suz
-  // test edilebilir olsun diye); burada yalnız kanal bağlama + hata sınırı var.
-  // moduleGuard supervisor'ı: bir hata Ayarlar panelini bozar, uygulamayı ÇÖKERTMEZ.
-  ipcMain.handle('integ:list', () =>
-    supervisorFor('integrations').runAsync(
-      'list',
-      () => integrations().ipc.list(),
-      { ok: false, reason: 'error', available: false, records: [], catalog: [] },
-    ));
-  // ADP-660 — entegrasyon tavanı YALNIZ EKLEMEDE. `list`/`remove`/`test` ve spawn
-  // yolundaki çözümleme (integrationResolver) DOKUNULMAZ: Basic'e düşen ya da
-  // tavanın üstünde kaydı olan bir kullanıcının BAĞLI hesapları çalışmaya devam
-  // eder (limit yeni taahhüdü keser, çalışan kurulumu kırmaz).
-  ipcMain.handle('integ:add', (_event, input) =>
-    supervisorFor('integrations').runAsync(
-      'add',
-      async () => {
-        const listed = await integrations().ipc.list();
-        // Sayamıyorsak (vault kapalı/hata) limitle uğraşma — asıl hatayı `add` söyler.
-        const current = Array.isArray(listed.records) ? listed.records.length : 0;
-        const denial = planDenial('integrations', current);
-        if (denial) {
-          return {
-            ok: false, reason: 'plan_limit', error: denial.message,
-            title: denial.title, limit: denial.limit, current: denial.current,
-            tier: denial.tier, requiredTier: denial.requiredTier, action: 'upgrade',
-          };
-        }
-        return integrations().ipc.add(input);
-      },
-      { ok: false, reason: 'error', error: 'anahtar kaydedilemedi' },
-    ));
-  // ─── MCP-LAZY-01 — PANE BAZLI DURUM SATIRI ────────────────────────────────
-  // "Bu pane'de: acik / kapali / ilk cagrida baslar". Kaynak CANLI pane kaydidir
-  // (spawn aninda yazilir, ajan erisemez) — beyandan degil OLCUMDEN. Sir tasimaz:
-  // yalniz servis ADLARI + kapi gerekcesi. Kayit yoksa pane HIC listelenmez
-  // (uydurma satir yazmaktansa satiri hic cizmemek dogrudur).
-  function livePaneIntegrationRows() {
-    const rows = [];
-    try {
-      for (const e of ptys.values()) {
-        const info = e && e.integrations;
-        if (!info) continue;
-        rows.push({
-          agentId: e.agentId || null,
-          label: e.label || null,
-          engine: e.command || null,
-          services: Array.isArray(info.services) ? info.services : [],
-          gated: Array.isArray(info.gated) ? info.gated : [],
-          lazy: info.lazy === true,
-        });
-      }
-    } catch {
-      return []; // okunamadi → iddia yok
-    }
-    return rows;
-  }
-
-  // ─── MCP-COST-01 — GORUNURLUK: "su an N pane'de acik · ~M MB" ──────────────
-  // Kullanici GOREMEDIGI seyi kapatamaz. Bu kanal Ayarlar satirinin tek veri
-  // kaynagidir; SIR TASIMAZ (yalniz surec sayisi/RSS) ve HICBIR SEY OLDURMEZ.
-  // `measured:false` = `ps` okunamadi → UI "olculemedi" der, SIFIR YAZMAZ.
-  ipcMain.handle('integ:mcpStats', () =>
-    supervisorFor('integrations').runAsync(
-      'mcpStats',
-      async () => ({ ok: true, ...mcpProcess.summarizeByService(), panes: livePaneIntegrationRows() }),
-      { ok: false, measured: false, services: {}, paneCount: 0, totalMb: 0, panes: [] },
-    ));
-
-  // ─── MCP-COST-01 — "BAGLI KALSIN AMA OTOMATIK ACILMASIN" ISARETI ───────────
-  // KAPSAM: yalniz bir sonraki pane acilisini etkiler. Kasa kaydina, rozete,
-  // `integ:test`e DOKUNMAZ — baglanti KOPMAZ (kartin acik kurali).
-  ipcMain.handle('integ:autostart', (_event, payload) =>
-    supervisorFor('integrations').runAsync(
-      'autostart',
-      async () => {
-        const home = crewpaneHome();
-        const input = payload && typeof payload === 'object' ? payload : {};
-        const reply = (ok, hint) => ({
-          ok,
-          map: integrationAutostart.read(home),          // v1 sozlesmesi (genel isaretler)
-          profile: integrationAutostart.readProfile(home), // MCP-LAZY-01 — rol/proje kapsamlari
-          ...(hint ? { restartHint: true } : null),
-        });
-        // MCP-LAZY-01 — KAPSAMLI YAZIM. `scope:{kind:'role'|'project', id}` verilirse
-        // isaret o kapsama yazilir; UC DEGER gecerlidir (true/false/null=devret).
-        if (input.op === 'set' && input.scope && typeof input.scope === 'object') {
-          const { kind, id } = input.scope;
-          const value = input.enabled === null ? null : input.enabled !== false;
-          const ok = integrationAutostart.setScoped(home, kind, id, input.service, value);
-          if (ok) logLine(`integrations autostart ${kind}:${id} ${input.service}=${value} (baglanti korunuyor)`);
-          return reply(ok, true);
-        }
-        if (input.op === 'set') {
-          const ok = integrationAutostart.setEnabled(home, input.service, input.enabled !== false);
-          if (ok) logLine(`integrations autostart ${input.service}=${input.enabled !== false} (baglanti korunuyor)`);
-          return reply(ok, true);
-        }
-        return reply(true, false);
-      },
-      { ok: false, map: {}, profile: { services: {}, roles: {}, projects: {} } },
-    ));
-
-  ipcMain.handle('integ:remove', (_event, id) =>
-    supervisorFor('integrations').runAsync(
-      'remove',
-      async () => {
-        // INT-OBS-01 — YETİM ANAHTAR BIRAKMA. Telemetri jetonu kesildiğinde onunla
-        // kurulmuş DSN/`phc_…` değerleri de gitmeli; kalırsa ürün, kullanıcının
-        // "bağlantıyı kestim" sandığı bir hesaba rapor etmeye DEVAM eder.
-        let doomedService = null;
-        try {
-          const before = await integrations().ipc.list();
-          const rec = (before.records || []).find((r) => r.id === id);
-          if (rec && (rec.service === 'sentry' || rec.service === 'posthog')) {
-            const siblings = (before.records || []).filter((r) => r.service === rec.service);
-            if (siblings.length === 1) doomedService = rec.service; // son kayıt siliniyor
-          }
-        } catch { /* sayamadıysak silme akışını bloklama */ }
-
-        const res = await integrations().ipc.remove(id);
-        if (res && res.ok && res.removed && doomedService) {
-          try {
-            await telemetryProvisioning().store.clear(doomedService);
-            logLine(`telemetry-provision: ${doomedService} kurulumu da temizlendi (jeton kesildi)`);
-          } catch (e) {
-            logLine(`telemetry-provision: temizlenemedi (${e && e.message})`);
-          }
-        }
-        return res;
-      },
-      { ok: false, reason: 'error', error: 'bağlantı kesilemedi' },
-    ));
-  // "Bağlantıyı test et" — katalogdaki MCP server'ı GERÇEKTEN ayağa kaldırır
-  // (initialize → tools/list). `npx -y` ilk çağrıda paket indirebilir → uzun sürebilir;
-  // renderer bunu bir yükleniyor durumuyla göstermeli (ADP-587).
-  ipcMain.handle('integ:test', (_event, input) =>
-    supervisorFor('integrations').runAsync(
-      'test',
-      () => integrations().ipc.test(input),
-      { ok: false, reason: 'error', error: 'test çalıştırılamadı' },
-    ));
-
   // ─── INT-OBS-01 — TELEMETRİ OTOMATİK KURULUMU ──────────────────────────────
   // Renderer'dan gelen tek şey `service` (+ opsiyonel org seçimi). JETON RENDERER'DAN
   // GELMEZ: kasadan main tarafında çözülür. Böylece "Bağla"ya basmak, sırrı bir daha
@@ -9921,97 +9729,6 @@ function wireIpc() {
   // `worktree:review` HİÇBİR ŞEYİ DEĞİŞTİRMEZ: ölçüm + saf karar döner (kartın verisi).
   // `worktree:merge` kapıların HEPSİNİ TEKRAR koşar — "kart yeşildi" bir yetki belgesi
   // değildir (kart ile tıklama arasında ajan yeni commit atmış olabilir).
-
-  /** Bir görevin projesini + repo yolunu çöz (iki uçta da aynı türetme). */
-  const worktreeRepoFor = (taskId) => {
-    const rec = worktreeStore.getWorktree(taskId, crewpaneHome());
-    if (!rec || !rec.project) return null;
-    const repo = projectRepos.resolveProjectRepo(rec.project, agentWorkspaceRoot, {
-      settings: agentSettings.readSettings(), store: worktreeStore, homedir: crewpaneHome(), log: logLine,
-    });
-    return repo ? { rec, repoPath: repo.repoPath } : null;
-  };
-
-  ipcMain.handle('worktree:list', () => {
-    // Defter + her kaydın canlı pane'i. Yol da döner: bu kanal YEREL (renderer aynı
-    // makinede), buluta giden şey değil — K9 kısıtı board yazımına aittir.
-    const panesByTask = new Map();
-    for (const [paneId, e] of ptys) if (e && e.taskId) panesByTask.set(e.taskId, paneId);
-    return {
-      ok: true,
-      worktrees: worktreeStore.listWorktrees(crewpaneHome()).map((r) => ({ ...r, livePaneId: panesByTask.get(r.taskId) || null })),
-    };
-  });
-
-  ipcMain.handle('worktree:review', async (_e, input) => {
-    const taskId = typeof input?.taskId === 'string' ? input.taskId.trim() : '';
-    if (!taskId) return { ok: false, why: 'taskId gerekli' };
-    const r = worktreeRepoFor(taskId);
-    if (!r) return { ok: false, why: 'bu görev için izole ağaç kaydı yok (bu cihazda izolasyon kurulmamış — H-10)' };
-    const proj = worktreeStore.getProject(r.rec.project, crewpaneHome()) || {};
-    return mergeService.review(taskId, {
-      homedir: crewpaneHome(),
-      repoPath: r.repoPath,
-      target: proj.defaultBranch || 'dev',
-      setting: input?.setting,          // projects.merge_approval (board'dan gelir)
-      autopilot: input?.autopilot === true,
-      gate: input?.gate || null,
-    });
-  });
-
-  ipcMain.handle('worktree:merge', async (_e, input) => {
-    const taskId = typeof input?.taskId === 'string' ? input.taskId.trim() : '';
-    if (!taskId) return { ok: false, why: 'taskId gerekli' };
-    const r = worktreeRepoFor(taskId);
-    if (!r) return { ok: false, why: 'bu görev için izole ağaç kaydı yok' };
-    const proj = worktreeStore.getProject(r.rec.project, crewpaneHome()) || {};
-    const res = await mergeService.merge(taskId, {
-      homedir: crewpaneHome(),
-      repoPath: r.repoPath,
-      target: proj.defaultBranch || 'dev',
-      title: typeof input?.title === 'string' ? input.title : null,
-      setting: input?.setting,
-      autopilot: input?.autopilot === true,
-      gate: input?.gate || null,
-      // Patron onayı renderer'dan bir BAYRAK olarak gelir; ama tek başına yetmez —
-      // mergeService yine de gate/sır/çakışma kapılarını koşar ve `main` hedefinde
-      // otomatik onayı hiç kabul etmez (G-7).
-      approvedBy: input?.approvedBy === true ? 'boss' : (typeof input?.approvedBy === 'string' ? input.approvedBy : null),
-    });
-    if (res.ok) logLine(`merge OK task=${taskId} ${res.branch} → ${res.target} @${res.mergedCommit}`);
-    else logLine(`merge REDDEDİLDİ task=${taskId}: ${res.why}`);
-    // B-02 (§3) — merge hedefin HEAD'ini oynattı: repo'nun ve izole ağacın dal
-    // cache'i O AN geçersiz. Cache düşürülmezse başlık rozeti 5 saniye boyunca
-    // artık geçerli olmayan dalı gösterirdi (poll EKLEMEDEN, tek olayla çözülür).
-    if (res.ok) invalidateGitBranchCache();
-    return res;
-  });
-
-  ipcMain.handle('worktree:release', async (_e, input) => {
-    const taskId = typeof input?.taskId === 'string' ? input.taskId.trim() : '';
-    if (!taskId) return { ok: false, why: 'taskId gerekli' };
-    const r = worktreeRepoFor(taskId);
-    if (!r) return { ok: false, why: 'kayıt yok' };
-    // `force` = KİRLİ ağacı silme yetkisi. Yalnız patron açıkça isterse (G-9).
-    const released = await worktreeService.release(taskId, {
-      homedir: crewpaneHome(), workspaceRoot: agentWorkspaceRoot,
-      repoPath: r.repoPath, force: input?.force === true,
-    });
-    // B-02 (§3) — ağaç kalktı: o yolun dal cache'i artık bir HAYALETİ anlatıyor.
-    if (released && released.ok) invalidateGitBranchCache(r.rec && r.rec.path);
-    return released;
-  });
-
-  ipcMain.handle('worktree:reap', async () => {
-    const first = worktreeStore.listWorktrees(crewpaneHome())[0];
-    const repo = first ? worktreeRepoFor(first.taskId) : null;
-    return worktreeService.reap({
-      homedir: crewpaneHome(),
-      workspaceRoot: agentWorkspaceRoot,
-      repoPath: repo ? repo.repoPath : null,
-      paneLive: (paneId) => ptys.has(paneId),
-    });
-  });
 
   // ═══════════════════════════════════════════════════════════════════════════
   // GIT-BB-CLOUD-01 — PROJE AYARI KÖPRÜSÜ (Ayarlar → Projeler)
@@ -10787,66 +10504,6 @@ function wireIpc() {
   });
 
   ipcMain.on('jarvis:stopSpeaking', () => jarvisVoice.stopPlayback());
-
-  // ADP-135 — renderer-side internal-browser control for Jarvis voice. Reuses the
-  // EXISTING headed-automation surface (runBrowserAction → CDP on the live <webview>
-  // guest, ADP-095); the agent loopback bridge keeps using the same function. The
-  // renderer (jarvisVoice.executeBrowser) constructs the validated action value;
-  // click/type session-risk is approval-gated in the renderer (ADP-132 reuse).
-  ipcMain.handle('browser:action', (_event, value) => runBrowserAction(value || {}));
-
-  // ADP-341 (ADR-026 §3.3) — DURDUR: onayın YERİNE gözetim. Tek tıkla tüm görev-başı
-  // izinler iptal edilir ve o an onay bekleyen eylem, kullanıcı "izin ver" demiş olsa
-  // bile koşmaz (kapı epoch'u karşılaştırır). UI: ADP-335.
-  ipcMain.handle('browser:stop', () => browserGate().stopAll());
-
-  // ADP-343 (ADR-026 §2.5) — OTOMASYON MODU: süre sınırlı "bu oturumda sorma". Ayarlar →
-  // Güven'den açılır. Oturumluk (diske YAZILMAZ) ve DURDUR onu da kapatır. Hassas hedef
-  // (parola/kart/ödeme) ile YASAK origin bundan etkilenmez — kart yine çıkar / eylem reddedilir.
-  ipcMain.handle('browser:trust:automation', (_event, payload) => {
-    const minutes = payload && payload.minutes;
-    return browserGate().setAutomation(minutes);
-  });
-  ipcMain.handle('browser:trust:status', () => browserGate().automation());
-
-  // ADP-150 (multi-tab) — the renderer reports which <webview> guest is the active
-  // tab so headed automation (ADP-095/ADP-135) drives the tab the user is looking
-  // at. We ONLY accept an id tracked in did-attach-webview (browserGuests) — the app
-  // renderer can never be selected as the CDP target.
-  ipcMain.on('browser:setActiveGuest', (_event, id) => {
-    const guest = browserGuests.get(id);
-    if (!guest || guest.isDestroyed()) return;
-    // ADP-396 — AKTİF sekme ≠ İNSAN hedefi. Ajanın sekmesi öne alınabilir (ADP-399:
-    // otomasyon başlarken BİR KEZ gösterilir, patron ne olduğunu görsün) — ama Jarvis'in
-    // komutu yine PATRONUN kendi sayfasında koşar. Sahipli guest insan hedefi olamaz.
-    if (isOwnedGuest(id)) {
-      logLine(`[adp396] aktif sekme ajanın (${guestOwners.get(id)}) → İNSAN yolu hedefi DEĞİŞMEDİ`);
-      return;
-    }
-    appWindowGuest = guest;
-    logLine('webview active tab → İNSAN yolu hedefi id=' + id);
-  });
-
-  // ADP-333 — renderer, bir sekmenin SAHİBİNİ bildirir (ajan sekmesi açıldığında).
-  // Yalnız did-attach-webview'de tanınmış guest id'ler kabul edilir (app renderer asla).
-  ipcMain.on('browser:setTabOwner', (_event, payload) => {
-    const id = payload && payload.guestId;
-    const agentId = payload && typeof payload.agentId === 'string' ? payload.agentId.trim() : '';
-    const guest = browserGuests.get(id);
-    if (!guest || guest.isDestroyed() || !agentId) return;
-    guestOwners.set(id, agentId);
-    agentGuests.set(agentId, guest);
-    logLine(`browser tab owner: ${agentId} → guest id=${id}`);
-    // ADP-396 — sahiplik attach'tan SONRA öğrenilir: bu guest o aralıkta insan hedefine
-    // kaçtıysa DERHAL geri al (sahipsiz son sekme; yoksa null → insan yolu dürüstçe
-    // "tarayıcı açık değil" der, ajanın sekmesinde SESSİZCE koşmaz).
-    if (appWindowGuest === guest) {
-      appWindowGuest = lastUnownedGuest();
-      logLine(
-        `[adp396] insan hedefi ajan sekmesine kaçmıştı → geri alındı (hedef=${appWindowGuest ? appWindowGuest.id : 'YOK'})`,
-      );
-    }
-  });
 
   // ADP-139 (DOGFOOD Engel #2) — self-host dev affordances.
   //  • app:info        → { mode, packaged, rebuildSupported } so the renderer can
