@@ -47,6 +47,12 @@ const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
 const { createWindowManager } = require('./src/main/windows');
 const { registerSystemIpc } = require('./src/features/system');
+const { registerPopoutIpc } = require('./src/features/popout');
+const { registerDesignIpc } = require('./src/features/design');
+const { registerSpritesIpc } = require('./src/features/sprites');
+const { registerOfficeIpc } = require('./src/features/office');
+const { registerResourceIpc } = require('./src/features/resource');
+const { registerUpdateIpc } = require('./src/features/update');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6345,6 +6351,76 @@ function wireIpc() {
     logLine,
   });
 
+  // ── Popout & Design IPC Yüzeyi (Faz 3.5 — Sıra 2) ───────────────────────────
+  registerPopoutIpc({
+    ipcMain,
+    openPopoutWindow,
+    closePopoutWindow,
+    listPopoutPanes,
+    popoutWindowFor,
+    logLine,
+  });
+
+  registerDesignIpc({
+    ipcMain,
+    openDesignWindow,
+    closeDesignWindow,
+    designWindowAlive,
+    listPanes,
+    resolveInRoots,
+    withinActiveRoots,
+    displayPath,
+    logLine,
+  });
+
+  registerSpritesIpc({
+    ipcMain,
+    localSprites,
+    pkgMgr: require('./src/agents/avatarPackageManager.cjs'),
+    logLine,
+  });
+
+  registerOfficeIpc({
+    ipcMain,
+    officePkg: require('./src/agents/officePackageManager.cjs'),
+    readOfficeState,
+    writeOfficeState,
+    keepPanesAliveOnWindowClose,
+    crashWatchdog,
+    getAppWindow: () => appWindow,
+    getAppBaseUrl: () => appBaseUrl,
+    ptys,
+    createAppWindow,
+    logLine,
+  });
+
+  registerResourceIpc({
+    ipcMain,
+    resourceGovernor,
+    agentSettings,
+    ptys,
+    agentRunner,
+    resourceGovernorModule,
+    killPaneExplicitAndCleanup,
+    logLine,
+  });
+
+  registerUpdateIpc({
+    ipcMain,
+    updateStateForRenderer,
+    runUpdateCheck,
+    updateLicenseGateNow,
+    getAutoUpdaterRef: () => autoUpdaterRef,
+    getUpdateState: () => updateState,
+    setUpdateState: (s) => { updateState = s; },
+    pushUpdateState,
+    updateCheck,
+    shell,
+    noteQuit,
+    agentSettings,
+    logLine,
+  });
+
   // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
   // anahtar bu sınırı hiçbir yönde geçmez.
   ipcMain.handle('appkey:verify', async (_event, service) => verifyAppApiKey(String(service || '')));
@@ -7101,123 +7177,6 @@ function wireIpc() {
   // self-update). Decision + effects live in paneKill.cjs (unit-tested).
   ipcMain.on('pty:kill', (_event, paneId) => { killPaneExplicitAndCleanup(paneId); });
 
-  // ADP-593 — pane pop-out yüzeyi. ÜÇ uç, hepsi yalnız PENCERE yönetir; pty'ye
-  // (spawn/kill/write) HİÇBİRİ dokunmaz — oturum ölmezliğinin yapısal güvencesi.
-  ipcMain.handle('popout:open', (_event, payload) => {
-    const p = payload && typeof payload === 'object' ? payload : {};
-    try {
-      return openPopoutWindow({ paneId: p.paneId, title: p.title, agentId: p.agentId });
-    } catch (err) {
-      logLine(`popout:open error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('popout:close', (_event, paneId) => {
-    try {
-      return closePopoutWindow(paneId);
-    } catch (err) {
-      logLine(`popout:close error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('popout:list', () => listPopoutPanes());
-
-  // ADP-712 — pop-out PENCERESİNİ büyüt/eski boyutuna getir. Izgarada "zoom"
-  // pane'i tam panele açar; tek pane'lik bir pencerede aynı niyetin karşılığı
-  // budur. pty'ye DOKUNMAZ (pop-out yüzeyinin değişmez kuralı).
-  ipcMain.handle('popout:toggleMaximize', (_event, paneId) => {
-    const win = popoutWindowFor(paneId);
-    if (!win) return { ok: false, error: 'dışarıda değil' };
-    if (win.isMaximized()) win.unmaximize();
-    else win.maximize();
-    return { ok: true, paneId, maximized: win.isMaximized() };
-  });
-  ipcMain.handle('popout:state', (_event, paneId) => {
-    const win = popoutWindowFor(paneId);
-    if (!win) return null;
-    return { paneId, maximized: win.isMaximized() };
-  });
-
-  // AUID-KABLO — TASARIM TURU PENCERESİ. Pop-out'la aynı disiplin: bu uçlar YALNIZ
-  // pencere yönetir; tasarım dosyalarına/pty'lere hiçbiri dokunmaz. Tekillik
-  // kararı main'de yaşar (openDesignWindow) — renderer "açık mı" tahmin etmez.
-  ipcMain.handle('design:openWindow', () => {
-    try {
-      return openDesignWindow();
-    } catch (err) {
-      logLine(`design:openWindow error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('design:closeWindow', () => {
-    try {
-      return closeDesignWindow();
-    } catch (err) {
-      logLine(`design:closeWindow error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('design:isWindowOpen', () => ({ open: !!designWindowAlive() }));
-
-  // ── AUID-M4A · ARIZA-1 — TASARIM PENCERESİNİN AJAN LİSTESİ ────────────────
-  // ÖLÇÜLEN KÖK NEDEN (Eren: "ajanlar açıktı aslında, terminal çalışıyor ama
-  // listelenmedi"): `pty:list` SAHİP PENCEREYE göre süzer (`listPanes(win, …)`).
-  // Tasarım penceresi kendi BrowserWindow'udur ve HİÇBİR pty'nin sahibi değildir
-  // → liste her zaman BOŞ dönüyordu. e2e ölçümü (auid-m4a-repro): ana pencere
-  // 2 pane görürken tasarım penceresi 0 görüyordu; seçicide "ajan yok" yazıyordu.
-  // ADP-712 pop-out için AYNI arızayı çözmüştü; tasarım penceresi o turda yoktu.
-  //
-  // Neden `pty:list`i genişletmiyoruz: o kanalın pencere-kapsamı ızgara/pop-out
-  // semantiğidir (bir pencere KENDİ hücrelerini çizer) ve değiştirmek her yüzeyi
-  // etkilerdi. Tasarım penceresi bir HÜCRE ÇİZİCİ değil, ofisin İZLEYİCİSİdir —
-  // ofis görünümü gibi TÜM ajan pane'lerini görmelidir. Bu yüzden ayrı, yalnız-OKUR
-  // bir uç. YAZIM yolu (`pty:input` / `pty:writeGuarded`) zaten pencere-bağımsızdır,
-  // yani doğru listeyle gönderim çalışır — sahiplik devri GEREKMEZ.
-  ipcMain.handle('design:listAgents', () => {
-    try {
-      const panes = listPanes(null).filter((p) => p.agentId);
-      return { ok: true, panes };
-    } catch (err) {
-      logLine(`design:listAgents error: ${err.message}`);
-      return { ok: false, error: String(err.message || err), panes: [] };
-    }
-  });
-
-  // ── AUID-M4A · BÖLÜM 3 — TASARIM GÖREVİ KLASÖRÜ AÇ ────────────────────────
-  // `file:write` mkdir YAPMAZ (ADP-082'nin bilinçli sınırı) — bu yüzden M1'den
-  // beri tasarım klasörünü artboard'ı üreten AJAN yaratıyordu. İki yer bunu
-  // ajansız yapabilmeli: (1) ilk açılıştaki DEMO TOHUMU, (2) üretim modunun
-  // varyant klasörleri. Her ikisi de tasarım turunun kendi işidir.
-  //
-  // KAPSAM SERT: yalnız çalışma alanı içinde ve yalnız bir `docs/design` ağacı
-  // altında klasör açılır. Bu uç genel bir mkdir DEĞİLDİR — "tasarım kökü"
-  // dışındaki hiçbir yol kabul edilmez (yol-kaçışı + sürpriz yazma yüzeyi yok).
-  ipcMain.handle('design:ensureTaskDir', (_event, rel) => {
-    try {
-      if (typeof rel !== 'string' || !rel.trim()) return { ok: false, reason: 'bad-request' };
-      const clean = rel.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-      if (!clean || clean.split('/').some((seg) => seg === '..' || seg === '.' || !seg)) {
-        return { ok: false, reason: 'path-denied' };
-      }
-      // `docs/design/<görev>` ya da `<proje>/docs/design/<görev>` — başka hiçbir şekil.
-      if (!/(^|\/)docs\/design\/[^/]+$/.test(clean)) return { ok: false, reason: 'not-design-root' };
-      const abs = resolveInRoots(clean);
-      if (!abs) return { ok: false, reason: 'path-denied' };
-      const parent = path.dirname(abs);
-      // Üst klasör (tasarım kökü) VARSA gerçek konumu aktif kökte kalmalı; yoksa
-      // (ilk kurulum — `docs/design` henüz hiç doğmamış) mkdir -p onu da açar.
-      const realParent = fs.existsSync(parent) ? fs.realpathSync(parent) : parent;
-      if (!withinActiveRoots(realParent)) return { ok: false, reason: 'path-denied' };
-      const existed = fs.existsSync(abs);
-      fs.mkdirSync(abs, { recursive: true });
-      logLine(`design:ensureTaskDir ${displayPath(abs)} (${existed ? 'zaten vardı' : 'oluşturuldu'})`);
-      return { ok: true, created: !existed, path: displayPath(abs) };
-    } catch (err) {
-      logLine(`design:ensureTaskDir error: ${err.message}`);
-      return { ok: false, reason: 'mkdir-failed', detail: String(err.message || err) };
-    }
-  });
-
   // HAND-A1 — EL KONTROLÜ OVERLAY UÇLARI. Aynı disiplin: yalnız pencere + görüntü.
   // `feed` tespit kaynağının (D döngüsü / HAND-A2 köprüsü / dev besleyici) tek
   // giriş kapısıdır; olaylar saf nöbetten (normalizeEvent) geçmeden pencereye ulaşamaz.
@@ -7611,146 +7570,6 @@ function wireIpc() {
   // Baytları diskten sil — SATIRI silmez (o mantıksaldır, renderer `deleted_at` yazar).
   // İki adım bilerek ayrı: "karttan kaldır" ile "diskten de sil" farklı kararlardır.
   ipcMain.handle('attachment:removeBytes', (_event, relPath) => attachmentStore().removeBytes(relPath));
-
-  // ADP-736 — YEREL sprite kütüphanesi (~/.crewpane/sprites). Pakete TEK ve
-  // marka-güvenli set girer (herkes aynı DMG'yi indirir); kişisel/telifli avatarlar
-  // kullanıcının kendi diskinde yaşar → uygulama silinip yeniden kurulsa da DURUR ve
-  // biz telifli varlık dağıtmayız. Read-only + sınırlı (key doğrulama, PNG imzası,
-  // dosya/sayı tavanı) — renderer'a ham fs AÇILMAZ.
-  ipcMain.handle('sprites:listLocal', () => {
-    try {
-      const r = localSprites.listLocalSprites();
-      if (r.skipped.length) logLine(`sprites:listLocal atlandı → ${r.skipped.slice(0, 5).join(' | ')}`);
-      return { ok: true, dir: r.dir, sprites: r.sprites, issues: r.issues };
-    } catch (err) {
-      logLine(`sprites:listLocal failed: ${err.message}`);
-      return { ok: false, dir: localSprites.localSpritesDir(), sprites: [], reason: err.message };
-    }
-  });
-
-  // ADP-737 — Paket yönetimi (install/remove/export)
-  const pkgMgr = require('./src/agents/avatarPackageManager.cjs');
-
-  // AVATAR-PACK-01 — "Paketlerim". `sprites:listLocal` DÜZ sprite kütüphanesini
-  // (ADP-736) döndürür ve paket kimliğini (manifest/lisans/hangi karakter kimin)
-  // TAŞIYAMAZ; ekran onu okuduğu sürece liste her zaman boş kalıyordu. Paket
-  // defteri ayrı bir kanaldır — ikisi aynı diski, farklı soruları yanıtlar.
-  ipcMain.handle('sprites:listPackages', () => {
-    try {
-      const r = pkgMgr.listPackages();
-      if (r.skipped && r.skipped.length) {
-        logLine(`sprites:listPackages atlandı → ${r.skipped.slice(0, 5).join(' | ')}`);
-      }
-      return r;
-    } catch (err) {
-      logLine(`sprites:listPackages failed: ${err.message}`);
-      return { ok: false, dir: '', packages: [], skipped: [], error: err.message };
-    }
-  });
-
-  ipcMain.handle('sprites:installPackage', async (_event, zipPath) => {
-    if (!zipPath || typeof zipPath !== 'string') {
-      return { ok: false, error: 'zipPath gerekli' };
-    }
-    try {
-      logLine(`sprites:installPackage başla → ${zipPath}`);
-      const result = await pkgMgr.handleInstallPackage(zipPath);
-      if (result.ok) {
-        logLine(`sprites:installPackage OK → ${result.manifest.name}`);
-      } else {
-        logLine(`sprites:installPackage FAIL → ${result.error}`);
-      }
-      return result;
-    } catch (e) {
-      logLine(`sprites:installPackage crash → ${e.message}`);
-      return { ok: false, error: String(e.message) };
-    }
-  });
-
-  ipcMain.handle('sprites:removePackage', async (_event, key) => {
-    if (!key || typeof key !== 'string') {
-      return { ok: false, error: 'key gerekli' };
-    }
-    try {
-      logLine(`sprites:removePackage başla → ${key}`);
-      const result = pkgMgr.handleRemovePackage(key);
-      if (result.ok) {
-        logLine(`sprites:removePackage OK → ${key}`);
-      } else {
-        logLine(`sprites:removePackage FAIL → ${result.error}`);
-      }
-      return result;
-    } catch (e) {
-      logLine(`sprites:removePackage crash → ${e.message}`);
-      return { ok: false, error: String(e.message) };
-    }
-  });
-
-  ipcMain.handle('sprites:exportPackage', async (_event, keys) => {
-    if (!Array.isArray(keys) || keys.length === 0) {
-      return { ok: false, error: 'keys dizisi gerekli' };
-    }
-    try {
-      logLine(`sprites:exportPackage başla → ${keys.join(', ')}`);
-      const result = await pkgMgr.handleExportPackage(keys);
-      if (result.ok) {
-        logLine(`sprites:exportPackage OK → ${result.path}`);
-      } else {
-        logLine(`sprites:exportPackage FAIL → ${result.error}`);
-      }
-      return result;
-    } catch (err) {
-      logLine(`sprites:exportPackage crash → ${err.message}`);
-      return { ok: false, error: err.message };
-    }
-  });
-
-  // STARTER-OFFICE-01 — OFİS PAKETİ (.crewpane-office.zip): bir ofisin YAPISI
-  // (takımlar + roller + kişilikler + masa düzeni + skill'ler + örnek board)
-  // paylaşılabilir tek dosya olur.
-  //
-  // ⚠️ SIR GEÇMEZ: paket nesnesini renderer ÜRETİR ve TEMİZLER (officePack.ts →
-  // `sanitizeOfficePack`); main yalnız yazar/okur ve hiçbir anahtar deposunu
-  // OKUMAZ. Şema kapısı da renderer'dadır (tek gerçek: `validateOfficePack`).
-  // Buradaki kapılar dosya düzeyindedir: boyut tavanı, yol hapsi, sha256.
-  //
-  // GERİ ALMA: dışa aktarım yalnız BİR DOSYA üretir (kuruluma dokunmaz) → geri
-  // alma = dosyayı silmek. Hata yolunda yarım zip diskte bırakılmaz.
-  const officePkg = require('./src/agents/officePackageManager.cjs');
-
-  ipcMain.handle('office:exportPack', async (_event, payload) => {
-    const pack = payload && payload.pack;
-    const skills = (payload && payload.skills) || [];
-    try {
-      logLine(`office:exportPack başla → ${pack && pack.meta && pack.meta.name}`);
-      const result = await officePkg.handleExportOfficePack(pack, skills, {});
-      if (result.ok) logLine(`office:exportPack OK → ${result.path} (${result.bytes} bayt)`);
-      else logLine(`office:exportPack FAIL → ${result.error}`);
-      return result;
-    } catch (err) {
-      logLine(`office:exportPack crash → ${err.message}`);
-      return { ok: false, error: err.message };
-    }
-  });
-
-  ipcMain.handle('office:readPack', async (_event, zipPath) => {
-    if (!zipPath || typeof zipPath !== 'string') {
-      return { ok: false, error: 'Dosya yolu gerekli' };
-    }
-    try {
-      logLine(`office:readPack başla → ${zipPath}`);
-      const result = await officePkg.handleReadOfficePack(zipPath);
-      if (result.ok) {
-        logLine(`office:readPack OK → ${result.pack.meta && result.pack.meta.name} (${result.skills.length} skill)`);
-      } else {
-        logLine(`office:readPack FAIL → ${result.error}`);
-      }
-      return result;
-    } catch (err) {
-      logLine(`office:readPack crash → ${err.message}`);
-      return { ok: false, error: err.message };
-    }
-  });
 
   // ADP-243 (ADR-014 Karar 5) — the in-app "Hafıza" (Memory) view: scan the file-based
   // memory (agents/shared/global) under the selected workspace and return a node-link
@@ -8441,11 +8260,6 @@ function wireIpc() {
     const hits = r.hits.filter((h) => withinActiveRoots(h.file)).map((h) => ({ ...h, file: displayPath(h.file) }));
     return { ...r, hits };
   });
-  // ADP-437 — office layout persistence (userData JSON; origin-stable across the
-  // random-port restarts). SYNC get so the office reads it during mount (same
-  // rationale as editorState); async set on every layout/floor/asset change.
-  ipcMain.on('office:state:get', (event) => { event.returnValue = readOfficeState(); });
-  ipcMain.handle('office:state:set', (_event, state) => writeOfficeState(state));
 
   // ADP-242 — uzun-sprint kalıcılığı. Renderer'ın fs erişimi yok; run durumu her
   // transition'da buraya iner ve sprintStore atomik yazar (tmp+rename). Path'i HEP
@@ -8900,92 +8714,6 @@ function wireIpc() {
   // ADP-335 — bildirim merkezi bu ikisini kullanır: mevcut hataları oku + log'u aç (tıklama).
   ipcMain.handle('module:faults', () => ({ ok: true, faults: moduleFaults.slice(-20) }));
 
-  // ─── PANE-CAP-01 — KAYNAK BEKÇİSİ UCU ──────────────────────────────────────
-  // Karar MAIN'dedir (resourceGovernor); renderer yalnız DURUMU okur ve kullanıcının
-  // KARARINI (yine de aç / eşik değiştir / kapat) geri taşır. Renderer'da ikinci bir
-  // "yeterli bellek var mı" mantığı YOKTUR — iki gerçek olurdu.
-  ipcMain.handle('resource:state', () => ({ ok: true, state: resourceGovernor().state() }));
-
-  // "Yine de aç" — kullanıcı HER ZAMAN açabilir (Eren: limit yok). Onay SÜRE-KUTULU:
-  // bir kez onaylayan kullanıcı her spawn'da yeniden sorgulanmaz, ama onay da sonsuza
-  // kadar yaşamaz (makine gerçekten boğulursa kart yeniden çıkar).
-  ipcMain.handle('resource:allowAnyway', (_event, ms) => {
-    const r = resourceGovernor().allowAnyway(Number(ms));
-    return { ok: true, ...r, state: resourceGovernor().state() };
-  });
-
-  // Ayarlar: bekçiyi kapat/aç, eşikleri değiştir. Kapalı-liste nöbetinden GEÇER
-  // (agentSettings.sanitizeResourceGovernor) ve DİSKE yazılır — yeniden açılışta
-  // kullanıcının kararı korunur.
-  ipcMain.handle('resource:configure', (_event, patch) => {
-    const clean = agentSettings.sanitizeResourceGovernor({
-      ...(agentSettings.readSettings().resourceGovernor || {}),
-      ...(patch && typeof patch === 'object' ? patch : {}),
-    });
-    try {
-      agentSettings.writeSettings({ resourceGovernor: clean });
-    } catch (err) {
-      logLine(`resourceGovernor ayarı yazılamadı: ${err.message} — bellekte uygulanıyor`);
-    }
-    return { ok: true, state: resourceGovernor().configure(clean) };
-  });
-
-  // BİTMİŞ PANE BİLDİRİMİ. "Bitmiş" = terminal statü + >15 dk sessiz (ÖLÇÜM, iddia
-  // değil: `lastDataAt` pane'in gerçek son baytıdır). `department` verilirse YALNIZ
-  // o takım sayılır — başka takımın pane'i listeye bile GİRMEZ (kart kuralı).
-  ipcMain.handle('resource:finishedPanes', (_event, opts) => {
-    const now = Date.now();
-    const department = opts && typeof opts.department === 'string' ? opts.department : null;
-    const idleMs = Number.isFinite(opts && opts.idleMs) ? Number(opts.idleMs) : undefined;
-    const rows = [];
-    for (const [paneId, e] of ptys) {
-      rows.push({
-        paneId,
-        agentId: e.agentId ?? null,
-        teamId: e.department ?? null,
-        label: e.label ?? null,
-        status: agentRunner.statusFor(e.lastDataAt, now),
-        lastOutputAt: e.lastDataAt || e.startedAt || 0,
-      });
-    }
-    const finished = resourceGovernorModule.finishedPanes(rows, { now, idleMs, teamId: department });
-    return { ok: true, panes: finished, livePanes: ptys.size };
-  });
-
-  // Bitmiş pane'leri KAPAT — YALNIZ renderer'ın kullanıcıya gösterip ONAYLATTIĞI
-  // kimlikler. Main hiçbir pane'i KENDİLİĞİNDEN kapatmaz; bu uç bir onayın ucudur.
-  // Ek nöbet: istenen her paneId yeniden ÖLÇÜLÜR (hâlâ bitmiş mi?) — kart açıkken
-  // canlanan bir worker sırf listede kaldığı için öldürülmesin.
-  ipcMain.handle('resource:closeFinished', (_event, opts) => {
-    const ids = Array.isArray(opts && opts.paneIds) ? opts.paneIds.filter((v) => typeof v === 'string') : [];
-    const now = Date.now();
-    const closed = [];
-    const skipped = [];
-    for (const paneId of ids) {
-      const e = ptys.get(paneId);
-      if (!e) { skipped.push({ paneId, why: 'pane yok' }); continue; }
-      const row = {
-        paneId,
-        teamId: e.department ?? null,
-        status: agentRunner.statusFor(e.lastDataAt, now),
-        lastOutputAt: e.lastDataAt || e.startedAt || 0,
-      };
-      if (resourceGovernorModule.finishedPanes([row], { now }).length === 0) {
-        skipped.push({ paneId, why: 'artık bitmiş değil (canlandı)' });
-        continue;
-      }
-      try {
-        if (killPaneExplicitAndCleanup(paneId)) closed.push(paneId);
-        else skipped.push({ paneId, why: 'kapatılamadı' });
-      } catch (err) {
-        skipped.push({ paneId, why: err.message });
-      }
-    }
-    logLine(`resourceGovernor: onaylı kapatma — kapandı=${closed.length} atlandı=${skipped.length}`);
-    return { ok: true, closed, skipped, state: resourceGovernor().state() };
-  });
-
-
   // ADP-901 — RENDERER tarafındaki bir yüzey degrade oldu (ofis tuvali GL bağlamını
   // kaybetti, sahne çizmeyi bıraktı…). ADP-335'in sınırı yalnız MAIN'i kapsıyordu;
   // Eren'in "ofis bembeyaz" vakasında uygulamanın o günkü log'unda TEK BİR İZ yoktu.
@@ -9033,83 +8761,6 @@ function wireIpc() {
     return { ok: true };
   });
 
-  // ── HATA-06 — OFİS TUVALİ KURTARMA MERDİVENİNİN KABUK BASAMAKLARI ──────────
-  //
-  // NEDEN MAIN'DE: SEN-F1'in merdiveni tamamen SAYFA İÇİNDE yürüyordu (Phaser'ı
-  // yık/yeniden kur, tuval elemanını yeniden yarat). Sentry `crewpane-prod`
-  // 90 günlük ölçümü bunun YETMEDİĞİNİ gösterdi: `reinit` 54 kez koştu,
-  // `recreate-canvas` SIFIR kez — yani sayfa-içi yol ölü GPU sürecine bağlı bir
-  // renderer'ı diriltemiyor ve kullanıcı "Yeniden yükle"ye bastıkça aynı hatayı
-  // görüyordu. Sayfanın KENDİSİNİ yenilemek yalnız buradan yapılabilir.
-  //
-  // EN KRİTİK KISIT — OTURUM ÖLMEZ: her pty MAIN'de yaşar (`ptys`), renderer'a
-  // bağlı DEĞİLDİR. ADP-475 bunu zaten kullanıyor (render-process-gone → win.reload()
-  // → "the agents never stopped running") ve yeniden yüklenen sayfa `did-finish-load`
-  // içinde `rebindOrphanPanes` + `restoreLivePanes` ile pane'lere geri bağlanır.
-  //
-  // `recreate-window` ise KOŞULLU: `keepPanesAliveOnWindowClose()` false dönen
-  // platformlarda (win32/linux) pencere kapanışı `killPtysForWindow`u çağırır ve
-  // kullanıcının BÜTÜN ajanları ölür. Tuvali kurtarmak için 12 canlı oturumu
-  // öldürmek kurtarma değildir → o platformda yetenek `false` bildirilir ve
-  // merdiven bu basamağı ATLAYIP dürüst statik görünüme iner.
-  let officeRecoveryHistory = [];
-  ipcMain.handle('office:recover', (event, payload) => {
-    const action = payload && typeof payload === 'object' ? String(payload.action || '') : '';
-    // E2E DİKİŞİ (ADP-232-C / CREWPANE_E2E_BLOCK_RELAUNCH deseni): bu kabuğun
-    // KABUK BASAMAĞI YOKMUŞ gibi davran. Bu uydurma bir hâl DEĞİL — web build ve
-    // 0.2.42 öncesi kabuklarda köprüde `officeRecover` gerçekten yoktur; merdiven
-    // orada `reinit → recreate-canvas → static` yürür ve kullanıcı "Yeniden yükle"
-    // düğmesini görür. Kapı o dalı (M.A.'nın ekranını) ancak böyle ölçebilir.
-    if (process.env.CREWPANE_E2E_NO_OFFICE_SHELL_RECOVERY === '1') {
-      if (action === 'capabilities') return { ok: true, reloadRenderer: false, recreateWindow: false };
-      return { ok: false, reason: 'e2e-disabled' };
-    }
-    const win = BrowserWindow.fromWebContents(event.sender);
-    const alive = !!(win && !win.isDestroyed());
-    // Yetenek beyanı: pencere yeniden yaratma YALNIZ pane'ler sağ kalıyorsa VE
-    // istek ANA pencereden geliyorsa (pop-out kendini yeniden yaratamaz).
-    const canRecreate = alive && win === appWindow && keepPanesAliveOnWindowClose();
-    if (action === 'capabilities') {
-      return { ok: true, reloadRenderer: alive, recreateWindow: canRecreate };
-    }
-    if (!alive) return { ok: false, reason: 'no-window' };
-    // Kurtarma FIRTINASI kapısı — ADP-901'in bilerek engellediği şey. Yeniden
-    // yükleme döngüsü kullanıcı için ölü tuvalden BETERDİR (hiçbir şey anlatmaz).
-    // Aynı bütçe defteri: crashWatchdog.decideReload (MAX_RELOADS / RELOAD_WINDOW_MS).
-    const { reload, history } = crashWatchdog.decideReload(officeRecoveryHistory, Date.now());
-    officeRecoveryHistory = history;
-    if (!reload) {
-      logLine(
-        `HATA-06 office:recover REDDEDİLDİ (${action}) — ${history.length} deneme / `
-          + `${crashWatchdog.RELOAD_WINDOW_MS}ms bütçesi doldu; statik görünümde kalınıyor`,
-      );
-      return { ok: false, reason: 'budget-exhausted' };
-    }
-    if (action === 'reload-renderer') {
-      logLine(`HATA-06 office:recover: renderer yeniden yükleniyor (deneme ${history.length}/${crashWatchdog.MAX_RELOADS}) — pane'lere DOKUNULMUYOR`);
-      // Gecikme: bu çağrının cevabı ve o basamağın telemetrisi sayfa ölmeden çıksın.
-      setTimeout(() => { try { win.reload(); } catch (e) { logLine(`office:recover reload hata: ${e.message}`); } }, 250);
-      return { ok: true, started: true };
-    }
-    if (action === 'recreate-window') {
-      if (!canRecreate) {
-        logLine('HATA-06 office:recover: pencere yeniden yaratma REDDEDİLDİ — bu platformda pane\'ler pencere kapanışında ölür');
-        return { ok: false, reason: 'would-kill-panes' };
-      }
-      logLine(`HATA-06 office:recover: pencere yeniden yaratılıyor (deneme ${history.length}/${crashWatchdog.MAX_RELOADS}) — ${ptys.size} pane YAŞAMAYA DEVAM EDER`);
-      const url = appBaseUrl;
-      setTimeout(() => {
-        try {
-          win.close(); // pane'ler ADP-905 gereği macOS'ta reap EDİLMEZ
-          createAppWindow(url); // did-finish-load → rebindOrphanPanes + restoreLivePanes
-        } catch (e) {
-          logLine(`office:recover pencere yeniden yaratma hata: ${e.message}`);
-        }
-      }, 250);
-      return { ok: true, started: true };
-    }
-    return { ok: false, reason: 'unknown-action' };
-  });
   /**
    * OBS-01 — RENDERER YÜZEYİNİN TEK ANALİTİK KAPISI ("hangi panel kullanılıyor").
    *
@@ -12092,60 +11743,6 @@ function wireIpc() {
     logLine('relaunch: requested (settings restart-apply)');
     setTimeout(() => relaunchApp('settings-restart'), 400);
     return { ok: true };
-  });
-
-  // ADP-533/ADP-553 — güncelleme IPC yüzeyi (iki modda aynı kanallar; renderer
-  // mode+phase'e bakar). Renderer'dan URL/parametre ASLA gelmez (capability modeli).
-  ipcMain.handle('update:get', () => updateStateForRenderer());
-  ipcMain.handle('update:checkNow', () => runUpdateCheck('manual')); // manuel = toggle'dan bağımsız
-  ipcMain.handle('update:download', () => {
-    // LIC-ENFORCE-01 — İKİNCİ SAVUNMA HATTI. Kontrol anında lisans varken kapanmış
-    // olabilir (kalp atışı ~5 dk) ve `updateState` bayat kalır: indirme fiilinin
-    // kendisi de kapıya sorar. Ret MAKİNE-OKUNUR + dürüst cümleli döner.
-    const licenseGate = updateLicenseGateNow();
-    if (!licenseGate.allowed) {
-      logLine(`update:download REDDEDİLDİ (${licenseGate.reason}) — lisans kapısı`);
-      return {
-        ok: false,
-        reason: 'license_required',
-        denial: licenseGate.reason,
-        message: licenseGate.message,
-        billingUrl: licenseGate.billingUrl,
-      };
-    }
-    // ADP-553 updater modu: uygulama İÇİNDE indir (progress event'leri state'i sürer).
-    if (autoUpdaterRef) {
-      if (updateState.phase === 'downloaded') return updateStateForRenderer(); // zaten hazır
-      updateState = { ...updateState, phase: 'downloading', progressPercent: 0 };
-      pushUpdateState();
-      autoUpdaterRef.downloadUpdate().catch(() => { /* sessiz — error event'i düşürür */ });
-      return { ok: true, mode: 'updater' };
-    }
-    // Faz 1 (notify): URL'i MAIN belirler — ele geçirilmiş renderer rastgele site
-    // açtıramaz (parametre almıyoruz). ADP-620: beta kanalda adres tag'e bağlıdır,
-    // ama tag'in biçimi updateCheck.downloadUrlFor içinde SIKI doğrulanır.
-    const url = updateState.downloadUrl || updateCheck.DOWNLOAD_URL;
-    shell.openExternal(url);
-    return { ok: true, mode: 'notify', url };
-  });
-  ipcMain.handle('update:install', () => {
-    // ADP-553 — kurulum YALNIZ kullanıcı onayıyla (buton tıklaması); sessiz zorlama yok.
-    if (!autoUpdaterRef || updateState.phase !== 'downloaded') {
-      return { ok: false, reason: 'not-downloaded' };
-    }
-    logLine('updater: kullanıcı onayladı → quitAndInstall');
-    noteQuit('update');
-    setImmediate(() => { try { autoUpdaterRef.quitAndInstall(); } catch (err) { logLine(`updater: quitAndInstall hata (${err && err.message})`); } });
-    return { ok: true };
-  });
-  ipcMain.handle('update:dismiss', () => {
-    // "Bu sürüm için sonra" — sürüme bağlı kalıcı dismiss (settings.json; renderer
-    // localStorage restart'ı ATLATMAZ — random-port origin, ADP-437 dersi).
-    if (updateState.latestVersion) {
-      agentSettings.writeSettings({ updateDismissedVersion: updateState.latestVersion });
-    }
-    pushUpdateState();
-    return updateStateForRenderer();
   });
 
   // A-10 — "Yenilikler" (changelog) IPC yüzeyi. Salt-okunur: renderer hiçbir
