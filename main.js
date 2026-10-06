@@ -61,6 +61,8 @@ const {
 } = require('./src/features/services');
 const { registerMemoryIpc } = require('./src/features/memory');
 const { registerHandIpc } = require('./src/features/hand');
+const { registerSyncIpc } = require('./src/features/sync');
+const { registerMobileIpc } = require('./src/features/mobile');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6529,6 +6531,29 @@ function wireIpc() {
     finishPoseSampler: () => finishPoseSampler(),
     selectHandCamera: (sel) => selectHandCamera(sel),
     logLine,
+  });
+
+  // ── Sync IPC Yüzeyi (Faz 3.5 — Sıra 6) ─────────────────────────────────────
+  registerSyncIpc({
+    ipcMain,
+    getSyncRuntime: () => syncRuntime,
+    getSyncIpcSurface: () => syncIpcSurface,
+  });
+
+  // ── Mobile IPC Yüzeyi (Faz 3.5 — Sıra 6) ───────────────────────────────────
+  registerMobileIpc({
+    ipcMain,
+    mobilePending,
+    mobileCommandPending,
+    emitMobileEvent: (e) => emitMobileEvent(e),
+    getMobileGateway: () => mobileGateway,
+    mobileDeviceStore,
+    mobilePlanDenial: (opts) => mobilePlanDenial(opts),
+    startMobile: () => startMobile(),
+    getMobileGatewayLastFailure: () => mobileGatewayLastFailure,
+    mobileStartFailure: (ctx) => mobileStartFailure(ctx),
+    mobileKillSwitch: () => mobileKillSwitch(),
+    mobileProbe,
   });
 
   // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
@@ -14545,18 +14570,6 @@ function mobileListPanes() {
 
 /** Renderer'a soru sor (office/delegations/tasks) — köprünün callRenderer deseni. */
 const mobilePending = new Map();
-ipcMain.on('mobile:query:result', (_e, res) => {
-  if (!res || typeof res.requestId !== 'string') return;
-  const entry = mobilePending.get(res.requestId);
-  if (!entry) return;
-  mobilePending.delete(res.requestId);
-  clearTimeout(entry.timer);
-  entry.resolve(res.data ?? {});
-});
-// Renderer canlı olay iter (delegasyon/limit/onay) → SSE'ye yayılır.
-ipcMain.on('mobile:event', (_e, event) => {
-  if (event && typeof event.type === 'string') emitMobileEvent(event);
-});
 
 // ADP-326 — `params` (arama/filtre/sayfalama · taskId · free) gateway'de SÜZÜLÜR,
 // burada yalnız TAŞINIR: sorguyu renderer'ın mevcut Supabase yüzeyi kurar.
@@ -14578,14 +14591,6 @@ function mobileQueryRenderer(kind, params, timeoutMs = 8000) {
 // sendCommandToAgent / startTeamDelegationEx / executeDecision / executeBoard).
 // Main hiçbir iş mantığı çalıştırmaz; yalnız korelasyonlu taşır (query deseninin ikizi).
 const mobileCommandPending = new Map();
-ipcMain.on('mobile:command:result', (_e, res) => {
-  if (!res || typeof res.requestId !== 'string') return;
-  const entry = mobileCommandPending.get(res.requestId);
-  if (!entry) return;
-  mobileCommandPending.delete(res.requestId);
-  clearTimeout(entry.timer);
-  entry.resolve(res.result ?? { ok: false, error: 'boş cevap' });
-});
 
 function mobileCommandRenderer(kind, payload) {
   const win = appWindow;
@@ -14996,18 +15001,7 @@ const syncIpcSurface = syncSurface.createSyncIpc({
   getSetup: () => syncRuntime.describe(),
   log: (l) => logLine(l),
 });
-ipcMain.handle('sync:status', () => syncIpcSurface.status());
-ipcMain.handle('sync:now', async (_e, input) => {
-  // "Şimdi eşitle" TUR'u syncBoot'tan geçer: jeton tazelenir + yedek tur yeniden
-  // planlanır. `syncIpcSurface.syncNow` motoru DOĞRUDAN çağırırdı (jetonsuz).
-  const r = await syncRuntime.tick(input && input.reconcile === true ? { reconcile: true } : {});
-  return { ok: r && r.ok !== false, result: r, status: syncIpcSurface.status() };
-});
-ipcMain.handle('sync:conflicts', (_e, input) => syncIpcSurface.conflicts(input));
-ipcMain.handle('sync:restoreLoser', (_e, input) => syncIpcSurface.restoreLoser(input));
-ipcMain.handle('sync:resolveConflict', (_e, input) => syncIpcSurface.resolveConflict(input));
-ipcMain.handle('sync:approveSecret', (_e, input) => syncIpcSurface.approveSecret(input));
-ipcMain.handle('sync:resumeQueue', () => syncIpcSurface.resumeQueue());
+
 /** Tercih/kök/hedef değişti → motoru yeniden çöz (kapanışta ANINDA söker). */
 // ── SYNC-F1-7 — TERCİH IPC'Sİ (renderer ekseni: localStorage) ────────────────
 //
@@ -15038,63 +15032,6 @@ ipcMain.handle('prefs:status', () => {
   try { return { ok: true, ...p.status() }; }
   catch { return { ok: false, reason: 'error' }; }
 });
-
-ipcMain.handle('sync:refresh', (_e, input) => {
-  syncRuntime.refresh({ tickNow: !!(input && input.tickNow) });
-  return syncIpcSurface.status();
-});
-
-// Masaüstü yönetim IPC'si (Mobil erişim paneli — ADP-294 UI'ı bunları çağırır).
-ipcMain.handle('mobile:status', () => ({
-  running: !!mobileGateway,
-  ...(mobileGateway ? mobileGateway.info() : { enabled: mobileDeviceStore.loadState().enabled }),
-}));
-ipcMain.handle('mobile:enable', async () => {
-  // BL-02 — karar defter YAZILMADAN önce: reddedilen eylem kalıcı durumu değiştirmez.
-  // Metin main'de üretilir (planLimits.FEATURES) — panel kendi cümlesini KURMAZ.
-  const planGate = mobilePlanDenial();
-  if (planGate) {
-    return { ok: false, reason: 'plan_limit', error: planGate.message, denial: planGate };
-  }
-  const state = mobileDeviceStore.loadState();
-  state.enabled = true;
-  mobileDeviceStore.saveState(state);
-  const gw = await startMobile();
-  if (gw) return { ok: true, ...gw.info() };
-  // WIN-DUP-INSTANCE-01 — sebep SÖYLENİR (port dolu → "başka bir CrewPane açık").
-  const failure = mobileGatewayLastFailure || mobileStartFailure(null);
-  return { ok: false, reason: failure.reason, error: failure.error };
-});
-/** KILL-SWITCH — mobil erişimi tamamen kes (sunucu kapanır, dosyada enabled:false).
- *  TEK yol: masaüstü düğmesi de, telefondan gelen POST /m/killswitch de burayı çağırır. */
-ipcMain.handle('mobile:disable', () => mobileKillSwitch());
-ipcMain.handle('mobile:pair', () => (mobileGateway ? mobileGateway.createPairing() : { error: 'gateway kapalı' }));
-// MOB-UX-M1 (M1-b) — "Telefonunu bağla" sihirbazının ÖLÇÜM ucu. `mobile:status`
-// gateway ÇALIŞIRKEN bilgi verir; sihirbazın 2. adımı gateway KAPALIYKEN ölçüm ister
-// (MOB-UX-R1 §6.1). Karar `probeTailnet` (kabuk YOK); `probePeers` yalnız İPUCU verir
-// ve başarısızlığı KİLİT DEĞİL — bu yüzden ayrı await'te ve hatası yutulur.
-ipcMain.handle('mobile:probe', async () => {
-  const tailnet = mobileProbe.probeTailnet();
-  let peers = { available: false };
-  try {
-    peers = await mobileProbe.probePeers();
-  } catch {
-    /* ipucu ölçümü kilit üretmez (MOB-UX-R1 §5.2/§10-1) */
-  }
-  return {
-    tailnet: { ...tailnet, dnsName: peers.dnsName ?? null },
-    gateway: {
-      running: !!mobileGateway,
-      ...(mobileGateway ? mobileGateway.info() : { enabled: mobileDeviceStore.loadState().enabled }),
-    },
-    peers,
-  };
-});
-ipcMain.handle('mobile:revoke', (_e, deviceId) => ({ ok: !!(mobileGateway && mobileGateway.revokeDevice(String(deviceId || ''))) }));
-// ADP-308 — cihaz yetkisi (read ⇄ command): yalnız masaüstünden, gateway açıkken.
-ipcMain.handle('mobile:scope', (_e, deviceId, scope) => ({
-  ok: !!(mobileGateway && mobileGateway.setDeviceScope(String(deviceId || ''), String(scope || 'read'))),
-}));
 
 // VOICE-TRUNC-02 — AgentVoice dikte teslimi: köprüden TEK parça gelen metni ODAKLI
 // penceredeki odaklı yüzeye (okunabilir kutu / xterm) `webContents.insertText` ile
