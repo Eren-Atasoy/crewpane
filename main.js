@@ -204,18 +204,9 @@ const boardTaskSyncMod = require('./src/agents/boardTaskSync.cjs'); // ADP-838 �
 //     burasıydı → yayındaki üründe sıfır telemetri.)
 //   heartbeat.cjs → "kim, hangi sürümde, ne zaman aktifti" (kendi Supabase'imiz).
 const telemetryMod = require('./telemetry/telemetry.cjs');
-const heartbeatMod = require('./telemetry/heartbeat.cjs');
 const telemetryChannelMod = require('./telemetry/channel.cjs'); // build kanalı (prod|dev|test) TEK GERÇEK
-// OBS-02 — hata takibi TEK YOLU (main+renderer+worker → Sentry). Mevcut moduleFault
-// yoluna takılan bir musluktur; ikinci bir yakalama ağı DEĞİL (bkz. errorReporter.cjs).
-const errorReporter = require('./telemetry/errorReporter.cjs');
 // SEN-F2 — pane çıkışı gürültü/arıza ayrımı (SEN-01 §4.4). Saf karar, ayrı dosyada: testli.
 const paneExitClassifier = require('./telemetry/paneExit.cjs');
-// OBS-01 — ÜRÜN ANALİTİĞİ TEK YOLU (aktivasyon hunisi · panel kullanımı · plan
-// limiti redleri → PostHog). OBS-02 ile AYNI gizlilik sözleşmesi, AYNI kanal/
-// anahtar çözümü, AYNI kapatma anahtarı; ölçüm noktaları da YENİ DEĞİL — mevcut
-// `telemetryBump` ve `pushPlanLimit` musluklarına takılır (bkz. analytics.cjs).
-const analyticsMod = require('./telemetry/analytics.cjs');
 // SEC-W1-C1 — kurcalama sinyalleri (saf ölçüm; muslukları aşağıda bağlanır).
 const tamperSignals = require('./src/security/tamperSignals.cjs');
 const integrityCheck = require('./src/security/integrityCheck.cjs');
@@ -284,7 +275,6 @@ const analyticsSchema = require('./telemetry/analyticsSchema.cjs');
 // INT-OBS-01 — tek jetondan otomatik kurulum (org bul → proje aç → anahtar çek →
 // kanal başına yaz → doğrulama olayı) + sonucun şifreli defteri.
 const provisionStoreMod = require('./telemetry/provisionStore.cjs');
-const telemetryProvisionMod = require('./telemetry/telemetryProvision.cjs');
 // ADP-692 — KANAL A: liderin tur-başı brifingi (UserPromptSubmit hook'u makbuz bırakır,
 // supervisor tüketir → aynı bitiş bir de composer'a YAZILMAZ).
 const leaderBriefing = require('./src/agents/leaderBriefing.cjs');
@@ -538,6 +528,7 @@ function appDbIdentityMode() {
 // renderer'ı açılışta SONSUZA kadar bekletmesin. Bu bir hata değil bir DURUM:
 // çağıran anon'a düşer (appDbTokenFor sözleşmesi).
 const APPDB_TOKEN_TIMEOUT_MS = 12_000;
+let seatGate = null;
 
 async function appDbTokenFor(action) {
   const decision = appDbIdentityMode();
@@ -998,14 +989,56 @@ const stdioGuards = stdioGuard.installStdioGuards({
 logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
 // ── ADP-335 — MODÜL HATA SINIRI & OBS-02 HATA TAKİBİ (src/features/system/faultService.js - Faz 3.6.10)
-const { createFaultService, obsSurfaceFor } = require('./src/features/system');
+const { createFaultService, createTelemetryService } = require('./src/features/system');
+
+// ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
+const telemetryService = createTelemetryService({
+  app,
+  instancePaths,
+  agentSettings,
+  crewpaneEnv,
+  logLine,
+  getSeatGate: () => seatGate,
+  appDbTokenFor: (action) => appDbTokenFor(action),
+  rendererSupabaseTarget: () => rendererSupabaseTarget(),
+  currentUpdateChannel: () => currentUpdateChannel(),
+  isAutoUpdaterActive: () => Boolean(autoUpdaterRef),
+  resolveCredential: (service) => credentialGate.resolveCredential(service, { rootDir: REPO_ROOT }),
+  engineRegistry,
+  safeStorage: require('electron').safeStorage,
+});
+
+function analyticsNow() {
+  return telemetryService.analyticsNow();
+}
+function analyticsFirstTime(marker) {
+  return telemetryService.analyticsFirstTime(marker);
+}
+function analyticsEngineOf(command) {
+  return telemetryService.analyticsEngineOf(command);
+}
+function telemetryProvisioning() {
+  return telemetryService.telemetryProvisioning();
+}
+function telemetryTokenFor(service) {
+  return telemetryService.telemetryTokenFor(service);
+}
+function heartbeat() {
+  return telemetryService.heartbeat();
+}
+function telemetryBump(key, by, props) {
+  return telemetryService.telemetryBump(key, by, props);
+}
+function startHeartbeat() {
+  return telemetryService.startHeartbeat();
+}
 
 const faultService = createFaultService({
   app,
   getAppWindow: () => appWindow,
   logLine,
-  telemetryEnvNow: () => telemetryEnvNow(),
-  telemetryEnabledNow: () => telemetryEnabledNow(),
+  telemetryEnvNow: () => telemetryService.telemetryEnvNow(),
+  telemetryEnabledNow: () => telemetryService.telemetryEnabledNow(),
   appRoot: path.resolve(__dirname, '..'),
 });
 
@@ -1023,97 +1056,6 @@ function supervisorFor(name) {
 // TEST-ONLY sentetik hata enjeksiyonu — hata sınırının GERÇEK uygulamada tuttuğunu kanıtlamak
 // için (e2e). `CREWPANE_FAULT_INJECT=vt,gateway`. Env yoksa hiçbir etkisi yok.
 const FAULT_INJECT = String(process.env.CREWPANE_FAULT_INJECT || '').split(',').map((s) => s.trim()).filter(Boolean);
-
-// ─── OBS-01 — ÜRÜN ANALİTİĞİ KÖPRÜSÜ ─────────────────────────────────────────
-// İlk ödeyen müşteriler geldi ve neyi kullandıklarını bilmiyoruz: kaç kişi ilk
-// ajanını çalıştırabildi, hangi panel açılıyor, hangi plan limitine çarpılıyor.
-// Kablo `obsReporterNow` ile BİREBİR aynı desende kurulur (tembel · anahtar yoksa
-// nesne yine var ama ilk satırda döner · kurulamazsa uygulama YAŞAR).
-let analyticsClient = null;
-function analyticsNow() {
-  if (analyticsClient) return analyticsClient;
-  try {
-    const env = telemetryEnvNow(); // INT-OBS-01 — tek çözüm zinciri (bkz. obsReporterNow)
-    const channel = telemetryChannelMod.resolveChannel();
-    analyticsClient = analyticsMod.createAnalytics({
-      apiKey: telemetryChannelMod.resolvePostHogKey(channel, env),
-      host: telemetryChannelMod.resolvePostHogHost(env),
-      // KİMLİK: heartbeat'in ZATEN ürettiği anonim kurulum uuid'si. İkinci bir
-      // kimlik kavramı icat EDİLMEDİ — hesap/e-posta/cihaz adı analitiğe girmez.
-      distinctId: () => {
-        try { return telemetryStateForSend().installId; } catch { return null; }
-      },
-      // CANLI okuma: Ayarlar → Gizlilik'ten kapatıldığı an sonraki olay gitmez —
-      // Sentry ile TEK VE AYNI anahtar (görev gereksinimi 4).
-      enabled: () => telemetryEnabledNow(),
-      base: () => analyticsBaseProps(),
-      // Tampon boşaltma aralığı ayarlanabilir (destek + kanıt kapıları). Sınırlı:
-      // 1 sn ile 5 dk arası — yanlış bir değer ne olay fırtınası ne de sonsuz
-      // bekleme üretebilir.
-      flushIntervalMs: (() => {
-        const raw = Number(env.CREWPANE_POSTHOG_FLUSH_MS);
-        return Number.isFinite(raw) ? Math.min(Math.max(raw, 1_000), 300_000) : undefined;
-      })(),
-      log: (line) => logLine(line),
-    });
-  } catch (e) {
-    analyticsClient = {
-      track: () => ({ sent: false, reason: 'init-failed' }),
-      flush: () => ({ sent: false, reason: 'init-failed' }),
-      stats: () => ({}), pending: () => 0, enabledNow: () => false,
-    };
-    try { logLine(`analytics: kurulamadı (${e && e.message})`); } catch { /* best-effort */ }
-  }
-  return analyticsClient;
-}
-
-/**
- * ORTAK DAMGA — her olayda. OBS-02'nin `baseTags`'iyle aynı bilgi + plan katmanı.
- * `tier` burada olmasa "hangi limite çarpan kaç kişi yükseltti" sorusu ikinci bir
- * "yükseltme olayı" icat etmeyi gerektirirdi; katman her olayın üstünde taşınınca
- * o geçiş panoda kendiliğinden bir zaman çizgisi olur.
- */
-function analyticsBaseProps() {
-  let tier = 'none';
-  try {
-    const s = seatGate ? seatGate.state() : null;
-    if (s && s.tier) tier = s.tier;
-  } catch { /* lisans okunamadı → 'none' */ }
-  let locale = 'other';
-  try { locale = (agentSettings.readSettings().locale || '').slice(0, 2) || 'other'; } catch { /* varsayılan */ }
-  return {
-    app: 'crewpane',
-    channel: telemetryChannelMod.resolveChannel(),
-    app_version: app.getVersion(),
-    platform: process.platform,
-    arch: process.arch,
-    os_release: os.release(),
-    tier,
-    locale,
-  };
-}
-
-/**
- * AKTİVASYON KİLOMETRE TAŞI: bu kurulumda İLK KEZ mi oluyor?
- *
- * Huni PostHog'da kişi-bazlı da kurulabilir (aynı `distinct_id`in ilk olayı),
- * ama `first_time` bayrağı onu TEK SAYIMA indirir: "kaç kurulum ilk ajanını
- * çalıştırdı" sorusu huni yapılandırması olmadan, tek bir sayı olarak okunur.
- * İşaret ayarlara yazılır (yeniden açılışta tekrar 'ilk' saymasın).
- * @returns {boolean}
- */
-function analyticsFirstTime(marker) {
-  try {
-    const cur = agentSettings.sanitizeTelemetryState(agentSettings.readSettings().telemetryState);
-    if (cur.milestones.includes(marker)) return false;
-    agentSettings.writeSettings({
-      telemetryState: { ...cur, milestones: [...cur.milestones, marker] },
-    });
-    return true;
-  } catch {
-    return false; // yazamıyorsak 'ilk' DEME — huniyi şişirmek, boş bırakmaktan kötü.
-  }
-}
 
 
 
@@ -4061,7 +4003,6 @@ const prefsWhitelist = require('./prefs/prefsWhitelist.cjs');
 const syncSurface = require('./sync/syncIpc.cjs');
 const memoryIndexDerive = require('./src/memory/memoryIndexDerive.cjs');
 
-let seatGate = null;
 let boundAccount = null;
 
 const authService = createAuthService({
@@ -4326,47 +4267,6 @@ function integrations() {
  */
 function engineKeyStore() {
   try { return engineAuth.createVaultApiKeyStore(integrations().vault); } catch { return null; }
-}
-
-// ─── INT-OBS-01 — TELEMETRİ OTOMATİK KURULUMU (Sentry · PostHog) ─────────────
-// Kullanıcı Entegrasyon Merkezi'nde tek jeton yapıştırır; gerisini ürün yapar.
-// Jeton `integrations().vault`ta (diğer entegrasyonlarla AYNI kasa, AYNI kapı);
-// kurulumun ÜRETTİĞİ türev anahtarlar `provisionStore`da (gerekçe o dosyada).
-let telemetryProvisionCore = null;
-function telemetryProvisioning() {
-  if (telemetryProvisionCore) return telemetryProvisionCore;
-  const store = provisionStoreMod.createProvisionStore({
-    safeStorage: require('electron').safeStorage,
-    homeDir: instancePaths.crewpaneHome(),
-    log: (line) => logLine(line),
-  });
-  const provisioner = telemetryProvisionMod.createTelemetryProvisioner({
-    store,
-    channel: () => telemetryChannelMod.resolveChannel(),
-    appVersion: app.getVersion(),
-    log: (line) => logLine(line),
-  });
-  telemetryProvisionCore = { store, provisioner };
-  return telemetryProvisionCore;
-}
-
-/**
- * Kurulum için jetonu KASADAN çöz. Sır bu fonksiyondan ÇIKAR ama YALNIZ
- * `telemetryProvisioning().provisioner`a gider; renderer'a, log'a, dönüş
- * değerine ASLA girmez (`requireCredential` deseninin aynısı).
- */
-function telemetryTokenFor(service) {
-  const r = credentialGate.resolveCredential(service, { rootDir: REPO_ROOT });
-  return r.ok ? r.secret : null;
-}
-
-/** Telemetri env'i — provision store ÜSTTE, `~/.crewpane/telemetry.env` ESKİ yol. */
-function telemetryEnvNow() {
-  try {
-    return telemetryMod.resolveTelemetryEnv({ provisionStore: telemetryProvisioning().store });
-  } catch {
-    return telemetryMod.loadDsnEnvFromCrewPane({}); // store açılamadıysa eski yol
-  }
 }
 
 /**
@@ -9426,119 +9326,6 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
     noteQuit('signal', sig);
     try { app.quit(); } catch { process.exit(143); }
   });
-}
-
-// ---------------------------------------------------------------------------
-// ADP-845 — GÜNLÜK HEARTBEAT (ADP-805 §3.4). Çekirdek `telemetry/heartbeat.cjs`
-// içinde ve saf; burada YALNIZ bağlantılar var.
-//
-// OPT-OUT ZİNCİRİ (üç kapı, hepsi kapatır):
-//   1. settings.telemetryEnabled === false   → kullanıcının Ayarlar'daki anahtarı
-//   2. CREWPANE_TELEMETRY=0                → kill-switch (destek/QA)
-//   3. instance 'test'                       → e2e filosu dev DB'ye satır YAZMAZ
-// ---------------------------------------------------------------------------
-function telemetryEnabledNow() {
-  if (crewpaneEnv.readEnv('TELEMETRY') === '0') return false;
-  // e2e/test instance'ı BİLEREK sessiz: onlarca açılışın her biri gerçek
-  // heartbeat satırı yazsaydı pano yalan söylerdi (updater'daki aynı karar).
-  if (instancePaths.instanceId() === 'test' && crewpaneEnv.readEnv('TELEMETRY') !== '1') return false;
-  return agentSettings.readSettings().telemetryEnabled !== false;
-}
-
-/** Kurulum kimliği + oturum sayacı. İlk çağrıda uuid üretir ve ayarlara yazar. */
-function telemetryStateForSend() {
-  const s = agentSettings.readSettings();
-  const st = agentSettings.sanitizeTelemetryState(s.telemetryState);
-  if (!st.installId) {
-    st.installId = crypto.randomUUID();
-    st.sessions = 1;
-    agentSettings.writeSettings({ telemetryState: st });
-  }
-  return st;
-}
-
-let _heartbeat = null;
-function heartbeat() {
-  if (_heartbeat) return _heartbeat;
-  _heartbeat = heartbeatMod.createHeartbeat({
-    enabled: telemetryEnabledNow,
-    target: () => {
-      const t = rendererSupabaseTarget();
-      return t && t.url && t.anonKey ? { url: t.url, anonKey: t.anonKey, schema: t.schema } : null;
-    },
-    // Board senkronu / mobil ofis / renderer ile AYNI kapı. ok:false → gönderim yok.
-    accessToken: () => appDbTokenFor('telemetry:heartbeat'),
-    state: telemetryStateForSend,
-    saveState: (patch) => {
-      const cur = agentSettings.sanitizeTelemetryState(agentSettings.readSettings().telemetryState);
-      agentSettings.writeSettings({ telemetryState: { ...cur, ...patch } });
-    },
-    info: () => ({
-      app: 'crewpane',
-      appVersion: app.getVersion(),
-      buildChannel: telemetryChannelMod.resolveChannel(), // buildChannel.cjs TEK GERÇEK
-      updateChannel: currentUpdateChannel(),
-      updaterMode: autoUpdaterRef ? 'updater' : 'notify',
-      platform: process.platform,
-      osRelease: os.release(),
-      arch: process.arch,
-      uiLocale: (app.getLocale() || '').slice(0, 5),
-    }),
-    log: (line) => logLine(line),
-  });
-  return _heartbeat;
-}
-
-/**
- * Sayaç artışı — ÇAĞRI YERLERİ İÇİN tek yüzey. Beyaz liste dışı anahtar düşer.
- *
- * OBS-01 — AKTİVASYON HUNİSİNİN MUSLUĞU BURASI. Görevin kuralı "yeni ölçüm
- * noktası icat etme" idi; huninin üç adımı da ZATEN bu fonksiyondan geçiyordu:
- *   pty:spawn → panes_opened / agents_spawned   ·   boardSync dispatch → delegations
- * Yani tek bir `if` satırı yerine tek bir MUSLUK eklendi ve huni, ölçtüğü
- * davranışla aynı kodu paylaşır: heartbeat sayacı ile PostHog hunisi ASLA
- * ayrışamaz (biri sayarken diğerinin saymadığı bir yol yoktur).
- */
-const ANALYTICS_FUNNEL_EVENT = Object.freeze({
-  panes_opened: 'pane_opened',
-  agents_spawned: 'agent_spawned',
-  delegations: 'delegation_started',
-  tasks_created: 'task_created', // PH-01 — köprüdeki /telemetry/bump ile beslenir
-});
-
-/**
- * WIN-FIRSTRUN-01 (K5) — analitik `engine` özelliği için KAPALI KÜME dönüşümü.
- * Defterdeki motor kimliği aynen; ajan olmayan pane (kabuk) 'none'; bilinmeyen 'other'.
- * Şema (analyticsSchema.cjs) enum'u bu üçlüden başkasını zaten düşürür.
- */
-function analyticsEngineOf(command) {
-  if (!command) return 'none';
-  const id = String(command);
-  return engineRegistry.isRegisteredEngine(id) ? id : 'other';
-}
-
-function telemetryBump(key, by, props) {
-  try { heartbeat().bump(key, by); } catch { /* telemetri asla çağıranı düşürmez */ }
-  try {
-    const event = ANALYTICS_FUNNEL_EVENT[key];
-    if (!event) return; // memory_writes/voice_seconds → yalnız sayaç
-    analyticsNow().track(event, { first_time: analyticsFirstTime(event), ...(props || {}) });
-  } catch { /* analitik asla çağıranı düşürmez */ }
-}
-
-/** Açılışta bir kez: oturum sayacı + zamanlayıcılar. */
-function startHeartbeat() {
-  try {
-    const s = agentSettings.readSettings();
-    const st = agentSettings.sanitizeTelemetryState(s.telemetryState);
-    agentSettings.writeSettings({
-      telemetryState: { ...st, installId: st.installId || crypto.randomUUID(), sessions: (st.sessions || 0) + 1 },
-    });
-    heartbeat().start();
-    if (!telemetryEnabledNow()) logLine('telemetry: heartbeat KAPALI (opt-out / kill-switch / test instance)');
-  } catch (e) {
-    logLine(`telemetry: heartbeat başlatılamadı (${e && e.message})`);
-  }
 }
 
 /**
