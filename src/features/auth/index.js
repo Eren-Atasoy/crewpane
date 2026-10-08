@@ -9,11 +9,14 @@ const { registerPlanIpc } = require('./planIpc');
 const { createAuthService } = require('./service');
 const { createAccountBindingService } = require('./accountBindingService');
 const { createSeatGateService } = require('./seatGateService');
+const { createPlanLimitService, PLAN_NUDGE_MIN_MS } = require('./planLimitService');
 
 module.exports = {
   createAuthService,
   createAccountBindingService,
   createSeatGateService,
+  createPlanLimitService,
+  PLAN_NUDGE_MIN_MS,
   registerEngineIpc,
   registerEngineAuthIpc,
   registerEngineProfilesIpc,

@@ -3973,7 +3973,7 @@ function notifyScreenshotsMovedOnce() {
 
 // ─── ADP-390 (ADR-027 / G9) — CrewPane hesabı + CrewPane seat ────────────────
 // Kurulum ve boğazlar src/features/auth/service.js içinde modülerleştirildi (Faz 3.6.8).
-const { createAuthService } = require('./src/features/auth');
+const { createAuthService, createPlanLimitService } = require('./src/features/auth');
 const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
 // ADP-780-B — bu kopyanın URL şeması (prod: crewpane · dev: crewpane-dev · test: crewpane-test).
 const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
@@ -3999,6 +3999,30 @@ const syncSurface = require('./sync/syncIpc.cjs');
 const memoryIndexDerive = require('./src/memory/memoryIndexDerive.cjs');
 
 let boundAccount = null;
+
+// ─── ADP-660/BL-01 — Katman Limitleri & Nudge Yönetimi (src/features/auth/planLimitService.js - Faz 3.6.13)
+const planLimitService = createPlanLimitService({
+  getSeatGate: () => seatGate,
+  getAppWindow: () => appWindow,
+  analyticsNow: () => analyticsNow(),
+  logLine,
+});
+
+function pushPlanLimit(denial) {
+  return planLimitService.pushPlanLimit(denial);
+}
+function planDenial(feature, current = 0, opts = {}) {
+  return planLimitService.planDenial(feature, current, opts);
+}
+function workspacePlanDenial(root) {
+  return planLimitService.workspacePlanDenial(root);
+}
+function planWaveLimit(requested) {
+  return planLimitService.planWaveLimit(requested);
+}
+function rememberWorkspaceRoot(root) {
+  return planLimitService.rememberWorkspaceRoot(root);
+}
 
 const authService = createAuthService({
   instancePaths,
@@ -4090,128 +4114,6 @@ function relaunchForAccountChange(nextKey, reason) {
 //   • BL-01 `workspace:provision` + `switchWorkspaceRoot` → çalışma alanı tavanı
 //     (yalnız YENİ bir kök benimsemede; bilinen köke geçiş limite girmez)
 //   • BL-01 köprü `/sprint` → dalga tavanı (REDDETMEZ, dalgayı KISITLAR + söyler)
-
-/** Nudge fırtınası önleyici: aynı yetenek için en fazla 60sn'de bir bildirim. */
-const PLAN_NUDGE_MIN_MS = 60_000;
-const planNudgeLast = new Map();
-
-/** Reddi renderer'a bildir (kapatılabilir nudge). Ekranı OLMAYAN yollar da çalışır. */
-function pushPlanLimit(denial) {
-  if (!denial) return;
-  // ─── OBS-01 — PLAN LİMİTİ ANALİTİĞİ ────────────────────────────────────────
-  // BL serisi Basic'e sınır koydu ama "hangi sınıra kaç kişi çarpıyor, kaçı
-  // Pro'ya geçiyor" ÖLÇÜLEMİYORDU — yani sınırların işe yarayıp yaramadığı
-  // bilinmiyordu. Yeni bir ölçüm noktası İCAT EDİLMEDİ: reddin ZATEN geçtiği
-  // tek yer burası.
-  //
-  // ⚠️ MUSLUK, NUDGE FRENİNİN ÖNÜNDE. Aşağıdaki `PLAN_NUDGE_MIN_MS` freni bir UI
-  // kararıdır ("kullanıcıyı 60 sn'de bir kereden fazla rahatsız etme"), bir ÖLÇÜM
-  // kararı değil. Musluğu frenin arkasına koysaydık soru değişirdi: "kaç kez
-  // çarpıldı" yerine "kaç kez bildirim gösterildi" ölçülür ve arka arkaya duvara
-  // toslayan (yani en çok yükseltmeye yakın olan) kullanıcı EN AZ sayılırdı.
-  // Gürültü kapağı analitiğin kendi hız sınırında (analytics.cjs).
-  //
-  // Kapsam notu (dürüstlük): `planDenial(..., {notify:false})` yolu buraya HİÇ
-  // gelmez, dolayısıyla sayılmaz. Bu bilinçli — o yol kullanıcının İSTEMEDİĞİ
-  // (açılışta kendiliğinden denenen) bir işin reddidir; onu "duvara çarpma"
-  // saymak mobilRemote sayısını açılış gürültüsüyle şişirirdi.
-  try {
-    const spec = planLimits.FEATURES[denial.feature];
-    analyticsNow().track('plan_limit_hit', {
-      feature: analyticsSchema.featureOf(denial.feature),
-      limit: denial.limit,
-      current: denial.current,
-      kind: (spec && spec.kind) || 'other',
-    });
-  } catch { /* analitik reddi bildirmeyi düşüremez */ }
-  const last = planNudgeLast.get(denial.feature) || 0;
-  const now = Date.now();
-  if (now - last < PLAN_NUDGE_MIN_MS) return;
-  planNudgeLast.set(denial.feature, now);
-  if (appWindow && !appWindow.isDestroyed()) {
-    try { appWindow.webContents.send('plan:limit', denial); } catch { /* pencere gitti */ }
-  }
-}
-
-/**
- * Limit kararı. İzinliyse null, değilse denial nesnesi (metin main'de üretilir) —
- * ve kullanıcı BUNU ekranda görür (sessiz ret yok).
- *
- * BL-02 — `notify:false` YALNIZ kullanıcının İSTEMEDİĞİ bir yol için: açılışta
- * kendiliğinden denenen ve plan yüzünden yapılmayan işler. Gerekçesi ölçüldü:
- * mobil gateway'in açılıştaki otomatik kalkışı reddedilince nudge basıyordu ve
- * (a) hiçbir şey yapmamış kullanıcıyı açılışta yükseltme mesajıyla karşılıyordu
- * (PRICING-PSYCHOLOGY §7: "ilk oturumda tek bir yükseltme duvarı görmez"),
- * (b) `PLAN_NUDGE_MIN_MS` penceresini TÜKETİYORDU — kullanıcı 23sn sonra kendi
- * eliyle "Mobil erişimi aç" dediğinde ret SESSİZ kalıyordu. Karar hiç değişmez,
- * yalnız EKRANA basma hakkı kullanıcının kendi eylemine bırakılır.
- *
- * @param {string} feature - planLimits.FEATURES anahtarı
- * @param {number} [current] - şu anki kullanım
- * @param {{notify?:boolean}} [opts] - notify:false → yalnız log (ekrana basma)
- */
-function planDenial(feature, current = 0, { notify = true, variant = null, context = null } = {}) {
-  const snapshot = seatGate ? seatGate.state() : null;
-  // PLAN-FIX-01 (F-4) — `variant`/`context` YALNIZ CÜMLEYİ seçer; kararı (tavan,
-  // hedef katman, allowed) değiştirmez. Metin yine planLimits.cjs'te kalır.
-  const decision = planLimits.decide({ snapshot, feature, current, variant, context });
-  if (decision.allowed) return null;
-  logLine(`planLimits: ${feature} REDDEDİLDİ (katman=${decision.tier} tavan=${decision.limit} kullanım=${decision.current})`);
-  if (notify) pushPlanLimit(decision);
-  return decision;
-}
-
-/**
- * BL-01 — ÇALIŞMA ALANI TAVANI. `integ:add` deseninin birebir aynısı:
- *   1. Hedef kök kullanıcının ZATEN bildiği bir alansa limit HİÇ sorulmaz —
- *      mevcut alanlar arasında gezinmek yeni alan açmak değildir.
- *   2. Sayamıyorsak (ayar okunamadı) limitle uğraşmayız: bir sayım arızası
- *      ödeyen kullanıcıyı kendi klasöründen edemez (KURAL 2, fail-open).
- * @param {string} root - benimsenmek istenen kök
- * @returns {object|null} denial (ekrana da düşer) ya da null (izinli)
- */
-function workspacePlanDenial(root) {
-  let known;
-  try {
-    if (workspaceOnboarding.isKnownWorkspace(root)) return null;
-    known = workspaceOnboarding.knownWorkspaces();
-  } catch (err) {
-    logLine(`planLimits: workspaces sayımı okunamadı (${err.message}) — limit UYGULANMADI`);
-    return null;
-  }
-  return planDenial('workspaces', known.length);
-}
-
-/**
- * BL-01 — DELEGASYON DALGASI TAVANI. Bir dalga tavanı REDDETMEZ, DARALTIR: sprint
- * durursa müşteri işini kaybeder, oysa ürün vaadi "daha az worker, aynı iş". Lider
- * `maxConcurrent` vermediyse renderer'ın kullanacağı varsayılanla ölçülür (tek
- * kaynak: spawnSpec.SPRINT_DEFAULT_WAVE) — yoksa tavan görünmez biçimde atlanırdı.
- * Kısıtlama SESSİZ DEĞİL: kullanıcı nudge'ı ekranda görür, log'da satır kalır.
- * @param {number|undefined} requested - liderin istediği dalga genişliği
- * @returns {number} uygulanacak dalga genişliği
- */
-function planWaveLimit(requested) {
-  const asked = Number.isInteger(requested) && requested > 0
-    ? requested
-    : require('./src/agents/spawnSpec.cjs').SPRINT_DEFAULT_WAVE;
-  const snapshot = seatGate ? seatGate.state() : null;
-  const { value, clamped, denial } = planLimits.clamp({ snapshot, feature: 'delegateWave', requested: asked });
-  if (clamped && denial) {
-    logLine(`planLimits: delegateWave KISITLANDI (katman=${denial.tier} tavan=${denial.limit} istenen=${denial.current})`);
-    pushPlanLimit(denial);
-  }
-  return value;
-}
-
-/** Benimsenen kökü deftere işle (limit sayımının tabanı). Best-effort. */
-function rememberWorkspaceRoot(root) {
-  try {
-    workspaceOnboarding.rememberWorkspace(root);
-  } catch (err) {
-    logLine(`workspace defteri yazılamadı (${err.message}) — aktif kök yine bilinir sayılır`);
-  }
-}
 
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
 const { createIntegrationService } = require('./src/features/services');
