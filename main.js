@@ -49,6 +49,7 @@ const { registerPrefsIpc, createSyncService } = require('./src/features/sync');
 const { createMobileService } = require('./src/features/mobile');
 const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
+const { createNextServerManager } = require('./src/main/server');
 let windowManager = null;
 let mobileService = null;
 
@@ -6534,211 +6535,23 @@ function wireIpc() {
 // Embedded Next server (dev/prod) — port management + ready-wait + clean kill.
 // ---------------------------------------------------------------------------
 
-let nextServer = null; // child_process of `next dev` / standalone server.js
-// SMOKE-ISO-01 — beklenmedik ölüm bütçesi (pencere başına 1 yeniden başlatma).
-let nextServerRestartState = nextServerPolicy.initialState();
+const nextServerManager = createNextServerManager({
+  app,
+  spawn,
+  repoRoot: REPO_ROOT,
+  logLine,
+  noteQuit,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  crewpaneHome,
+  crewpaneEnv,
+  helperReaper,
+  nextServerPolicy,
+  mappedProjectRootsForReports,
+});
 
-/** Reserve a free TCP port from the OS, then release it for Next to bind. */
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
-}
-
-/** Poll the server until it answers an HTTP request (any status) or we time out. */
-function waitForServer(url, { timeoutMs = 60000, intervalMs = 250 } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      const req = http.get(url, (res) => {
-        res.resume();
-        resolve();
-      });
-      req.on('error', () => {
-        if (Date.now() > deadline) reject(new Error(`server not ready within ${timeoutMs}ms: ${url}`));
-        else setTimeout(attempt, intervalMs);
-      });
-      req.setTimeout(2000, () => req.destroy());
-    };
-    attempt();
-  });
-}
-
-function standaloneDir() {
-  const localStandalone = path.join(__dirname, 'standalone');
-  if (fs.existsSync(localStandalone)) return localStandalone;
-  return app.isPackaged
-    ? path.join(process.resourcesPath, 'standalone')
-    : path.join(REPO_ROOT, '.next', 'standalone');
-}
-
-// ADP-434 — mobil sprite dizini. Paketli app'te `public/` app.asar İÇİNDE DEĞİL,
-// `standalone/public/` altındadır (Next standalone extraResources); REPO_ROOT ise
-// app.asar'a düşer → `REPO_ROOT/public/sprites` bulunamaz, gateway 404 basar ve telefon
-// baş-harf kutusuna düşer. Var olan ilk adayı seç: paketli → standalone; kaynaktan
-// koşarken → REPO_ROOT (next dev burayı servis eder), yoksa dogfood standalone kopyası.
-function mobileSpriteDir() {
-  const candidates = app.isPackaged
-    ? [
-        path.join(standaloneDir(), 'public', 'sprites', 'characters'),
-        path.join(REPO_ROOT, 'public', 'sprites', 'characters'),
-      ]
-    : [
-        path.join(REPO_ROOT, 'public', 'sprites', 'characters'),
-        path.join(standaloneDir(), 'public', 'sprites', 'characters'),
-      ];
-  return candidates.find((d) => fs.existsSync(d)) || candidates[0];
-}
-
-// ADP-556 — mobil WEB arayüzü kökü (expo export çıktısı). Paketli app'te extraResources
-// `mobile-web` olarak gelir (electron/package.json build.extraResources); kaynaktan
-// koşarken `mobile/dist` (üretimi: npm run mobile:web:export). index.html yoksa null →
-// gateway yalnız API sunar (eski davranış), telefon `/`te not-found görür.
-function mobileWebRoot() {
-  const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, 'mobile-web'), path.join(REPO_ROOT, 'mobile', 'dist')]
-    : [path.join(REPO_ROOT, 'mobile', 'dist'), path.join(process.resourcesPath, 'mobile-web')];
-  return candidates.find((d) => fs.existsSync(path.join(d, 'index.html'))) || null;
-}
-
-/**
- * Start the embedded Next server for the given mode and resolve to its base URL.
- * Both modes run via the bundled Electron node (ELECTRON_RUN_AS_NODE) so a
- * packaged app never depends on a system Node install.
- */
-async function startNextServer(mode, opts = {}) {
-  // SMOKE-ISO-01 — YENİDEN BAŞLATMADA AYNI PORT ŞART. Port `getFreePort()` ile
-  // dinamiktir (iki kopya çakışmaz — ölçüldü), ama pencereler zaten yüklenmiş
-  // `http://127.0.0.1:<port>` URL'siyle yaşıyor: yeni bir porta kalkan sunucu
-  // uygulamayı kapatmaktan kurtarır ama pencereyi ÖLÜ bir adrese bakar hâlde
-  // bırakırdı. Ölen sunucunun portu serbesttir; aynı porta geri kalkarız.
-  const port = Number.isFinite(opts.port) ? opts.port : await getFreePort();
-  const host = '127.0.0.1';
-  const url = `http://${host}:${port}`;
-  // ADP-234 — hand the resolved workspace root to the embedded Next server so
-  // server-side readers (src/lib/reports.ts reportsDirs) can derive workspace-scoped
-  // dirs; they run in a separate process and cannot see agentWorkspaceRoot directly.
-  const nodeEnv = {
-    ...process.env,
-    ELECTRON_RUN_AS_NODE: '1',
-    // ADP-232-C — unset root must stay UNSET: env values are stringified, so a null
-    // here would reach reports.ts as the literal string "null" and existsSync("null").
-    ...(agentWorkspaceRoot ? { CREWPANE_WORKSPACE_ROOT: agentWorkspaceRoot } : {}),
-    // REPORTS-ROOT-01 (FB-1007) — okuyucu (src/lib/reports.ts) supervisor'ın kök kuralını
-    // çağırır ama ayarı/defteri göremez (ayrı süreç): eşlenmiş repo kökleri buradan gider.
-    // `<root>/<proje>` adaylarını okuyucu her çağrıda diskten türetir (sonradan doğan
-    // dizin yeniden başlatma istemez). Yalnız Next çocuğuna yazılır; pane env'ine SIZMAZ.
-    ...crewpaneEnv.dualWrite({}, 'PROJECT_ROOTS', mappedProjectRootsForReports().join(path.delimiter)),
-    // ADP-727 (katman B) — ÇOCUK TARAFI NÖBETÇİ. `before-quit` bir SIGKILL'de
-    // (jetsam bellek-baskısı kill'i, Force Quit, çökme) HİÇ koşmaz; macOS çocuğu
-    // ebeveynle birlikte öldürmez → Eren'in makinesinde 11 yetim `next-server`
-    // birikmişti (en eskisi 8 gün 17 saat, biri %340 CPU). Sunucu artık kendi
-    // ebeveynini yoklar ve ebeveyn ölünce KENDİNİ sonlandırır.
-    CREWPANE_PARENT_PID: String(process.pid),
-    // `--require` ÇOCUK süreçte çözülür → yol app.asar İÇİNİ göstermemeli
-    // (ADP-226'nın instancePaths.cjs yarası: asar'dan yüklenemeyen dosya = sessiz
-    // ölüm, yalnız PAKETLİ build'de). agentRunner'ın mevcut çözücüsü yeniden
-    // kullanılıyor; dosya electron/package.json `asarUnpack` listesine eklendi.
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ` : ''}--require ${JSON.stringify(path.join(__dirname, 'src', 'core', 'helperWatchdog.cjs'))}`,
-  };
-
-  if (mode === 'dev') {
-    const nextBin = path.join(REPO_ROOT, 'node_modules', 'next', 'dist', 'bin', 'next');
-    logLine(`starting next dev on ${url} (cwd=${REPO_ROOT})`);
-    nextServer = spawn(
-      process.execPath,
-      [nextBin, 'dev', '--hostname', host, '--port', String(port)],
-      { cwd: REPO_ROOT, env: nodeEnv, stdio: 'inherit' },
-    );
-  } else {
-    const serverJs = path.join(standaloneDir(), 'server.js');
-    if (!fs.existsSync(serverJs)) {
-      throw new Error(
-        `standalone server not found at ${serverJs}. Run "npm run build" (and copy ` +
-        `.next/static + public into .next/standalone) — see npm run electron:build:prep.`,
-      );
-    }
-    logLine(`starting standalone server on ${url} (${serverJs})`);
-    nextServer = spawn(process.execPath, [serverJs], {
-      cwd: standaloneDir(),
-      env: { ...nodeEnv, NODE_ENV: 'production', PORT: String(port), HOSTNAME: host },
-      stdio: 'inherit',
-    });
-  }
-
-  const proc = nextServer;
-  // ADP-727 (katman A) — defter: pid + ps başlangıç zamanı + komut imzası diske
-  // yazılır. Bir sonraki açılış, çökmeden sağ çıkan yardımcıyı BUNDAN bulup
-  // toplar (SIGKILL'de hiçbir JS handler koşmadığı için tek güvenilir yol).
-  try {
-    helperReaper.recordHelper(crewpaneHome(), {
-      pid: proc.pid, kind: 'next-server',
-      // İmza AYIRT EDİCİ olmalı: düz 'next' herhangi bir komut satırında geçebilir
-      // ve üçlü kapının üçüncü ayağını işlevsiz bırakırdı.
-      signature: mode === 'dev' ? 'next/dist/bin/next' : 'server.js',
-    });
-  } catch { /* best-effort — defter yoksa app yine açılır */ }
-  proc.on('exit', (code, signal) => {
-    logLine(`next server exited code=${code} signal=${signal ?? '-'}`);
-    try { helperReaper.forgetHelper(crewpaneHome(), proc.pid); } catch { /* best-effort */ }
-    if (nextServer === proc) nextServer = null;
-    // If the server dies UNEXPECTEDLY while the app is up, try to bring it back;
-    // only a SECOND death in the same window tears the app down.
-    // ADP-334: an INTENTIONAL stopNextServer() must NOT quit the app (it did — that is
-    // how closing the window killed the whole app, mobile gateway included).
-    if (!app.isQuitting && !proc.__stopping) {
-      // SMOKE-ISO-01 — ÖLÇÜLDÜ (kontrol kolu, kaynak koşumu): gömülü sunucuya
-      // DIŞARIDAN tek bir SIGTERM gelmesi (`code=143`) bu dal yüzünden TÜM
-      // uygulamayı kapatıyordu — 11 pane, açık oturumlar, kaydedilmemiş her şey.
-      // "Sunucu öldü" ≠ "sunucu bir daha kalkmıyor": önce AYNI PORTA geri kaldır,
-      // yalnız aynı pencerede ikinci ölümde kapat (kural+ölçüm: nextServerPolicy.cjs).
-      const decision = nextServerPolicy.decideOnUnexpectedExit(nextServerRestartState, Date.now());
-      nextServerRestartState = decision.state;
-      if (decision.action === 'restart') {
-        logLine(`next server beklenmedik öldü (code=${code} signal=${signal ?? '-'}) → ${decision.why}; port ${port} korunuyor (deneme ${decision.attempt})`);
-        startNextServer(mode, { port }).then(
-          () => logLine(`next server yeniden ayakta: http://${host}:${port}`),
-          (err) => {
-            logLine(`next server yeniden başlatılamadı: ${(err && err.message) || err}`);
-            noteQuit('next-server-gone', `restart-failed code=${code} signal=${signal ?? '-'}`);
-            app.quit();
-          },
-        );
-        return;
-      }
-      // CRASH-R1 — sebep deftere düşer: bir dahaki sefere "uygulama kendiliğinden
-      // kapandı" sorusunun cevabı ilk açılış satırında hazır olur.
-      logLine(`next server yine öldü → ${decision.why}; kapatılıyor`);
-      noteQuit('next-server-gone', `code=${code} signal=${signal ?? '-'} ${decision.why}`);
-      app.quit();
-    }
-  });
-  nextServer.on('error', (err) => logLine(`next server spawn error: ${err.message}`));
-
-  await waitForServer(url);
-  logLine(`next server ready: ${url}`);
-  return url;
-}
-
-function stopNextServer() {
-  if (nextServer && !nextServer.killed) {
-    logLine('killing next server');
-    nextServer.__stopping = true; // ADP-334 — kasıtlı durdurma: 'exit' app'i KAPATMASIN
-    // ADP-727 — SIGTERM TEK BAŞINA YETMEZ: açık soketi/isteği olan bir Next
-    // sunucusu SIGTERM'i yutup yaşamaya devam edebilir. 3 sn nezaket, sonra SIGKILL.
-    // NOT: `before-quit` yolunda main bu 3 sn dolmadan ölebilir ve zamanlayıcı hiç
-    // ateşlemez — ORASI zaten katman B'nin (çocuk nöbetçisi) işi. Bu ek, main'in
-    // YAŞAMAYA DEVAM ettiği yolları kapatır (window-all-closed non-darwin, rebuild).
-    helperReaper.killWithGrace(nextServer.pid, { graceMs: 3000 });
-  }
-  nextServer = null;
-}
+function standaloneDir() { return nextServerManager.standaloneDir(); }
+function startNextServer(mode, opts) { return nextServerManager.startNextServer(mode, opts); }
+function stopNextServer() { return nextServerManager.stopNextServer(); }
 
 // ---------------------------------------------------------------------------
 // ADP-139 (DOGFOOD Engel #2) — one-click "Rebuild & Relaunch" (option B).
