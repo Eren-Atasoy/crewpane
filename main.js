@@ -233,7 +233,7 @@ const integrityService = createIntegrityService({
   isCustomerBuild: () => require('./src/config/buildChannel.cjs').isCustomerBuild(),
   resourcesPath: process.resourcesPath || null,
   logLine: (line) => logLine(line),
-  analyticsNow: () => analyticsNow(),
+  analyticsNow: () => telemetryService.analyticsNow(),
   obsReporterNow: () => obsReporterNow(),
 });
 function integrityReportOnce() {
@@ -668,7 +668,7 @@ const updateService = createUpdateService({
   updateChannel,
   logLine,
   getSeatGate: () => seatGate,
-  heartbeat: () => heartbeat(),
+  heartbeat: () => telemetryService.heartbeat(),
 });
 
 // ── ADP-675 — UYGULAMA-İÇİ DUYURU SERVİSİ (src/features/system/announceService.js - Faz 3.6.15a)
@@ -698,7 +698,7 @@ const resetBootService = createResetBootService({
   installReset,
   resetGate,
   helperReaper,
-  analyticsNow: () => analyticsNow(),
+  analyticsNow: () => telemetryService.analyticsNow(),
 });
 
 // ── ADP-035/BOARD-IMG/FDBK — MEDYA, GEÇİCİ GÖRSEL & GÖREV EK DEPOSU (src/features/system/mediaService.js - Faz 3.6.17)
@@ -788,7 +788,7 @@ const paneRestoreService = createPaneRestoreService({
   logLine: (line) => logLine(line),
   reportModuleFault: (fault) => reportModuleFault(fault),
   planDenial: (feature, current, opts) => planDenial(feature, current, opts),
-  spawnPty: (win, opts) => spawnPty(win, opts),
+  spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
   getAppWindow: () => appWindow,
   ptys,
   isRestoreDisabled: () => RESTORE_DISABLED,
@@ -803,10 +803,10 @@ const ptyResumeService = createPtyResumeService({
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
   enforcePaneBudget: (opts) => enforcePaneBudget(opts),
-  respawnOptsFromEntry: (entry, ctx) => respawnOptsFromEntry(entry, ctx),
-  paneEngineResolver,
-  spawnPty: (win, opts) => spawnPty(win, opts),
-  killPane: (id, entry, aid, reason) => killPane(id, entry, aid, reason),
+  respawnOptsFromEntry: (entry, ctx) => paneRestoreService.respawnOptsFromEntry(entry, ctx),
+  paneEngineResolver: paneRestoreService.paneEngineResolver,
+  spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
+  killPane: (id, entry, aid, reason) => paneControlService.killPane(id, entry, aid, reason),
   isAutoresumeDisabled: () => AUTORESUME_DISABLED,
   isAppProbe: () => APP_PROBE,
   getMode: () => MODE,
@@ -839,7 +839,7 @@ const ptySpawnService = createPtySpawnService({
   readSettings: () => agentSettings.readSettings(),
   appI18n: { t: (k) => appI18n.t(k), getLocale: () => appI18n.getLocale() },
   planDenial: (feature, current, opts) => planDenial(feature, current, opts),
-  dedupeSpawnForAgent: (opts, why) => dedupeSpawnForAgent(opts, why),
+  dedupeSpawnForAgent: (opts, why) => ptyIsolationService.dedupeSpawnForAgent(opts, why),
   resolveTaskWorktreeSync: (opts) => resolveTaskWorktreeSync(opts),
   liveIsolationFiles: () => liveIsolationFiles(),
   integrationResolverOrNull: () => integrationResolverOrNull(),
@@ -849,7 +849,7 @@ const ptySpawnService = createPtySpawnService({
   engineKeyStore: () => engineKeyStore(),
   reportModuleFault: (fault) => reportModuleFault(fault),
   settleMemoryUsage: (opts) => settleMemoryUsage(opts),
-  scheduleSupervisorSweep: (delayMs) => scheduleSupervisorSweep(delayMs),
+  scheduleSupervisorSweep: (delayMs) => delegationSupervisorService.scheduleSupervisorSweep(delayMs),
   sendPaneEvent: (win, paneId, channel, payload) => (windowManager ? windowManager.sendPaneEvent(win, paneId, channel, payload) : null),
   sessionAnchor: { forget: (id) => sessionAnchor.forget(id) },
   dispatchStore: { clear: (id) => dispatchStore.clear(id) },
@@ -883,67 +883,6 @@ const paneControlService = createPaneControlService({
   agentSettings,
 });
 
-function resetCommandFor(command) {
-  return paneControlService.resetCommandFor(command);
-}
-
-function killPane(paneId, entry, agentId, why) {
-  return paneControlService.killPane(paneId, entry, agentId, why);
-}
-
-function recycleWorkerPanes(agentId, mode = 'reset') {
-  return paneControlService.recycleWorkerPanes(agentId, mode);
-}
-
-function callerScopeFor(leaderId, declared) {
-  return paneControlService.callerScopeFor(leaderId, declared);
-}
-
-function authorizeTeamScope(opts = {}) {
-  return paneControlService.authorizeTeamScope(opts);
-}
-
-async function authorizeTeamScopeInteractive(opts = {}) {
-  return paneControlService.authorizeTeamScopeInteractive(opts);
-}
-
-function listPanesForControl(caller = {}) {
-  return paneControlService.listPanesForControl(caller);
-}
-
-function closePanesForControl(payload = {}) {
-  return paneControlService.closePanesForControl(payload);
-}
-
-function focusPaneForControl(paneId, caller = {}) {
-  return paneControlService.focusPaneForControl(paneId, caller);
-}
-
-function analyticsNow() {
-  return telemetryService.analyticsNow();
-}
-function analyticsFirstTime(marker) {
-  return telemetryService.analyticsFirstTime(marker);
-}
-function analyticsEngineOf(command) {
-  return telemetryService.analyticsEngineOf(command);
-}
-function telemetryProvisioning() {
-  return telemetryService.telemetryProvisioning();
-}
-function telemetryTokenFor(service) {
-  return telemetryService.telemetryTokenFor(service);
-}
-function heartbeat() {
-  return telemetryService.heartbeat();
-}
-function telemetryBump(key, by, props) {
-  return telemetryService.telemetryBump(key, by, props);
-}
-function startHeartbeat() {
-  return telemetryService.startHeartbeat();
-}
-
 const faultService = createFaultService({
   app,
   getAppWindow: () => appWindow,
@@ -953,7 +892,6 @@ const faultService = createFaultService({
   appRoot: path.resolve(__dirname, '..'),
 });
 
-const moduleFaults = faultService.moduleFaults;
 function obsReporterNow() {
   return faultService.obsReporterNow();
 }
@@ -972,13 +910,13 @@ const delegationSupervisorService = createDelegationSupervisorService({
   getAppWindow: () => appWindow,
   planDenial: (feat, count, opts) => planDenial(feat, count, opts),
   supervisorFor: (name) => supervisorFor(name),
-  resolveWorkerNotifyPath: (dept) => resolveWorkerNotifyPath(dept),
+  resolveWorkerNotifyPath: (dept) => ptyResumeService.resolveWorkerNotifyPath(dept),
   rendererSupabaseTarget: () => rendererSupabaseTarget(),
   appDbTokenFor: (action) => appDbTokenFor(action),
-  telemetryBump: (key, by, props) => telemetryBump(key, by, props),
-  resetCommandFor: (cmd) => resetCommandFor(cmd),
+  telemetryBump: (key, by, props) => telemetryService.telemetryBump(key, by, props),
+  resetCommandFor: (cmd) => paneControlService.resetCommandFor(cmd),
   maxTasksPerSession: 10,
-  killPane: (id, entry, aid, why) => killPane(id, entry, aid, why),
+  killPane: (id, entry, aid, why) => paneControlService.killPane(id, entry, aid, why),
   probeTranscriptVerdict: (paneId, needle, opts) => probeTranscriptVerdict(paneId, needle, opts),
   probeTranscriptVerifiable: (paneId) => probeTranscriptVerifiable(paneId),
 });
@@ -1089,9 +1027,9 @@ const paneDispatchService = createPaneDispatchService({
   getAppWindow: () => appWindow,
   createDeliverPrompt,
   agentxDeliverMod,
-  authorizeTeamScope: (opts) => authorizeTeamScope(opts),
+  authorizeTeamScope: (opts) => paneControlService.authorizeTeamScope(opts),
   jarvisWidgetAlive: () => (windowManager ? windowManager.jarvisWidgetAlive() : false),
-  labelTaskCodeOf: (label) => labelTaskCodeOf(label),
+  labelTaskCodeOf: (label) => paneQueryService.labelTaskCodeOf(label),
   sessionAnchor,
 });
 
@@ -1100,30 +1038,6 @@ const dispatchApplied = paneDispatchService.dispatchApplied;
 const dispatchSleep = paneDispatchService.dispatchSleep;
 const deliverToPane = paneDispatchService.deliverToPane;
 const agentxDeliverer = paneDispatchService.agentxDeliverer;
-
-function paneDispatchDecisionFor(paneId, entry, opts = {}) {
-  return paneDispatchService.paneDispatchDecisionFor(paneId, entry, opts);
-}
-
-function logDispatchDecision(paneId, decision, source) {
-  return paneDispatchService.logDispatchDecision(paneId, decision, source);
-}
-
-function refreshPaneSession(paneId, opts) {
-  return paneDispatchService.refreshPaneSession(paneId, opts);
-}
-
-function sampleLeaderGate(paneId) {
-  return paneDispatchService.sampleLeaderGate(paneId);
-}
-
-function leaderRefreshViewFor(paneId, entry, decision) {
-  return paneDispatchService.leaderRefreshViewFor(paneId, entry, decision);
-}
-
-function leaderRefreshTick(paneId, entry, decision) {
-  return paneDispatchService.leaderRefreshTick(paneId, entry, decision);
-}
 
 // PANE-CAP-01 — ADP-264'ün SABİT canlı-pane tavanı (MAX_LIVE_PANES = 24) KALDIRILDI.
 //
@@ -1286,25 +1200,12 @@ function activeWorktreePaths() {
   return ptyIsolationService.activeWorktreePaths();
 }
 
-async function prepareTaskIsolation(opts) {
-  return ptyIsolationService.prepareTaskIsolation(opts);
-}
-
 async function preflightModelGate(opts, trusted) {
   return ptyIsolationService.preflightModelGate(opts, trusted);
 }
 
 function resolveTaskWorktreeSync(opts) {
   return ptyIsolationService.resolveTaskWorktreeSync(opts);
-}
-
-/**
- * @param {object} trustedExtra B-01: main'in ÇÖZDÜĞÜ görev/worktree bağı. Yalnız
- *   main tarafından üretilir (asenkron `ensure` sonucu ya da defter okuması);
- *   `opts` üzerinden ASLA gelmez — renderer'ın yol dayatması kapalıdır (G-1).
- */
-function spawnPty(win, opts = {}, trustedExtra = null) {
-  return ptySpawnService.spawnPty(win, opts, trustedExtra);
 }
 
 // ── ADP-013/386/905/MCP-COST-01 — PANE QUERY & LIFECYCLE SERVICE (src/features/terminal/paneQueryService.js - Faz 3.6.34)
@@ -1324,50 +1225,6 @@ const paneQueryService = createPaneQueryService({
   isQuitting: () => Boolean(app.isQuitting),
   isAutotest: () => AUTOTEST,
 });
-
-function labelTaskCodeOf(label) {
-  return paneQueryService.labelTaskCodeOf(label);
-}
-
-function listPanes(win, department) {
-  return paneQueryService.listPanes(win, department);
-}
-
-function killPaneExplicitAndCleanup(paneId) {
-  return paneQueryService.killPaneExplicitAndCleanup(paneId);
-}
-
-function killPtysForWindow(winId) {
-  return paneQueryService.killPtysForWindow(winId);
-}
-
-function keepPanesAliveOnWindowClose() {
-  return paneQueryService.keepPanesAliveOnWindowClose();
-}
-
-function rebindOrphanPanes(win) {
-  return paneQueryService.rebindOrphanPanes(win);
-}
-
-function liveAgentPaneCount() {
-  return paneQueryService.liveAgentPaneCount();
-}
-
-function saveTempImage(payload) {
-  return mediaService.saveTempImage(payload);
-}
-
-function ingestTaskAttachment(payload) {
-  return mediaService.ingestTaskAttachment(payload);
-}
-
-function attachmentStore() {
-  return mediaService.attachmentStore();
-}
-
-function feedbackBridge() {
-  return mediaService.feedbackBridge();
-}
 
 // ---------------------------------------------------------------------------
 // ADP-440 — Screenshots özelliği AgentShot'a TAŞINDI (ayrı ürün).
@@ -1427,7 +1284,7 @@ let boundAccount = null;
 const planLimitService = createPlanLimitService({
   getSeatGate: () => seatGate,
   getAppWindow: () => appWindow,
-  analyticsNow: () => analyticsNow(),
+  analyticsNow: () => telemetryService.analyticsNow(),
   logLine,
 });
 
@@ -1456,10 +1313,10 @@ const authService = createAuthService({
   pushPlanLimit: (denial) => pushPlanLimit(denial),
   integrityReportOnce: () => integrityReportOnce(),
   ptys,
-  persistScreenTails: () => persistScreenTails(),
+  persistScreenTails: () => paneQueryService.persistScreenTails(),
   livePaneRegistry,
   crewpaneHome: () => crewpaneHome(),
-  killAllPtys: () => killAllPtys(),
+  killAllPtys: () => paneQueryService.killAllPtys(),
   noteQuit: (r) => noteQuit(r),
   armQuitBrake: (r) => armQuitBrake(r),
   agentSettings,
@@ -1469,11 +1326,11 @@ const authService = createAuthService({
     updateCheck,
     supervisorPushRenderer: (c, p) => delegationSupervisorService.supervisorPushRenderer(c, p),
     planWaveLimit: (r) => planWaveLimit(r),
-    spawnPty: (win, opts) => spawnPty(win, opts),
+    spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
     ptys,
     livePaneRegistry,
     crewpaneHome: () => crewpaneHome(),
-    killPane: (id, e, aid, r) => killPane(id, e, aid, r),
+    killPane: (id, e, aid, r) => paneControlService.killPane(id, e, aid, r),
     mobilePlanDenial: (opts) => mobilePlanDenial(opts),
     designPlanDenial: ({ notify = true } = {}) => planDenial('designMode', 0, { notify }),
     BrowserWindow,
@@ -1735,10 +1592,6 @@ function liveIsolationFiles() {
   return ptyIsolationService.liveIsolationFiles();
 }
 
-function dedupeSpawnForAgent(opts, why) {
-  return ptyIsolationService.dedupeSpawnForAgent(opts, why);
-}
-
 /**
  * ADP-595 — the codex custom-provider REGISTRY as the renderer sees it. The renderer
  * (çalışan formu: motor × sağlayıcı × model) must NOT keep its own list — it reads
@@ -1797,7 +1650,6 @@ function _buildWindowAndWorkspaceDeps() {
     appWindow,
     appBaseUrl,
     windowManager,
-    keepPanesAliveOnWindowClose,
     crashWatchdog,
     APP_URL_SCHEME,
     APP_URL_PREFIX,
@@ -1808,7 +1660,6 @@ function _buildWindowAndWorkspaceDeps() {
     workspaceRootService,
     agentWorkspaceRoot,
     supervisorFor,
-    feedbackBridge,
     workspacePlanDenial,
     workspaceOnboarding,
     rememberWorkspaceRoot,
@@ -1830,11 +1681,8 @@ function _buildWindowAndWorkspaceDeps() {
     codeIndexJobs,
     invalidateGitBranchCache,
     clipboardImageRoute,
-    saveTempImage,
     localSprites,
     mediaService,
-    ingestTaskAttachment,
-    attachmentStore,
     memoryGraph,
     memoryIndexer,
     memorySearcher,
@@ -1854,19 +1702,22 @@ function _buildWindowAndWorkspaceDeps() {
 
 function _buildTerminalAndExecutionIpcDeps() {
   return {
-    listPanes,
+    paneQueryService,
+    paneControlService,
+    ptySpawnService,
+    ptyIsolationService,
+    ptyResumeService,
+    paneRestoreService,
+    telemetryService,
+    paneBudgetService,
+    paneTranscriptService,
+    paneDispatchService,
+    paneAskService,
     resourceGovernor,
     agentRunner,
     resourceGovernorModule,
-    killPaneExplicitAndCleanup,
-    dedupeSpawnForAgent,
     engineDelegation,
-    prepareTaskIsolation,
     preflightModelGate,
-    spawnPty,
-    analyticsEngineOf,
-    telemetryBump,
-    enforcePaneBudget,
     spendGuard,
     leaderComposer,
     probeTranscriptContains,
@@ -1875,30 +1726,21 @@ function _buildTerminalAndExecutionIpcDeps() {
     tokenUsage,
     paneTokenBudget,
     paneBudgetStore,
-    paneDispatchDecisionFor,
-    leaderRefreshTick,
-    leaderRefreshViewFor,
-    logDispatchDecision,
-    refreshPaneSession,
     dispatchStore,
     modelDetect,
     paneAskRuntime,
     paneSessionAnchor,
     sessionAnchor,
     ptyResizeGate,
-    acceptRecoverablePanes,
     tmuxWindows,
     paneViewState,
     paneDraft,
     deliverToPane,
     dispatchSleep,
-    authorizeTeamScopeInteractive,
     runningPaneSummary,
     closePanesForSignOut,
     resumePtyDaemon,
     livePaneRegistry,
-    killPane,
-    respawnOptsFromEntry,
     agentEngineMirror,
   };
 }
@@ -1922,13 +1764,11 @@ function _buildMobileAndVoiceIpcDeps() {
     planDenial,
     mcpProcess,
     integrationAutostart,
-    telemetryProvisioning,
     sprintStore,
     resultRootMod,
     evidencePathMod,
     spawn,
     appI18n,
-    notifyGate,
     handService,
     syncRuntime,
     syncIpcSurface,
@@ -1965,29 +1805,19 @@ function _buildMobileAndVoiceIpcDeps() {
     delegationSupervisorStore,
     resumeQueueStore,
     queueBoard,
-    ensureDelegationSupervisor,
-    scheduleSupervisorSweep,
-    supervisorPending,
     supervisorFingerprint,
-    ensureComposeLedger,
     teamComposeCore,
-    composeTransport,
-    teamComposeRequest,
-    composeFail,
-    composeAutonomy,
-    sampleLeaderGate,
+    teamComposeService,
+    delegationSupervisorService,
+    telemetryService,
+    paneDispatchService,
   };
 }
 
 function _buildSystemAndEngineIpcDeps() {
   return {
-    moduleFaults,
-    reportModuleFault,
     LOG_PATH,
-    analyticsNow,
     analyticsSchema,
-    analyticsFirstTime,
-    telemetryTokenFor,
     credentialGate,
     stampIntegrationVerified,
     vendorSurface,
@@ -2036,6 +1866,8 @@ function _buildSystemAndEngineIpcDeps() {
     engineKeyStore,
     engineLoginLedger,
     planCatalog,
+    telemetryService,
+    faultService,
   };
 }
 
@@ -2133,15 +1965,15 @@ windowManager = createWindowManager({
   setPanesRestored: (val) => { paneRestoreService.setPanesRestored(val); },
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   logLine,
-  rebindOrphanPanes,
-  restoreLivePanes,
-  startPtyResumeDaemonOnce,
+  rebindOrphanPanes: (win) => paneQueryService.rebindOrphanPanes(win),
+  restoreLivePanes: (win) => paneRestoreService.restoreLivePanes(win),
+  startPtyResumeDaemonOnce: () => ptyResumeService.startPtyResumeDaemonOnce(),
   ptys,
   noteQuit,
   crashWatchdog,
-  keepPanesAliveOnWindowClose,
-  liveAgentPaneCount,
-  killPtysForWindow,
+  keepPanesAliveOnWindowClose: () => paneQueryService.keepPanesAliveOnWindowClose(),
+  liveAgentPaneCount: () => paneQueryService.liveAgentPaneCount(),
+  killPtysForWindow: (winId) => paneQueryService.killPtysForWindow(winId),
   quitFunnel,
   armQuitBrake,
   reportsWatcher,
@@ -2358,46 +2190,33 @@ const teamComposeService = createTeamComposeService({
   planLimits,
   agentSettings,
   seatGate,
-  callerScopeFor,
+  paneControlService,
   ptys,
   getAppWindow: () => appWindow,
   logLine,
 });
-
-let composeTransport = null;
-function ensureComposeLedger() { return teamComposeService.ensureComposeLedger(); }
-function composeAutonomy() { return teamComposeService.composeAutonomy(); }
-function composeFail(status, code, error, extra = {}) { return teamComposeService.composeFail(status, code, error, extra); }
-function teamComposeRequest(req, transport) { return teamComposeService.teamComposeRequest(req, transport); }
-
 
 // ── ADP-050 — DELEGASYON KÖPRÜSÜ SERVİSİ (src/features/agents/delegationBridgeService.js - Faz 3.6.39)
 const delegationBridgeService = createDelegationBridgeService({
   delegationBridgeMod,
   crewpaneEnv,
   crewpanePaths,
-  ensureDelegationSupervisor,
   resolveWindow: () => appWindow,
   logLine,
   ipcMain,
   runBrowserAction: (val) => browserService.runBrowserAction(val),
   probeBrowserTarget: (val) => browserService.probeBrowserTarget(val),
   getBrowserGate: () => browserService.browserGate(),
-  recycleWorkerPanes,
-  telemetryBump: (key) => telemetryBump(key),
-  listPanesForControl,
-  closePanesForControl,
-  focusPaneForControl,
-  authorizeTeamScopeInteractive: ({ action, leaderId, targetScope }) =>
-    authorizeTeamScopeInteractive({ action, leaderId, targetScope }),
-  teamComposeRequest: (payload, transport) => teamComposeRequest(payload, transport),
-  setComposeTransport: (transport) => { composeTransport = transport; },
+  paneControlService,
+  teamComposeService,
+  delegationSupervisorService,
+  telemetryService,
+  mediaService,
+  ptyResumeService,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   shotBridgeAgents,
   shotBridgeSend,
-  ingestTaskAttachment: (req) => ingestTaskAttachment(req),
   notifyLog,
-  resolveWorkerNotifyPath: (department) => resolveWorkerNotifyPath(department),
   appDbTokenFor: (source) => appDbTokenFor(source),
   integrationsStatusFor: (req) => integrationsStatusFor(req),
   seatDenial: (action) => seatDenial(action),
@@ -2409,90 +2228,6 @@ async function startBridge() {
   const bridge = await delegationBridgeService.startBridge();
   delegationBridge = bridge;
   return bridge;
-}
-
-/**
- * ADP-386 — pane'in VT ekranının son satırları (paneScreen defteri + canlı ekran).
- * Teardown'da livePaneRegistry'ye işlenir; restore yeni pty'nin replay buffer'ını
- * bununla tohumlar ki `claude --resume` sessizken pane SİMSİYAH kalmasın (kanıt:
- * pty:attach bufLen=0 + shot-1784059269700). Best-effort — hata null döner.
- */
-
-/** ADP-386 — tüm canlı pane'lerin ekran kuyruğunu tek seferde registry'ye işle. */
-function persistScreenTails() {
-  return paneQueryService.persistScreenTails();
-}
-
-function killAllPtys() {
-  return paneQueryService.killAllPtys();
-}
-
-// ---------------------------------------------------------------------------
-// ADP-192 (SPRINT-AD-23) — restart-resume: re-spawn the agents that were running
-// when the app last shut down (a .dmg update / quit→reopen), each on its prior
-// claude session (`--resume <sessionId>`) so the conversation CONTINUES. Runs once
-// per process, on the first app-window load. Unattended by default
-// ([[autopilot-auto-resume]]); kill-switch CREWPANE_DISABLE_RESTORE=1. Best-effort
-// per pane — one bad entry never blocks the others or crashes the launch.
-// ---------------------------------------------------------------------------
-
-/**
- * spawnPty opts that re-open an agent on its prior session (`--resume`). Shared
- * by BOTH resume paths: restoreLivePanes (registry snapshot entries, all fields)
- * and the pty resume daemon's respawn (queue entries — engine/cwd/agentId/
- * sessionId only; the optional fields fall through as undefined/null).
- */
-const paneEngineResolver = paneRestoreService.paneEngineResolver;
-
-function respawnOptsFromEntry(entry, ctx = {}) {
-  return paneRestoreService.respawnOptsFromEntry(entry, ctx);
-}
-
-function offerRecoverablePanes(win, entries, meta = {}) {
-  return paneRestoreService.offerRecoverablePanes(win, entries, meta);
-}
-
-function acceptRecoverablePanes(win) {
-  return paneRestoreService.acceptRecoverablePanes(win);
-}
-
-function restoreLivePanes(win) {
-  return paneRestoreService.restoreLivePanes(win);
-}
-
-// ---------------------------------------------------------------------------
-// ADP-limit (ADR-007 Faz 4) — in-app pty auto-resume daemon. The tmux daemon
-// (scripts/resume-daemon.mjs) only sees tmux panes; agents running in the app's
-// own node-pty panes had NO limit watcher at all — a limited in-app agent waited
-// forever. This runs ResumeDaemonCore inside main, fed from the `ptys` Map.
-// ---------------------------------------------------------------------------
-
-/**
- * Where resume + worker-completion notices land. ADP-545 — eski mantık packaged
- * app'te instance-dir'e (resume-notifications.log) düşüyordu; orayı HİÇBİR lider
- * izlemez (Monitor tail'leri workspace'teki docs/.agent-notifications dosyalarında)
- * → ADP-538 emit'i kurulu app'te yanlış dosyaya yazacaktı, auto-trigger yine ölü.
- * Artık notifyPath.cjs aday-probe'u: env dikişi → departman docs'u → workspace
- * crewpane/docs (kurulum protokol hedefi) → root docs (dev) → instance fallback.
- */
-function resolveWorkerNotifyPath(department) {
-  return ptyResumeService.resolveWorkerNotifyPath(department);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ADP-659 — DELEGASYON SUPERVISOR: main-side, disk-defterli otopilot gözcüsü
-// ═══════════════════════════════════════════════════════════════════════════
-// Neden BURADA (renderer'da değil): ADP-538/545/561/563/575'in hepsi doğru fix'lerdi
-// ama hepsi renderer'da yaşıyor. Renderer reload'u (crashWatchdog win.reload, HMR,
-// OOM) uçuştaki her nöbeti siler ve o alt-görev sonsuza dek öksüz kalır → ajan
-// "meşgul", pane "working" hayaleti, kuyruk durur. Main süreci pencere ömründen
-// bağımsızdır ve pty defterinin + dosya sisteminin SAHİBİDİR: tamamlanmayı renderer'a
-// hiç sormadan ölçebilir. Kayıt DİSKTE → app restart'ı bile takibi kesmez.
-
-const supervisorPending = delegationSupervisorService.supervisorPending;
-
-function scheduleSupervisorSweep(delayMs = 1500) {
-  return delegationSupervisorService.scheduleSupervisorSweep(delayMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -2525,18 +2260,6 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
   });
 }
 
-function ensureDelegationSupervisor() {
-  return delegationSupervisorService.ensureDelegationSupervisor();
-}
-
-function notifyGate() {
-  return delegationSupervisorService.notifyGate();
-}
-
-function startPtyResumeDaemonOnce() {
-  return ptyResumeService.startPtyResumeDaemonOnce();
-}
-
 // ---------------------------------------------------------------------------
 // App Boot & Lifecycle
 // ---------------------------------------------------------------------------
@@ -2547,7 +2270,7 @@ app.whenReady().then(async () => {
   const appBootService = createAppBootService({
     engineCoerce,
     livePaneRegistry,
-    offerRecoverablePanes,
+    paneRestoreService,
     getAppWindow: () => appWindow,
     logLine,
     startCrashWatchdog,
@@ -2590,7 +2313,6 @@ app.whenReady().then(async () => {
     registerJarvisShortcut,
     handService,
     updateService,
-    startHeartbeat,
     announceService,
     changelogService,
     memoryService,
@@ -2600,11 +2322,9 @@ app.whenReady().then(async () => {
     doctorService,
     telemetryMod,
     agentSettings,
-    telemetryProvisioning,
+    telemetryService,
     obsReporterNow,
     telemetryChannelMod,
-    analyticsNow,
-    analyticsFirstTime,
     tamperSignals,
     faultInject: FAULT_INJECT,
     supervisorFor,
@@ -2629,7 +2349,7 @@ const lifecycleManager = createLifecycleManager({
   crewpaneHome: () => crewpaneHome(),
   armQuitBrake: (label) => armQuitBrake(label),
   stopCrashWatchdog: () => stopCrashWatchdog(),
-  killAllPtys: () => killAllPtys(),
+  killAllPtys: () => paneQueryService.killAllPtys(),
   stopNextServer: () => stopNextServer(),
   noteQuit: (reason, signal) => noteQuit(reason, signal),
   getLivePaneCount: () => ptys.size,
@@ -2639,7 +2359,7 @@ const lifecycleManager = createLifecycleManager({
   logLine,
   getTeardownSteps: () => [
     // ADP-386 — ekran kuyruğu snapshot'tan ÖNCE yazılır ki write-ahead kopya da taşısın.
-    { name: 'persist-screen-tails', run: () => persistScreenTails() },
+    { name: 'persist-screen-tails', run: () => paneQueryService.persistScreenTails() },
     // TASK-MRDXOGZJDQLJG — write-ahead: copy the live-pane registry BEFORE any
     // teardown touches a pty. Whatever empties live-panes.json during this quit
     // (a kill race, a crash mid-teardown), the next launch can still restore from
@@ -2664,7 +2384,7 @@ const lifecycleManager = createLifecycleManager({
     // ADP-815 — kalıcı `claude` beyni de main'in ÇOCUĞU
     { name: 'jarvis-brain', run: () => jarvisVoice.stopBrain() },
     { name: 'next-server', run: () => stopNextServer() },
-    { name: 'ptys', run: () => killAllPtys() },
+    { name: 'ptys', run: () => paneQueryService.killAllPtys() },
     {
       name: 'delegation-bridge',
       run: () => {
@@ -2675,3 +2395,4 @@ const lifecycleManager = createLifecycleManager({
   ],
 });
 lifecycleManager.register();
+

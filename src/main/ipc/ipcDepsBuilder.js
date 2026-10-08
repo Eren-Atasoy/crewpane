@@ -48,7 +48,7 @@ function buildPlatformAndWindowDeps(ctx) {
     ..._buildWindowOps(wm, ctx),
     windowManager: ctx.windowManager,
     getWindowManager: ctx.getWindowManager || (() => ctx.windowManager),
-    keepPanesAliveOnWindowClose: ctx.keepPanesAliveOnWindowClose,
+    keepPanesAliveOnWindowClose: (typeof ctx.keepPanesAliveOnWindowClose === 'function' ? ctx.keepPanesAliveOnWindowClose : () => (ctx.paneQueryService ? ctx.paneQueryService.keepPanesAliveOnWindowClose() : false)),
     crashWatchdog: ctx.crashWatchdog,
     getAppUrlScheme: ctx.getAppUrlScheme || (() => ctx.APP_URL_SCHEME),
     getAppUrlPrefix: ctx.getAppUrlPrefix || (() => ctx.APP_URL_PREFIX),
@@ -93,7 +93,7 @@ function buildWorkspaceAndStorageDeps(ctx) {
     getAgentWorkspaceRoot: ctx.getAgentWorkspaceRoot || (() => ctx.agentWorkspaceRoot),
     getWorkspaceRoot: ctx.getWorkspaceRoot || (() => ctx.agentWorkspaceRoot),
     supervisorFor: ctx.supervisorFor,
-    feedbackBridge: ctx.feedbackBridge,
+    feedbackBridge: (typeof ctx.feedbackBridge === 'function' ? ctx.feedbackBridge : () => (ctx.mediaService ? ctx.mediaService.feedbackBridge() : null)),
     workspacePlanDenial: ctx.workspacePlanDenial,
     workspaceOnboarding: ctx.workspaceOnboarding,
     rememberWorkspaceRoot: ctx.rememberWorkspaceRoot,
@@ -118,16 +118,23 @@ function buildWorkspaceAndStorageDeps(ctx) {
   };
 }
 
+function _resolveMediaOps(ctx) {
+  const ms = ctx.mediaService;
+  return {
+    saveTempImage: (p) => (typeof ctx.saveTempImage === 'function' ? ctx.saveTempImage(p) : (ms ? ms.saveTempImage(p) : null)),
+    ingestTaskAttachment: (p) => (typeof ctx.ingestTaskAttachment === 'function' ? ctx.ingestTaskAttachment(p) : (ms ? ms.ingestTaskAttachment(p) : null)),
+    attachmentStore: () => (typeof ctx.attachmentStore === 'function' ? ctx.attachmentStore() : (ms ? ms.attachmentStore() : null)),
+  };
+}
+
 function buildMediaAndMemoryDeps(ctx) {
   return {
     clipboardImageRoute: ctx.clipboardImageRoute,
-    saveTempImage: ctx.saveTempImage,
+    ..._resolveMediaOps(ctx),
     localSprites: ctx.localSprites,
     pkgMgr,
     officePkg,
     imageStore: ctx.mediaService ? ctx.mediaService.imageStore : ctx.imageStore,
-    ingestTaskAttachment: ctx.ingestTaskAttachment,
-    attachmentStore: ctx.attachmentStore,
     memoryGraph: ctx.memoryGraph,
     memoryIndexer: ctx.memoryIndexer,
     memorySearcher: ctx.memorySearcher,
@@ -146,58 +153,87 @@ function buildMediaAndMemoryDeps(ctx) {
   };
 }
 
+function _resolveTerminalQueryOps(ctx) {
+  const pqs = ctx.paneQueryService;
+  return {
+    listPanes: (win, dep) => (typeof ctx.listPanes === 'function' ? ctx.listPanes(win, dep) : (pqs ? pqs.listPanes(win, dep) : [])),
+    killPaneExplicitAndCleanup: (p) => (typeof ctx.killPaneExplicitAndCleanup === 'function' ? ctx.killPaneExplicitAndCleanup(p) : (pqs ? pqs.killPaneExplicitAndCleanup(p) : null)),
+    runningPaneSummary: () => (typeof ctx.runningPaneSummary === 'function' ? ctx.runningPaneSummary() : (pqs ? pqs.runningPaneSummary() : [])),
+    closePanesForSignOut: () => (typeof ctx.closePanesForSignOut === 'function' ? ctx.closePanesForSignOut() : (pqs ? pqs.closePanesForSignOut() : null)),
+  };
+}
+
+function _resolveTerminalControlOps(ctx) {
+  const pcs = ctx.paneControlService;
+  const pss = ctx.ptySpawnService;
+  const prs = ctx.ptyResumeService;
+  const rst = ctx.paneRestoreService;
+  const pis = ctx.ptyIsolationService;
+  return {
+    killPane: (p, e, a, w) => (typeof ctx.killPane === 'function' ? ctx.killPane(p, e, a, w) : (pcs ? pcs.killPane(p, e, a, w) : null)),
+    authorizeTeamScopeInteractive: (o) => (typeof ctx.authorizeTeamScopeInteractive === 'function' ? ctx.authorizeTeamScopeInteractive(o) : (pcs ? pcs.authorizeTeamScopeInteractive(o) : null)),
+    spawnPty: (win, o, e) => (typeof ctx.spawnPty === 'function' ? ctx.spawnPty(win, o, e) : (pss ? pss.spawnPty(win, o, e) : null)),
+    dedupeSpawnForAgent: (o, w) => (typeof ctx.dedupeSpawnForAgent === 'function' ? ctx.dedupeSpawnForAgent(o, w) : (pis ? pis.dedupeSpawnForAgent(o, w) : null)),
+    resumePtyDaemon: () => (typeof ctx.resumePtyDaemon === 'function' ? ctx.resumePtyDaemon() : (prs ? prs.resumePtyDaemon() : null)),
+    acceptRecoverablePanes: (win) => (typeof ctx.acceptRecoverablePanes === 'function' ? ctx.acceptRecoverablePanes(win) : (rst ? rst.acceptRecoverablePanes(win) : null)),
+    respawnOptsFromEntry: (e, c) => (typeof ctx.respawnOptsFromEntry === 'function' ? ctx.respawnOptsFromEntry(e, c) : (rst ? rst.respawnOptsFromEntry(e, c) : null)),
+  };
+}
+
+function _resolveTerminalDispatchOps(ctx) {
+  const tel = ctx.telemetryService;
+  const pbs = ctx.paneBudgetService;
+  const pts = ctx.paneTranscriptService;
+  const pds = ctx.paneDispatchService;
+  const pas = ctx.paneAskService;
+  return {
+    analyticsEngineOf: (c) => (typeof ctx.analyticsEngineOf === 'function' ? ctx.analyticsEngineOf(c) : (tel ? tel.analyticsEngineOf(c) : null)),
+    telemetryBump: (k, b, p) => (typeof ctx.telemetryBump === 'function' ? ctx.telemetryBump(k, b, p) : (tel ? tel.telemetryBump(k, b, p) : null)),
+    enforcePaneBudget: (...a) => (typeof ctx.enforcePaneBudget === 'function' ? ctx.enforcePaneBudget(...a) : (pbs ? pbs.enforcePaneBudget(...a) : null)),
+    paneTokenBudget: ctx.paneTokenBudget || (pbs ? pbs.paneTokenBudget : null),
+    probeTranscriptContains: (...a) => (typeof ctx.probeTranscriptContains === 'function' ? ctx.probeTranscriptContains(...a) : (pts ? pts.probeTranscriptContains(...a) : null)),
+    paneDispatchDecisionFor: (...a) => (typeof ctx.paneDispatchDecisionFor === 'function' ? ctx.paneDispatchDecisionFor(...a) : (pds ? pds.paneDispatchDecisionFor(...a) : null)),
+    leaderRefreshTick: (...a) => (typeof ctx.leaderRefreshTick === 'function' ? ctx.leaderRefreshTick(...a) : (pds ? pds.leaderRefreshTick(...a) : null)),
+    leaderRefreshViewFor: (...a) => (typeof ctx.leaderRefreshViewFor === 'function' ? ctx.leaderRefreshViewFor(...a) : (pds ? pds.leaderRefreshViewFor(...a) : null)),
+    logDispatchDecision: (...a) => (typeof ctx.logDispatchDecision === 'function' ? ctx.logDispatchDecision(...a) : (pds ? pds.logDispatchDecision(...a) : null)),
+    refreshPaneSession: (...a) => (typeof ctx.refreshPaneSession === 'function' ? ctx.refreshPaneSession(...a) : (pds ? pds.refreshPaneSession(...a) : null)),
+    paneAskRuntime: ctx.paneAskRuntime || (pas ? pas.paneAskRuntime : null),
+  };
+}
+
 function buildTerminalAndExecutionDeps(ctx) {
   const wm = ctx.windowManager;
   return {
-    listPanes: ctx.listPanes,
+    ..._resolveTerminalQueryOps(ctx),
+    ..._resolveTerminalControlOps(ctx),
+    ..._resolveTerminalDispatchOps(ctx),
     resourceGovernor: ctx.resourceGovernor,
     agentRunner: ctx.agentRunner,
     resourceGovernorModule: ctx.resourceGovernorModule,
-    killPaneExplicitAndCleanup: ctx.killPaneExplicitAndCleanup,
-    dedupeSpawnForAgent: ctx.dedupeSpawnForAgent,
     engineDelegation: ctx.engineDelegation,
-    prepareTaskIsolation: ctx.prepareTaskIsolation,
+    prepareTaskIsolation: ctx.prepareTaskIsolation || (ctx.ptyIsolationService ? (opts) => ctx.ptyIsolationService.prepareTaskIsolation(opts) : null),
     preflightModelGate: ctx.preflightModelGate,
-    spawnPty: ctx.spawnPty,
-    analyticsEngineOf: ctx.analyticsEngineOf,
-    telemetryBump: ctx.telemetryBump,
-    enforcePaneBudget: ctx.enforcePaneBudget,
     spendGuard: ctx.spendGuard,
     leaderComposer: ctx.leaderComposer,
-    probeTranscriptContains: ctx.probeTranscriptContains,
     transcriptProbe: ctx.transcriptProbe,
     mobileTranscript: ctx.mobileTranscript,
     tokenUsage: ctx.tokenUsage,
-    paneTokenBudget: ctx.paneTokenBudget,
     paneBudgetStore: ctx.paneBudgetStore,
-    paneDispatchDecisionFor: ctx.paneDispatchDecisionFor,
-    leaderRefreshTick: ctx.leaderRefreshTick,
-    leaderRefreshViewFor: ctx.leaderRefreshViewFor,
-    logDispatchDecision: ctx.logDispatchDecision,
-    refreshPaneSession: ctx.refreshPaneSession,
     dispatchStore: ctx.dispatchStore,
     modelDetect: ctx.modelDetect,
-    paneAskRuntime: ctx.paneAskRuntime,
     paneSessionAnchor: ctx.paneSessionAnchor,
     sessionAnchor: ctx.sessionAnchor,
     ptyResizeGate: ctx.ptyResizeGate,
-    acceptRecoverablePanes: ctx.acceptRecoverablePanes,
     tmuxWindows: ctx.tmuxWindows,
     paneViewState: ctx.paneViewState,
     broadcastPaneView: ctx.broadcastPaneView || ((paneId, r) => (wm ? wm.broadcastPaneView(paneId, r) : null)),
     paneDraft: ctx.paneDraft,
     broadcastPaneDraft: ctx.broadcastPaneDraft || ((paneId, t) => (wm ? wm.broadcastPaneDraft(paneId, t) : null)),
-    getPaneAskRuntime: ctx.getPaneAskRuntime || (() => ctx.paneAskRuntime),
+    getPaneAskRuntime: ctx.getPaneAskRuntime || (() => ctx.paneAskRuntime || (ctx.paneAskService ? ctx.paneAskService.paneAskRuntime : null)),
     getPtys: ctx.getPtys || (() => ctx.ptys),
     deliverToPane: ctx.deliverToPane,
     dispatchSleep: ctx.dispatchSleep,
-    authorizeTeamScopeInteractive: ctx.authorizeTeamScopeInteractive,
-    runningPaneSummary: ctx.runningPaneSummary,
-    closePanesForSignOut: ctx.closePanesForSignOut,
-    resumePtyDaemon: ctx.resumePtyDaemon,
     livePaneRegistry: ctx.livePaneRegistry,
-    killPane: ctx.killPane,
-    respawnOptsFromEntry: ctx.respawnOptsFromEntry,
     agentEngineMirror: ctx.agentEngineMirror,
   };
 }
@@ -311,21 +347,36 @@ function _resolveWidgetDeps(ctx) {
   };
 }
 
+function _resolveTeamOps(ctx) {
+  const tc = ctx.teamComposeService;
+  const sup = ctx.delegationSupervisorService;
+  const tel = ctx.telemetryService;
+  return {
+    telemetryProvisioning: () => (typeof ctx.telemetryProvisioning === 'function' ? ctx.telemetryProvisioning() : (tel ? tel.telemetryProvisioning() : null)),
+    ensureComposeLedger: () => (typeof ctx.ensureComposeLedger === 'function' ? ctx.ensureComposeLedger() : (tc ? tc.ensureComposeLedger() : null)),
+    teamComposeRequest: (r, t) => (typeof ctx.teamComposeRequest === 'function' ? ctx.teamComposeRequest(r, t) : (tc ? tc.teamComposeRequest(r, t) : null)),
+    composeFail: (s, c, e, x) => (typeof ctx.composeFail === 'function' ? ctx.composeFail(s, c, e, x) : (tc ? tc.composeFail(s, c, e, x) : null)),
+    composeAutonomy: () => (typeof ctx.composeAutonomy === 'function' ? ctx.composeAutonomy() : (tc ? tc.composeAutonomy() : null)),
+    ensureDelegationSupervisor: () => (typeof ctx.ensureDelegationSupervisor === 'function' ? ctx.ensureDelegationSupervisor() : (sup ? sup.ensureDelegationSupervisor() : null)),
+    scheduleSupervisorSweep: (d) => (typeof ctx.scheduleSupervisorSweep === 'function' ? ctx.scheduleSupervisorSweep(d) : (sup ? sup.scheduleSupervisorSweep(d) : null)),
+    supervisorPending: ctx.supervisorPending || (sup ? sup.supervisorPending : null),
+    notifyGate: () => (typeof ctx.notifyGate === 'function' ? ctx.notifyGate() : (sup ? sup.notifyGate() : null)),
+  };
+}
+
 function _buildSkillAndSupervisorDeps(ctx) {
-  const out = Object.assign(_resolveBrowserDeps(ctx), _resolveWidgetDeps(ctx), {
+  const out = Object.assign(_resolveBrowserDeps(ctx), _resolveWidgetDeps(ctx), _resolveTeamOps(ctx), {
     setAppWindowGuest: ctx.setAppWindowGuest,
     getAppWindowGuest: ctx.getAppWindowGuest,
     integrations: ctx.integrations,
     planDenial: ctx.planDenial,
     mcpProcess: ctx.mcpProcess,
     integrationAutostart: ctx.integrationAutostart,
-    telemetryProvisioning: ctx.telemetryProvisioning,
     sprintStore: ctx.sprintStore,
     resultRootMod: ctx.resultRootMod,
     evidencePathMod: ctx.evidencePathMod,
     spawn: ctx.spawn,
     appI18n: ctx.appI18n,
-    notifyGate: ctx.notifyGate,
   });
   const overrideKeys = [
     'runBrowserAction',
@@ -376,17 +427,10 @@ function _buildSkillAndSupervisorDeps(ctx) {
     delegationSupervisorStore: ctx.delegationSupervisorStore,
     resumeQueueStore: ctx.resumeQueueStore,
     queueBoard: ctx.queueBoard,
-    ensureDelegationSupervisor: ctx.ensureDelegationSupervisor,
-    scheduleSupervisorSweep: ctx.scheduleSupervisorSweep,
-    supervisorPending: ctx.supervisorPending,
     supervisorFingerprint: ctx.supervisorFingerprint,
-    ensureComposeLedger: ctx.ensureComposeLedger,
     teamComposeCore: ctx.teamComposeCore,
-    getComposeTransport: () => ctx.composeTransport,
-    teamComposeRequest: ctx.teamComposeRequest,
-    composeFail: ctx.composeFail,
-    composeAutonomy: ctx.composeAutonomy,
-    sampleLeaderGate: ctx.sampleLeaderGate,
+    getComposeTransport: () => (ctx.teamComposeService ? ctx.teamComposeService.getComposeTransport() : ctx.composeTransport),
+    sampleLeaderGate: (typeof ctx.sampleLeaderGate === 'function' ? ctx.sampleLeaderGate : ((paneId) => (ctx.paneDispatchService ? ctx.paneDispatchService.sampleLeaderGate(paneId) : false))),
   });
   return out;
 }
@@ -399,19 +443,27 @@ function buildMobileAndSkillDeps(ctx) {
   };
 }
 
+function _resolveSystemTelemetryAndFaultOps(ctx) {
+  const tel = ctx.telemetryService;
+  const flt = ctx.faultService;
+  return {
+    analyticsNow: () => (typeof ctx.analyticsNow === 'function' ? ctx.analyticsNow() : (tel ? tel.analyticsNow() : null)),
+    analyticsFirstTime: (m) => (typeof ctx.analyticsFirstTime === 'function' ? ctx.analyticsFirstTime(m) : (tel ? tel.analyticsFirstTime(m) : null)),
+    telemetryTokenFor: (s) => (typeof ctx.telemetryTokenFor === 'function' ? ctx.telemetryTokenFor(s) : (tel ? tel.telemetryTokenFor(s) : null)),
+    reportModuleFault: (f) => (typeof ctx.reportModuleFault === 'function' ? ctx.reportModuleFault(f) : (flt ? flt.reportModuleFault(f) : null)),
+    getModuleFaults: () => (flt ? flt.moduleFaults : ctx.moduleFaults),
+  };
+}
+
 function buildSystemAuthAndEngineDeps(ctx) {
   const rb = ctx.resetBootService;
   const upd = ctx.updateService;
   const chg = ctx.changelogService;
   const api = ctx.apiKeyService;
   return {
-    getModuleFaults: () => ctx.moduleFaults,
-    reportModuleFault: ctx.reportModuleFault,
+    ..._resolveSystemTelemetryAndFaultOps(ctx),
     getLogPath: () => ctx.LOG_PATH,
-    analyticsNow: ctx.analyticsNow,
     analyticsSchema: ctx.analyticsSchema,
-    analyticsFirstTime: ctx.analyticsFirstTime,
-    telemetryTokenFor: ctx.telemetryTokenFor,
     credentialGate: ctx.credentialGate,
     stampIntegrationVerified: ctx.stampIntegrationVerified,
     vendorSurface: ctx.vendorSurface,

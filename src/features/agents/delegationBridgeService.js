@@ -15,7 +15,13 @@ const defaultDeps = {
   delegationBridgeMod: defaultDelegationBridgeMod,
   crewpaneEnv: defaultCrewpaneEnv,
   crewpanePaths: defaultCrewpanePaths,
-  ensureDelegationSupervisor: () => {},
+  paneControlService: null,
+  teamComposeService: null,
+  delegationSupervisorService: null,
+  telemetryService: null,
+  mediaService: null,
+  ptyResumeService: null,
+  ensureDelegationSupervisor: null,
   resolveWindow: () => null,
   logLine: () => {},
   ipcMain: null,
@@ -23,7 +29,7 @@ const defaultDeps = {
   probeBrowserTarget: null,
   getBrowserGate: () => null,
   recycleWorkerPanes: null,
-  telemetryBump: () => {},
+  telemetryBump: null,
   listPanesForControl: null,
   closePanesForControl: null,
   focusPaneForControl: null,
@@ -35,7 +41,7 @@ const defaultDeps = {
   shotBridgeSend: null,
   ingestTaskAttachment: null,
   notifyLog: null,
-  resolveWorkerNotifyPath: () => null,
+  resolveWorkerNotifyPath: null,
   appDbTokenFor: () => null,
   integrationsStatusFor: () => null,
   seatDenial: () => null,
@@ -64,7 +70,21 @@ class DelegationBridgeService {
     return dir;
   }
 
+  _ensureSupervisor() {
+    if (this.delegationSupervisorService) {
+      try { return this.delegationSupervisorService.ensureDelegationSupervisor(); } catch { return null; }
+    }
+    if (typeof this.ensureDelegationSupervisor === 'function') {
+      try { return this.ensureDelegationSupervisor(); } catch { return null; }
+    }
+    return null;
+  }
+
   _buildBridgeOptions() {
+    const ctl = this.paneControlService;
+    const tc = this.teamComposeService;
+    const rst = this.ptyResumeService;
+    const med = this.mediaService;
     return {
       resolveWindow: this.resolveWindow,
       log: this.logLine,
@@ -72,30 +92,36 @@ class DelegationBridgeService {
       onBrowserAction: this.runBrowserAction,
       onBrowserProbe: this.probeBrowserTarget,
       browserGate: this.getBrowserGate(),
-      onRecyclePane: this.recycleWorkerPanes,
+      onRecyclePane: this.recycleWorkerPanes || (ctl ? (a, m) => ctl.recycleWorkerPanes(a, m) : null),
       onLeaderAck: (leaderId) => {
-        try { this.ensureDelegationSupervisor().ack(String(leaderId || '')); } catch { /* best-effort */ }
+        const s = this._ensureSupervisor();
+        if (s) { try { s.ack(String(leaderId || '')); } catch { /* best-effort */ } }
       },
       onSupervisorStatus: (leaderId) => {
-        try { return this.ensureDelegationSupervisor().leaderStatus(String(leaderId || '')); } catch { return null; }
+        const s = this._ensureSupervisor();
+        return (s && typeof s.leaderStatus === 'function') ? s.leaderStatus(String(leaderId || '')) : null;
       },
-      onTelemetryBump: (key) => this.telemetryBump(key),
-      onListPanes: this.listPanesForControl,
-      onClosePane: this.closePanesForControl,
-      onFocusPane: this.focusPaneForControl,
-      onAuthorizeScope: ({ action, leaderId, targetScope }) =>
-        this.authorizeTeamScopeInteractive({ action, leaderId, targetScope }),
+      onTelemetryBump: (key) => (this.telemetryBump ? this.telemetryBump(key) : (this.telemetryService ? this.telemetryService.telemetryBump(key) : null)),
+      onListPanes: this.listPanesForControl || (ctl ? (c) => ctl.listPanesForControl(c) : null),
+      onClosePane: this.closePanesForControl || (ctl ? (p) => ctl.closePanesForControl(p) : null),
+      onFocusPane: this.focusPaneForControl || (ctl ? (p, c) => ctl.focusPaneForControl(p, c) : null),
+      onAuthorizeScope: this.authorizeTeamScopeInteractive || (ctl ? (opts) => ctl.authorizeTeamScopeInteractive(opts) : null),
       onTeamCompose: (payload, transport) => {
         this.setComposeTransport(transport);
-        return this.teamComposeRequest(payload, transport);
+        if (tc) {
+          tc.setComposeTransport(transport);
+          return tc.teamComposeRequest(payload, transport);
+        }
+        return this.teamComposeRequest ? this.teamComposeRequest(payload, transport) : null;
       },
       resolveResultsDir: () => this.resolveResultsDir(),
       onShotAgents: this.shotBridgeAgents,
       onShotSend: this.shotBridgeSend,
-      onTaskAttachment: (req) => (this.ingestTaskAttachment ? this.ingestTaskAttachment(req) : null),
+      onTaskAttachment: (req) => (this.ingestTaskAttachment ? this.ingestTaskAttachment(req) : (med ? med.ingestTaskAttachment(req) : null)),
       onReportNotify: (evt) => {
-        if (this.notifyLog && this.resolveWorkerNotifyPath) {
-          this.notifyLog.appendWorkerEvent(this.resolveWorkerNotifyPath(evt && evt.department), evt);
+        const resolvePath = this.resolveWorkerNotifyPath || (rst ? (d) => rst.resolveWorkerNotifyPath(d) : null);
+        if (this.notifyLog && resolvePath) {
+          this.notifyLog.appendWorkerEvent(resolvePath(evt && evt.department), evt);
         }
       },
       onAppDbToken: () => (this.appDbTokenFor ? this.appDbTokenFor('bridge:/app-db/token') : null),
@@ -108,7 +134,7 @@ class DelegationBridgeService {
 
   async startBridge() {
     try {
-      this.ensureDelegationSupervisor();
+      this._ensureSupervisor();
     } catch (e) {
       this.logLine(`supervisor start failed: ${e.message}`);
     }

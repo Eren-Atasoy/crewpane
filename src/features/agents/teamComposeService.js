@@ -437,6 +437,11 @@ async function handleComposeUndo({ req, ledger, callRenderer, agentSettings, log
 /**
  * Team Compose Service (Faz 3.6.7)
  */
+function _resolveCallerScope(callerScopeFor, paneControlService) {
+  if (typeof callerScopeFor === 'function') return callerScopeFor;
+  return (leaderId, department) => (paneControlService ? paneControlService.callerScopeFor(leaderId, department) : '');
+}
+
 function createTeamComposeService(deps = {}) {
   const {
     teamComposeCore = teamComposeCoreDefault,
@@ -447,11 +452,14 @@ function createTeamComposeService(deps = {}) {
     planLimits = planLimitsDefault,
     agentSettings = { readSettings: () => ({}), sanitizeTeamCompose: () => ({}), grantTeamScope: () => {}, revokeTeamScope: () => {} },
     seatGate = null,
-    callerScopeFor = () => '',
+    callerScopeFor = null,
+    paneControlService = null,
     ptys = null,
     getAppWindow = () => null,
     logLine = () => {},
   } = deps;
+
+  const resolvedCallerScope = _resolveCallerScope(callerScopeFor, paneControlService);
 
   let composeLedger = null;
   let composeTransport = null;
@@ -488,7 +496,7 @@ function createTeamComposeService(deps = {}) {
 
     if (req.action === 'apply') {
       return handleComposeApply({
-        req, ledger, callRenderer, callerScopeFor, teamScope,
+        req, ledger, callRenderer, callerScopeFor: resolvedCallerScope, teamScope,
         agentSettings, teamComposeCore, ptys, getAppWindow, logLine,
       });
     }

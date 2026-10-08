@@ -129,11 +129,21 @@ function _normalizeWindowRoutines(d) {
   if (handService && !d.stopHandControl) d.stopHandControl = (why) => handService.stopHandControl(why);
 }
 
+function _normalizeTelemetryAndRestoreRoutines(d) {
+  const { telemetryService, paneRestoreService } = d;
+  if (telemetryService && !d.startHeartbeat) d.startHeartbeat = () => telemetryService.startHeartbeat();
+  if (telemetryService && !d.telemetryProvisioning) d.telemetryProvisioning = () => telemetryService.telemetryProvisioning();
+  if (telemetryService && !d.analyticsNow) d.analyticsNow = () => telemetryService.analyticsNow();
+  if (telemetryService && !d.analyticsFirstTime) d.analyticsFirstTime = (m) => telemetryService.analyticsFirstTime(m);
+  if (paneRestoreService && !d.offerRecoverablePanes) d.offerRecoverablePanes = (win, entries, meta) => paneRestoreService.offerRecoverablePanes(win, entries, meta);
+}
+
 function _normalizeBootDeps(deps) {
   const d = Object.assign({}, deps);
   _normalizeUpdateRoutines(d);
   _normalizeMemoryAndStorageRoutines(d);
   _normalizeWindowRoutines(d);
+  _normalizeTelemetryAndRestoreRoutines(d);
   return d;
 }
 
