@@ -22,6 +22,7 @@ const { createFaultService, obsSurfaceFor } = require('./faultService');
 const { createTelemetryService, ANALYTICS_FUNNEL_EVENT, analyticsEngineOf } = require('./telemetryService');
 const { createAnnounceService } = require('./announceService');
 const { createChangelogService } = require('./changelogService');
+const { createResetBootService } = require('./resetBootService');
 
 module.exports = {
   createCrashWatchdogService,
@@ -29,6 +30,7 @@ module.exports = {
   createTelemetryService,
   createAnnounceService,
   createChangelogService,
+  createResetBootService,
   ANALYTICS_FUNNEL_EVENT,
   analyticsEngineOf,
   obsSurfaceFor,

@@ -983,12 +983,12 @@ const stdioGuards = stdioGuard.installStdioGuards({
 });
 logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
-// ── ADP-335 — MODÜL HATA SINIRI & OBS-02 HATA TAKİBİ (src/features/system/faultService.js - Faz 3.6.10)
 const {
   createFaultService,
   createTelemetryService,
   createAnnounceService,
   createChangelogService,
+  createResetBootService,
 } = require('./src/features/system');
 // ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
 const { createUpdateService } = require('./src/features/update');
@@ -1022,6 +1022,17 @@ const changelogService = createChangelogService({
   instancePaths,
   changelogFeed,
   logLine,
+});
+
+// ── RESET-03 — KURULUM SIFIRLAMA & AÇILIŞ TEMİZLİK SERVİSİ (src/features/system/resetBootService.js - Faz 3.6.16)
+const resetBootService = createResetBootService({
+  app,
+  dialog,
+  appI18n,
+  installReset,
+  resetGate,
+  helperReaper,
+  analyticsNow: () => analyticsNow(),
 });
 
 // ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
@@ -5468,11 +5479,10 @@ function wireIpc() {
     planLimits,
     getPtys: () => ptys,
     appDbTokenFor,
-    onboardingStore,
-    resetContext,
+    resetContext: (log) => resetBootService.resetContext(log),
     installReset,
     resetGate,
-    sendResetTelemetry,
+    sendResetTelemetry: (o) => resetBootService.sendResetTelemetry(o),
     leaderRefreshPolicy,
     handOverlayContract,
     updateChannel,
@@ -5503,8 +5513,7 @@ function wireIpc() {
     respawnOptsFromEntry,
     agentEngineMirror,
     mode: MODE,
-    shellCommit: SHELL_COMMIT,
-    getResetBootNotice: () => resetBootNotice,
+    getResetBootNotice: () => resetBootService.getResetBootNotice(),
     rebuildAndRelaunch,
     demoSitePath,
     runDoctorNow,
@@ -6361,218 +6370,7 @@ function scanE2EResidueAtStartup() {
     .catch(() => { /* DB kapalı / eski şema — açılışı bloklama */ });
 }
 
-// ═══ RESET-03 — KURULUMU SIFIRLA: AÇILIŞ YOLU ═══════════════════════════════
-//
-// TASARIMIN ÇEKİRDEĞİ (RESET-R1 §2c, Windows dosya kilidi): ÇALIŞAN SÜREÇ HİÇBİR
-// KULLANICI DOSYASINI SİLMEZ. İstek geldiğinde main bir işaretçi yazar ve uygulama
-// yeniden başlar; silme, YENİ sürecin en başında — kilit alındıktan sonra, ama
-// hiçbir modül veri köküne dosya AÇMADAN önce — yapılır. `initLog()` bu dosya
-// açan ilk şeydir (main.js:112-116'daki sözleşme), bu yüzden kanca ondan ÖNCE.
-//
-// Aynı kanca `--reset[=session]` bayrağını da karşılar: o yolda işaretçiye gerek
-// yoktur (süreç zaten hiçbir şey açmadı), silme doğrudan koşar.
-//
-// LOG DİKİŞİ: bu noktada `LOG_PATH` henüz yok — satırlar tampona yazılır ve
-// `initLog()`ten hemen sonra `logLine` ile DOSYAYA basılır. Yoksa yıkıcı bir
-// işlemin tek kanıtı stdout'ta kalırdı (paketli Windows'ta konsol YOK).
-let resetBootNotice = null; // → app:info (RESET-02/05 şeridi bunu okur)
-
-/**
- * `installReset` için ORTAK BAĞLAM. Yollar Electron'un KENDİ köklerinden türer —
- * renderer'dan ya da argv'den GELMEZ (RESET-01 riski §5.2).
- */
-function resetContext(log) {
-  const deps = {
-    log,
-    userDataDir: app.getPath('userData'),
-    logsDir: app.getPath('logs'),
-    updaterCacheDir: pickUpdaterCacheDir(),
-  };
-  // İşaretçiyi YAZAN ve OKUYAN aynı köke bakmak ZORUNDA. `installReset` kökü
-  // kendi kuralıyla çözer (CREWPANE_HOME dikişi yalnız test instance'ında
-  // geçerlidir); burada ikinci bir `path.join` yazmak İKİNCİ BİR GERÇEK olurdu
-  // ve ayrıştığı gün sıfırlama sessizce hiç uygulanmazdı.
-  const instanceHome = installReset._internal.normalizeDeps(deps).instanceHome;
-  return { deps, instanceHome };
-}
-
-/**
- * AÇILIŞ ÖNCESİ DİL — `applyAppLocale()` bu noktada HENÜZ KOŞMADI ve koşamaz:
- * kullanıcının saklı tercihi ayar dosyasındadır, o dosya veri kökündedir ve tam
- * da silmeye çalıştığımız şeydir (HATA-03'te tek-örnek kilidi aynı sonuca vardı:
- * "ayar dosyasına dokunmak tam da engellemeye çalıştığımız yazma olurdu").
- * Kalan doğru kaynak işletim sisteminin dili.
- */
-function resetBootLocale() {
-  try {
-    const pinned = process.env.CREWPANE_SYSTEM_LOCALE;
-    if (typeof pinned === 'string' && pinned.trim()) return appI18n.localeFromSystem(pinned.trim());
-    let sys = '';
-    try { sys = app.getLocale() || ''; } catch { /* ready öncesi boş dönebilir */ }
-    if (!sys) { try { sys = Intl.DateTimeFormat().resolvedOptions().locale || ''; } catch { /* ICU yok */ } }
-    return appI18n.localeFromSystem(sys);
-  } catch { return undefined; } // t() kendi varsayılanına düşer
-}
-
-/** Açılış öncesi kutuların metni — dil ayar dosyası OKUNMADAN çözülür. */
-function resetT(key) {
-  return appI18n.t(key, undefined, resetBootLocale());
-}
-
-/**
- * Güncelleyici önbelleği: adaylardan DİSKTE VAR OLANI seç (yoksa ilkini dön —
- * `installReset` onu `missing` sayar, zararsız). Ad `basename(userData)`tir;
- * gerekçe + ölçüm: electron/resetGate.cjs updaterCacheCandidates.
- */
-function pickUpdaterCacheDir() {
-  const cands = resetGate.updaterCacheCandidates({
-    platform: process.platform,
-    homedir: os.homedir(),
-    env: process.env,
-    userDataDir: app.getPath('userData'),
-    appName: app.getName(),
-  });
-  for (const c of cands) {
-    try { if (fs.existsSync(c)) return c; } catch { /* erişilemiyor → sıradaki */ }
-  }
-  return cands[0] || null;
-}
-
-/**
- * Bekleyen işaretçiyi UYGULA. Önce yetim yardımcı süreçler biçilir (ADP-727):
- * ölü bir `next-server` veri kökündeki bir dosyayı açık tutuyorsa Windows'ta
- * `fs.rm` EBUSY döner ve sıfırlama yarım kalırdı.
- *
- * `locked` doluysa İŞARETÇİ KALIR — bir sonraki açılış tekrar dener
- * ([[one-shot-skip-postpones-the-lie]]: temizlenmeyen damga yalan söylemez).
- *
- * @returns {Promise<object|null>} `resetGate.bootNotice` çıktısı (yol adı YOK) ya da null
- */
-async function applyPendingReset(log) {
-  const { deps, instanceHome } = resetContext(log);
-  let marker = null;
-  try {
-    marker = await installReset.readMarker(instanceHome, deps);
-  } catch (e) {
-    log(`[reset] işaretçi okunamadı (${(e && e.code) || 'ERR'})`);
-    return null;
-  }
-  if (!marker) return null;
-  log(`[reset] bekleyen istek uygulanıyor (seviye=${marker.level} yaş=${Math.round(marker.ageMs / 1000)}sn)`);
-  try {
-    const reap = helperReaper.reapStaleHelpers(instanceHome, { log: (m) => log(`[reset] ${m}`) });
-    if (reap && reap.reaped.length) log(`[reset] ${reap.reaped.length} yetim yardımcı biçildi (dosya kilidi)`);
-  } catch (e) { log(`[reset] yetim toplama atlandı (${(e && e.code) || 'ERR'})`); }
-  let res;
-  try {
-    res = await installReset.execute({ ...deps, level: marker.level, keepLogs: marker.keepLogs });
-  } catch (e) {
-    // `execute` sözleşme gereği throw ETMEZ; yine de buraya düşersek işaretçi
-    // KALIR (bir sonraki açılış dener) ve kullanıcıya yalan söylenmez.
-    log(`[reset] uygulama HATASI (${(e && e.code) || 'ERR'}) — işaretçi korundu`);
-    return { kind: 'partial', level: marker.level, bytesFreed: null, removedCount: 0, lockedCount: 1, skippedCount: 0 };
-  }
-  const notice = resetGate.bootNotice(marker.level, res);
-  log(`[reset] sonuç ok=${res.ok ? 1 : 0} silinen=${notice.removedCount} kilitli=${notice.lockedCount} `
-    + `atlanan=${notice.skippedCount} süre=${res.durationMs}ms`);
-  if (notice.lockedCount) {
-    log('[reset] işaretçi KORUNDU — kilitli hedefler bir sonraki açılışta tekrar denenecek');
-  } else {
-    const cleared = await installReset.clearMarker(instanceHome, deps);
-    log(`[reset] işaretçi temizlendi=${cleared.ok ? 1 : 0}`);
-  }
-  return notice;
-}
-
-/**
- * `--reset[=session] [--yes]` — komut satırı yolu.
- *
- * KULLANIM ALANI: uygulama AÇILAMIYORSA (bozuk oturum dosyası, giriş döngüsü)
- * kullanıcının tek kaçışı budur. GUI uygulamada Windows'ta konsol yoktur → her
- * şey native kutuyla konuşur.
- *
- * @returns {Promise<boolean>} true = açılış KESİLMELİ (süreç çıkıyor)
- */
-async function runArgvReset(req, log) {
-  if (req.invalid !== undefined) {
-    // Yazım hatası sessizce TAM sıfırlamaya düşmez (resetGate kapısı).
-    log('[reset] komut satırında TANINMAYAN seviye — hiçbir şey silinmedi');
-    try {
-      dialog.showErrorBox(resetT('main.reset.badLevel.title'), resetT('main.reset.badLevel.detail'));
-    } catch { /* kutu çizilemedi → stdout satırı kaldı */ }
-    app.exit(2);
-    return true;
-  }
-  if (!req.yes) {
-    let picked = 1;
-    try {
-      picked = dialog.showMessageBoxSync({
-        type: 'warning',
-        title: resetT('main.reset.confirm.title'),
-        message: req.level === 'session'
-          ? resetT('main.reset.session.message')
-          : resetT('main.reset.confirm.message'),
-        detail: resetT('main.reset.confirm.detail'),
-        buttons: [resetT('main.reset.confirm.button.yes'), resetT('main.reset.confirm.button.cancel')],
-        defaultId: 1, // VARSAYILAN "Vazgeç": Enter'a basan kullanıcı silmez
-        cancelId: 1,
-        noLink: true,
-      });
-    } catch (e) {
-      // Kutu çizilemiyorsa (başsız/otomasyon) ONAY ALINAMAMIŞTIR → SİLME.
-      log(`[reset] onay kutusu gösterilemedi (${e && e.message}) — sıfırlama İPTAL`);
-      app.exit(2);
-      return true;
-    }
-    if (picked !== 0) {
-      log('[reset] kullanıcı vazgeçti — hiçbir şey silinmedi');
-      app.exit(0);
-      return true;
-    }
-  }
-  const { deps } = resetContext(log);
-  log(`[reset] komut satırından sıfırlama (seviye=${req.level} onay=${req.yes ? 'bayrak' : 'kutu'})`);
-  // Telemetri SİLMEDEN ÖNCE: `installId` ayar dosyasında yaşar ve tam sıfırlamada
-  // o dosya gider. Sonraya bırakılsaydı olay ya kimliksiz kalır ya da YENİ bir
-  // kurulum gibi görünürdü.
-  let planned = null;
-  try { planned = await installReset.plan({ ...deps, level: req.level }); } catch { /* kova 'unknown' olur */ }
-  sendResetTelemetry({ level: req.level, source: 'cli', bytes: planned && planned.bytesTotal });
-  const res = await installReset.execute({ ...deps, level: req.level });
-  const notice = resetGate.bootNotice(req.level, res);
-  log(`[reset] cli sonuç ok=${res.ok ? 1 : 0} silinen=${notice.removedCount} kilitli=${notice.lockedCount}`);
-  if (notice.lockedCount) {
-    try {
-      dialog.showMessageBoxSync({
-        type: 'warning',
-        title: resetT('main.reset.partial.title'),
-        message: resetT('main.reset.partial.message'),
-        detail: resetT('main.reset.partial.detail'),
-        buttons: [resetT('main.reset.partial.button.ok')],
-        noLink: true,
-      });
-    } catch { /* best-effort */ }
-  }
-  resetBootNotice = notice;
-  return false; // açılış NORMAL devam eder (temiz kuruluma düşer)
-}
-
-/**
- * Tek anonim olay — ham bayt/yol GÖNDERİLMEZ (yalnız kova). Kapalıysa hiç gitmez.
- * Yük SİLMEDEN ÖNCE bilinenlerle sınırlıdır: "silme başarılı mıydı" o anda
- * ölçülemez, bu yüzden TAHMİN EDİLMEZ (analyticsSchema.install_reset başlığı).
- */
-function sendResetTelemetry(o) {
-  try {
-    analyticsNow().track('install_reset', {
-      level: o.level,
-      source: o.source,
-      bytes_planned_bucket: resetGate.bytesBucket(o.bytes),
-    });
-    // Yeniden başlatma HEMEN geliyor: tampon boşaltılmazsa olay süreçle birlikte ölür.
-    analyticsNow().flush('install_reset');
-  } catch { /* telemetri ASLA çağıranı düşürmez */ }
-}
+const resetT = (key) => resetBootService.resetT(key);
 
 app.whenReady().then(async () => {
   // RESET-03 — KOMUT SATIRI YOLU, KİLİT KAPISI. `--reset` istendiyse ve kilit
@@ -6621,8 +6419,8 @@ app.whenReady().then(async () => {
       try { process.stderr.write(`${m}\n`); } catch { /* ignore */ }
     };
     try {
-      if (resetCli && await runArgvReset(resetCli, resetLog)) return; // süreç çıkıyor
-      if (!resetCli) resetBootNotice = await applyPendingReset(resetLog);
+      if (resetCli && await resetBootService.runArgvReset(resetCli, resetLog)) return; // süreç çıkıyor
+      if (!resetCli) await resetBootService.applyPendingReset(resetLog);
     } catch (e) {
       resetLog(`[reset] açılış kancası HATASI (${(e && e.code) || 'ERR'}) — açılış normal sürüyor`);
     }
@@ -6640,18 +6438,7 @@ app.whenReady().then(async () => {
     // ve kullanıcının yapması gereken tek şey var: kapat, tekrar aç. Bunu söyleyen
     // yüzeyi MAIN çizer — uygulama-içi şerit (RESET-02) henüz açılmamış bile
     // olabilir ve sessiz bir boş ekran YALAN olurdu ([[silent-empty-state-is-a-lie]]).
-    if (!resetCli && resetBootNotice && resetBootNotice.kind === 'partial') {
-      try {
-        dialog.showMessageBox({
-          type: 'warning',
-          title: resetT('main.reset.partial.title'),
-          message: resetT('main.reset.partial.message'),
-          detail: resetT('main.reset.partial.detail'),
-          buttons: [resetT('main.reset.partial.button.ok')],
-          noLink: true,
-        }).catch(() => { /* kutu gösterilemedi — log satırı kanıt olarak kaldı */ });
-      } catch (e) { logLine(`[reset] uyarı kutusu gösterilemedi: ${e && e.message}`); }
-    }
+    if (!resetCli) resetBootService.showPartialWipeDialog(logLine);
   }
   // ENV-01 — AÇILIŞ BANNER'I + KARIŞIM KAPISI. `initLog()`ten hemen SONRA: satır dosya
   // log'una da düşsün (GUI'den açılan kopyada terminal yok). Pencere/Next/mobil/
