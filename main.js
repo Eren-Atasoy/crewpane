@@ -6522,6 +6522,7 @@ function wireIpc() {
     currentSessionId,
     paneContextScope,
     engineMemoryScope,
+    searchIndexer: () => searchIndexer(),
     logLine,
   });
 
@@ -6742,58 +6743,7 @@ function wireIpc() {
   });
 
   // ── SEARCH-2 — GENEL ARAMA (rapor gövdesi · hafıza · görev · ajan oturumları) ──
-  // Bu uçlar ADP-871'in `memoryIndex:search`ini DEĞİŞTİRMEZ: o hibrit (anlam+kelime)
-  // ve yalnız hafızaya bakar; bu salt kelime ama DÖRT kaynağa bakar. SEARCH-3'te
-  // ikisi "AI'ya sor" sekmesinde buluşur.
-  ipcMain.handle('searchIndex:query', (_evt, payload) => {
-    try {
-      const p = payload && typeof payload === 'object' ? payload : {};
-      return searchIndexer().query({
-        text: String(p.text || ''),
-        types: Array.isArray(p.types) && p.types.length ? p.types.map(String).slice(0, 12) : null,
-        agent: p.agent ? String(p.agent) : null,
-        perType: Number.isFinite(p.perType) ? Math.max(1, Math.min(20, p.perType)) : 5,
-      });
-    } catch (err) {
-      logLine(`searchIndex:query failed: ${err.message}`);
-      return { ok: false, reason: err.message, groups: {}, total: 0 };
-    }
-  });
-  ipcMain.handle('searchIndex:status', () => {
-    try {
-      return searchIndexer().status();
-    } catch (err) {
-      return { running: false, phase: 'error', reason: err.message };
-    }
-  });
-  ipcMain.handle('searchIndex:reindex', () => {
-    try {
-      return searchIndexer().start();
-    } catch (err) {
-      logLine(`searchIndex:reindex failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
-  // Görev anlık görüntüsü RENDERER'DAN gelir: işçi Supabase'e bağlanmaz, main de
-  // board için yeni bir ağ yolu açmaz (kartlar zaten renderer'ın belleğinde).
-  ipcMain.handle('searchIndex:syncTasks', (_evt, rows) => {
-    try {
-      return searchIndexer().syncTasks(Array.isArray(rows) ? rows.slice(0, 20000) : []);
-    } catch (err) {
-      return { ok: false, reason: err.message };
-    }
-  });
-  // OPT-OUT: kapatmak SİLER (bir sonraki tur oturum belgelerini indeksten kaldırır).
-  ipcMain.handle('searchIndex:setSessionsEnabled', (_evt, enabled) => {
-    try {
-      const v = !!enabled;
-      agentSettings.writeSettings({ memorySearch: { sessionsIndexed: v } });
-      return searchIndexer().setSessionsEnabled(v);
-    } catch (err) {
-      logLine(`searchIndex:setSessionsEnabled failed: ${err.message}`);
-      return { ok: false, reason: err.message };
-    }
-  });
+
 
   // (ADP-440 — screenshot:* ve tray:* IPC yüzeyleri kaldırıldı; AgentShot ayrı ürün.)
 

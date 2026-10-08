@@ -26,6 +26,7 @@ function registerMemoryIpc({
   currentSessionId,
   paneContextScope,
   engineMemoryScope,
+  searchIndexer = () => null,
   logLine = () => {},
 }) {
   // ── ADP-243 / ADP-277: Memory Graph & Fact ─────────────────────────────────
@@ -293,6 +294,59 @@ function registerMemoryIpc({
       return empty(err.message);
     }
   });
+
+  // ── SEARCH-2: Search Index (query, status, reindex, syncTasks, setSessionsEnabled) ──
+  ipcMain.handle('searchIndex:query', (_evt, payload) => {
+    try {
+      const p = payload && typeof payload === 'object' ? payload : {};
+      return searchIndexer().query({
+        text: String(p.text || ''),
+        types: Array.isArray(p.types) && p.types.length ? p.types.map(String).slice(0, 12) : null,
+        agent: p.agent ? String(p.agent) : null,
+        perType: Number.isFinite(p.perType) ? Math.max(1, Math.min(20, p.perType)) : 5,
+      });
+    } catch (err) {
+      logLine(`searchIndex:query failed: ${err.message}`);
+      return { ok: false, reason: err.message, groups: {}, total: 0 };
+    }
+  });
+
+  ipcMain.handle('searchIndex:status', () => {
+    try {
+      return searchIndexer().status();
+    } catch (err) {
+      return { running: false, phase: 'error', reason: err.message };
+    }
+  });
+
+  ipcMain.handle('searchIndex:reindex', () => {
+    try {
+      return searchIndexer().start();
+    } catch (err) {
+      logLine(`searchIndex:reindex failed: ${err.message}`);
+      return { ok: false, reason: err.message };
+    }
+  });
+
+  ipcMain.handle('searchIndex:syncTasks', (_evt, rows) => {
+    try {
+      return searchIndexer().syncTasks(Array.isArray(rows) ? rows.slice(0, 20000) : []);
+    } catch (err) {
+      return { ok: false, reason: err.message };
+    }
+  });
+
+  ipcMain.handle('searchIndex:setSessionsEnabled', (_evt, enabled) => {
+    try {
+      const v = !!enabled;
+      agentSettings.writeSettings({ memorySearch: { sessionsIndexed: v } });
+      return searchIndexer().setSessionsEnabled(v);
+    } catch (err) {
+      logLine(`searchIndex:setSessionsEnabled failed: ${err.message}`);
+      return { ok: false, reason: err.message };
+    }
+  });
 }
 
 module.exports = { registerMemoryIpc };
+
