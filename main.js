@@ -48,7 +48,7 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
-const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService, createPaneDispatchService, REFRESH_SUBMIT_GAP_MS } = require('./src/features/terminal');
+const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService, createPaneDispatchService, createPaneQueryService, REFRESH_SUBMIT_GAP_MS } = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 let windowManager = null;
 let mobileService = null;
@@ -1906,236 +1906,50 @@ function spawnPty(win, opts = {}, trustedExtra = null) {
   return ptySpawnService.spawnPty(win, opts, trustedExtra);
 }
 
-/**
- * Pane etiketinden görev kodu — İKİ pane listesinin (renderer `listPanes` ve lider
- * `allPanesForControl`) ORTAK tek çıkarımı. STAT-D2 §B-1: iki liste ayrı ayrı
- * hesaplayınca biri hesaplamayı unuttu ve lider yolu daima `null` gördü; kod tek
- * yerde durursa "unutmak" yapısal olarak imkânsızlaşır. Çıkarımın kaynağı yine
- * `taskCode.cjs` (B-01 Faz A) — burada regex YAZILMAZ, ÇAĞRILIR.
- */
+// ── ADP-013/386/905/MCP-COST-01 — PANE QUERY & LIFECYCLE SERVICE (src/features/terminal/paneQueryService.js - Faz 3.6.34)
+const paneQueryService = createPaneQueryService({
+  ptys,
+  agentRunner,
+  taskCodeMod,
+  mcpProcess,
+  paneKill,
+  livePaneRegistry,
+  crewpaneHome: () => crewpaneHome(),
+  getPtyResumeService: () => ptyResumeService,
+  paneViewState,
+  paneDraft,
+  paneBudgetStore,
+  logLine: (line) => logLine(line),
+  isQuitting: () => Boolean(app.isQuitting),
+  isAutotest: () => AUTOTEST,
+});
+
 function labelTaskCodeOf(label) {
-  try { return taskCodeMod.taskCodeOf(label) || null; } catch { return null; }
+  return paneQueryService.labelTaskCodeOf(label);
 }
 
-const optVal = (val) => (val == null ? null : val);
-const flagVal = (val) => val === true;
-
-function formatPaneSnapshot(paneId, e, now) {
-  const child = e.child;
-  return {
-    paneId,
-    agentId: optVal(e.agentId),
-    department: optVal(e.department),
-    command: e.command,
-    label: optVal(e.label),
-    pid: e.pid,
-    startedAt: e.startedAt,
-    status: agentRunner.statusFor(e.lastDataAt, now),
-    // ADP-108 — the pane's spawn cwd.
-    cwd: optVal(e.cwd),
-    // ADP-526 — pane'de koşan AI modelinin insan-okur etiketi (header chip'i).
-    modelLabel: optVal(e.modelLabel),
-    // ADP-565 — the pane'effective launch model id.
-    launchModel: optVal(e.launchModel),
-    // AGENT-MODEL-01 — pane'in EFEKTİF launch eforu.
-    launchEffort: optVal(e.launchEffort),
-    // ADP-595 — the pane'effective codex provider.
-    launchProvider: optVal(e.launchProvider),
-    // ACCT-FIX-01 — pane'in hesap profili KİMLİĞİ.
-    engineProfileId: optVal(e.engineProfileId),
-    // ADP-558 — the INVISIBLE half-work flag.
-    stalled: flagVal(e.stalled),
-    // ADP-502 — the stalled pane's evidence target.
-    stallEvidence: optVal(e.stallEvidence),
-    // ADP-667 — GECİKMELİ RESET bayrağı.
-    pendingReset: flagVal(e.pendingReset),
-    // ADP-532 — pty'nin gerçek boyutu.
-    cols: typeof child?.cols === 'number' ? child.cols : null,
-    rows: typeof child?.rows === 'number' ? child.rows : null,
-    // ADP-694 — motor CLI bulunamadığı için açılmış KURULUM REHBERİ pane'i mi?
-    engineMissing: optVal(e.engineMissing),
-    engineInstall: optVal(e.engineInstallGuide),
-    // ADP-852 — çalışma alanı seçilmemiş olduğu için açılmış REHBER pane'i mi?
-    workspaceMissing: flagVal(e.workspaceMissing),
-    // WIN-FIRSTRUN-01 (K1) — Windows kabuk rehberi pane'i mi?
-    shellMissing: optVal(e.shellMissing),
-    // ENG-OPENCODE-PROVIDER-01 — model kapısı rehber pane'i mi?
-    modelGate: optVal(e.modelGate),
-    // B-02 — PANE'İN KENDİ GÖREV BAĞI (§2.10)
-    taskId: optVal(e.taskId),
-    labelTaskCode: labelTaskCodeOf(e.label),
-    // B-01 — pane defterindeki dal + izole ağaç.
-    branch: optVal(e.branch),
-    worktreePath: optVal(e.worktreePath),
-    // ENG-10 — BU PANE'İN YETENEK BEYANI
-    capabilities: optVal(e.capabilities),
-  };
-}
-
-function paneMatchesFilter(entry, win, department) {
-  if (win && entry.win.id !== win.id) return false;
-  if (department && entry.department !== department) return false;
-  return true;
-}
-
-/**
- * Snapshot live panes for one window (ADP-013 `list`). Optionally filtered by
- * department so ADP-012 can render exactly the active team's pane-set. Returns
- * only serialisable binding fields (never the child handle).
- */
 function listPanes(win, department) {
-  const now = Date.now();
-  const out = [];
-  for (const [paneId, e] of ptys) {
-    if (!paneMatchesFilter(e, win, department)) continue;
-    out.push(formatPaneSnapshot(paneId, e, now));
-  }
-  return out;
-}
-
-/** Kill every pty owned by the given window. ADP-192 — this is a TEARDOWN (window
- * closed / app quitting), NOT an intentional per-agent close, so mark each entry
- * `preserve` first: onExit then KEEPS its live-pane registry entry → the agent is
- * restored on the next launch (restart-resume). */
-/**
- * PANE-CAP-01 — AÇIK KAPATMA yolu, TEK yerde. Daha önce bu gövde yalnız `pty:kill`
- * IPC'sinin içinde yaşıyordu; kaynak bekçisinin "bitmiş pane'leri kapat" onayı da
- * aynı işi yapmak zorunda (registry + görünüm + taslak + ödenek temizliği). İkinci
- * bir kapatma yolu yazmak, quit-yarışı düzeltmesini (TASK-MRDXOGZJDQLJG) yalnız
- * yollardan BİRİNDE bırakırdı.
- * @returns {boolean} pane gerçekten kapatıldı mı
- */
-/**
- * MCP-COST-01 — PANE KAPANDI, MCP COCUKLARI DA KAPANSIN.
- *
- * Normal kapanista motor (claude) kendi MCP cocuklarini indirir ve olcum bunu
- * dogruluyor (09.09: 14 pane, 0 yetim). Bu yol o yolun KOSMADIGI hal icindir —
- * SIGKILL, cokme, quit yarisi. Iki kapili: (1) kapanis aninda BU motorun MCP
- * cocuklari DEFTERLENIR, (2) bekleme suresi sonunda yalniz DEFTERDE OLAN ve
- * HALA YETIM olan sureclere dokunulur. Atif tahminle degil FARKLA
- * (ORPHAN-ELECTRON-01 / TREE-ORPHAN-01 deseni): araya giren yeni bir pane'in
- * MCP'si defterde olmadigi icin asla biçilemez.
- *
- * Olcemezsek / hicbir cocuk yoksa: tam no-op.
- */
-const MCP_REAP_GRACE_MS = 10_000;
-function scheduleMcpChildReap(enginePid, paneId) {
-  if (!Number.isInteger(enginePid) || enginePid <= 1) return;
-  let ledger = [];
-  try {
-    ledger = mcpProcess.listMcpProcesses().rows
-      .filter((r) => r.ownerPid === enginePid)
-      .map((r) => r.pid);
-  } catch { return; }              // olcemedik → HICBIR SEY iddia etmiyoruz
-  if (!ledger.length) return;
-  const timer = setTimeout(async () => {
-    try {
-      // `pids` verildigi icin yas kapisi uygulanmaz (selectReapable sozlesmesi);
-      // `listOrphanMcp` yine de YETIM olmayanlari eler → canli bir pane'in
-      // MCP'si defterde olsa bile dokunulmaz.
-      const res = await mcpProcess.reapOrphanMcp({ pids: ledger, minAgeMs: 0 });
-      if (res.reaped.length) {
-        logLine(`mcp-reap paneId=${paneId} engine=${enginePid} reaped=${res.reaped.length}/${ledger.length} pids=${res.reaped.map((r) => r.pid).join(',')}`);
-      }
-    } catch (e) {
-      logLine(`mcp-reap failed paneId=${paneId}: ${(e && e.message) || e}`);
-    }
-  }, MCP_REAP_GRACE_MS);
-  if (typeof timer.unref === 'function') timer.unref(); // quit'i BEKLETMEZ
+  return paneQueryService.listPanes(win, department);
 }
 
 function killPaneExplicitAndCleanup(paneId) {
-  // Motor pid'i OLMEDEN once okunmali: kill sonrasi entry dusuyor.
-  const enginePid = (() => {
-    try { return ptys.get(paneId)?.child?.pid ?? null; } catch { return null; }
-  })();
-  const res = paneKill.killPaneExplicit({
-    paneId,
-    entry: ptys.get(paneId),
-    isQuitting: app.isQuitting === true,
-    registry: livePaneRegistry,
-    homedir: crewpaneHome(),
-    resumeDaemon: ptyResumeService.getDaemon(),
-    log: logLine,
-  });
-  if (res.killed) {
-    ptys.delete(paneId);
-    // MCP-COST-01 — motorun MCP cocuklari da kapansin (grace sonunda, yalniz yetimler).
-    scheduleMcpChildReap(enginePid, paneId);
-    // ADP-712 — pane öldü: görünüm tercihini de düşür (hayalet kayıt bırakma).
-    paneViewState.clearPaneView(paneId);
-    // ADP-786 — gönderilmemiş taslak da düşer: sahibi kalmamış metin birikmesin.
-    paneDraft.clearPaneDraft(paneId);
-    // TOK-C — "devam et" ödeneği de düşer: ödenek O PANE'in O OTURUMUNA verilmiş
-    // bir izindir; aynı paneId yeniden kullanılırsa dünkü izni miras almamalı.
-    paneBudgetStore.clearPane(paneId);
-  }
-  return res.killed === true;
+  return paneQueryService.killPaneExplicitAndCleanup(paneId);
 }
 
 function killPtysForWindow(winId) {
-  // ADP-386 — ölmeden önce ekran kuyruğunu sakla (restore tohumlar; bkz. killAllPtys).
-  const tails = {};
-  for (const [paneId, entry] of ptys) {
-    if (entry.win.id !== winId) continue;
-    const tail = captureScreenTail(entry);
-    if (tail) tails[paneId] = tail;
-  }
-  try { livePaneRegistry.setScreenTails(tails, crewpaneHome()); } catch { /* best-effort */ }
-  for (const [paneId, entry] of ptys) {
-    if (entry.win.id === winId) {
-      entry.preserve = true;
-      try { entry.child.kill(); } catch { /* already dead */ }
-      ptys.delete(paneId);
-    }
-  }
+  return paneQueryService.killPtysForWindow(winId);
 }
 
-// ---------------------------------------------------------------------------
-// ADP-905 (P0) — PENCERE KAPANMASI AJANI ÖLDÜRMEZ (macOS).
-// ---------------------------------------------------------------------------
-// ÖLÇÜLEN OLAY (2026-08-05 00:47): kırmızı × ile ana pencere kapatıldı → aynı
-// saniyede 12 ajan `code=129` (SIGHUP) ile öldü, ofis boşaldı, uygulama SÜREÇ
-// OLARAK YAŞAMAYA DEVAM ETTİ (ADP-334 bilinçli kararı: darwin'de quit atlanır).
-// Yani zincir kendi kendisiyle çelişiyordu: uygulama yaşıyor ama çocukları
-// ölüyordu.
-//
-// MİMARİ GERÇEK: pty'ler `main` sürecinin çocuğudur (`ptys` haritası main'de
-// yaşar). Bir BrowserWindow yalnız onların ÇIKTISINI çizer — hiçbir pty'nin
-// hayatı pencereye bağlı DEĞİLDİR. Emsal zaten ağaçta: pane pop-out penceresi
-// kapanınca "burada pty'ye HİÇBİR ŞEY yapılmaz" (ADP-593). Çözüm bu yüzden
-// "daha nazik öldürmek" değil, HİÇ öldürmemektir.
-//
-// Kapı DAR: yalnız macOS'ta ve yalnız uygulama GERÇEKTEN çıkmıyorken. Gerçek
-// quit'te (`before-quit` → app.isQuitting) ve win32/linux'ta (pencere kapanması
-// = uygulamanın sonu) eski davranış BİT BİT aynı kalır — orada pty'yi öldürmek
-// doğrudur, çünkü süreç zaten ölecek ve `preserve` defteri restart-resume için
-// korur.
 function keepPanesAliveOnWindowClose() {
-  return process.platform === 'darwin' && !app.isQuitting && !AUTOTEST;
+  return paneQueryService.keepPanesAliveOnWindowClose();
 }
 
-
-/** ADP-905 — pencere geri geldi: sahibi YOK OLMUŞ pane'leri yeni pencereye bağla.
- * (`entry.win` odaklama/pop-out gibi yollarda da kullanılıyor; tek yerde düzeltilir.)
- * Kaç pane yeniden bağlandığını döner. */
 function rebindOrphanPanes(win) {
-  if (!win || win.isDestroyed()) return 0;
-  let n = 0;
-  for (const entry of ptys.values()) {
-    if (entry.win && !entry.win.isDestroyed()) continue;
-    entry.win = win;
-    n += 1;
-  }
-  if (n) logLine(`ADP-905 rebind: ${n} yaşayan pane yeni pencereye bağlandı (win=${win.id})`);
-  return n;
+  return paneQueryService.rebindOrphanPanes(win);
 }
 
-/** Kaç AJAN pane'i canlı (kabuk pane'leri sayılmaz — F3 görünürlük sayacı). */
 function liveAgentPaneCount() {
-  let n = 0;
-  for (const entry of ptys.values()) if (entry.agentId) n += 1;
-  return n;
+  return paneQueryService.liveAgentPaneCount();
 }
 
 function saveTempImage(payload) {
@@ -4259,37 +4073,14 @@ async function startBridge() {
  * bununla tohumlar ki `claude --resume` sessizken pane SİMSİYAH kalmasın (kanıt:
  * pty:attach bufLen=0 + shot-1784059269700). Best-effort — hata null döner.
  */
-function captureScreenTail(entry) {
-  if (!entry || !entry.screen) return null;
-  try {
-    const t = entry.screen.tail({ lines: 40 });
-    const lines = [...(t.lines || []), ...(t.live || [])].slice(-40);
-    return lines.length ? lines : null;
-  } catch {
-    return null;
-  }
-}
 
 /** ADP-386 — tüm canlı pane'lerin ekran kuyruğunu tek seferde registry'ye işle. */
 function persistScreenTails() {
-  const tails = {};
-  for (const [paneId, entry] of ptys) {
-    const tail = captureScreenTail(entry);
-    if (tail) tails[paneId] = tail;
-  }
-  try {
-    const n = livePaneRegistry.setScreenTails(tails, crewpaneHome());
-    if (n) logLine(`quit: screen tail persisted for ${n} pane(s)`);
-  } catch { /* best-effort */ }
+  return paneQueryService.persistScreenTails();
 }
 
 function killAllPtys() {
-  persistScreenTails(); // ADP-386 — restore'un tohumlayacağı son ekran görüntüsü
-  for (const [paneId, entry] of ptys) {
-    entry.preserve = true; // ADP-192 — app teardown → KEEP registry (restore next launch)
-    try { entry.child.kill(); } catch { /* already dead */ }
-    ptys.delete(paneId);
-  }
+  return paneQueryService.killAllPtys();
 }
 
 // ---------------------------------------------------------------------------
