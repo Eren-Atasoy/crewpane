@@ -690,62 +690,12 @@ function rendererSupabaseTarget() {
   };
 }
 
-/**
- * ADP-625 — İlk açılış doktorunu ÇALIŞTIR (tek yer: hem IPC hem açılış logu).
- *
- * Doktora verdiğimiz her şey OKUNUR bir görüntüdür — ADP-621 hedef çözümlemesinin
- * mantığına dokunmaz, yalnız sonucunu yoklar. `seatGate` henüz kurulmamışsa hesap
- * anlık görüntüsü `null`dır (doktor bunu "okunamadı" olarak, ⚠️ ile raporlar).
- */
-/**
- * ADP-907 — YABANCI KANCA taramasının GİRDİLERİ (salt-okunur).
- *
- * `hookScanHome()` kullanıcının GERÇEK ev dizinidir (`~/.claude/settings.json` orada
- * yaşar) — `crewpaneHome()` DEĞİL: o, instance köküne bakan ayrı bir karardır.
- * `HOOK_SCAN_HOME`/`HOOK_SCAN_PATH` yalnız TEST SEAM'idir (CREWPANE_TMUX_BIN deseni):
- * e2e, gerçek ev dizinine ve gerçek PATH'e hiç dokunmadan üç durumu da (var / yok /
- * ölçemedim) kurabilsin diye. Üründe ikisi de tanımsızdır → os.homedir() + process.env.
- */
 function hookScanHome() {
-  const seam = crewpaneEnv.readEnv('HOOK_SCAN_HOME');
-  return typeof seam === 'string' && seam ? seam : os.homedir();
-}
-function hookProbeEnv() {
-  // BİLEREK ham okuma (crewpaneEnv.readEnv DEĞİL): readEnv boş dizeyi "yok" sayar,
-  // burada BOŞ ('') anlamlı bir değerdir — "PATH yok" → prob `unknown` der ve kart
-  // ÇIKMAZ. Kapının üçüncü vakası (ölçemedim) ancak böyle kurulabilir.
-  const raw = process.env.CREWPANE_HOOK_SCAN_PATH;
-  return typeof raw === 'string' ? { ...process.env, PATH: raw } : process.env;
+  return doctorService.hookScanHome();
 }
 
-async function runDoctorNow() {
-  let account = null;
-  try {
-    account = seatGate ? seatGate.evaluate() : null;
-  } catch { account = null; }
-  return firstRunDoctor.runFirstRunDoctor({
-    // ADP-907 — başka bir aracın kurduğu, bu makinede ÇALIŞAMAYAN kancalar.
-    userHome: hookScanHome(),
-    env: hookProbeEnv(),
-    home: instancePaths.crewpaneHome(),
-    // ADP-703 — `auth/` CİHAZ kökünde yaşar (hesabı o blob'lar belirler → hesap
-    // kökünün içinde olamazdı). Diğer klasörler hesap kökünde kalır.
-    deviceHome: instancePaths.instanceHome(),
-    backend: rendererSupabaseTarget(),
-    // ENV-02 — doktorun "ortam" bölümü. Görüntü BURADA türetilmez: banner ve rozetle
-    // AYNI `envLayerView()` okunur (üç yüzey / tek gerçek).
-    envView: envLayerView(),
-    identityMode: appDbIdentityMode().mode,
-    account,
-    checkEngines: () => engineCheck.checkEngines(),
-    workspaceRoot: agentWorkspaceRoot,
-    // ADP-852 v3 — "seçilmedi" ile "seçildi ama erişilemiyor"u ayırt edebilmesi için
-    // doctor'a çözülmüş kökün YANINDA seçilen kökü + tutmama sebebini de ver.
-    workspaceStatus: agentSettings.configuredWorkspaceRootStatus(),
-    // LX-SAFESTORAGE-01 — doktor ÖLÇMEZ, açılışta ölçüleni OKUR (ikinci bir
-    // safeStorage sorgusu ikinci bir gerçek üretirdi).
-    secretBackend: secretBackendState.secretBackendState(),
-  });
+function runDoctorNow() {
+  return doctorService.runDoctorNow();
 }
 
 // ADP-192 — restart-resume. Auto re-spawn the running agent panes on the next
@@ -990,6 +940,8 @@ const {
   createChangelogService,
   createResetBootService,
   createMediaService,
+  createDoctorService,
+  createStartupSweepService,
 } = require('./src/features/system');
 // ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
 const { createUpdateService } = require('./src/features/update');
@@ -1046,6 +998,35 @@ const mediaService = createMediaService({
   logLine,
   getBoundAccount: () => boundAccount,
   getLogPath: () => LOG_PATH,
+});
+
+// ── ADP-625/ADP-907 — SİSTEM TEŞHİS VE DOKTOR SERVİSİ (src/features/system/doctorService.js - Faz 3.6.18)
+const doctorService = createDoctorService({
+  firstRunDoctor,
+  crewpaneEnv,
+  instancePaths,
+  os,
+  getSeatGate: () => seatGate,
+  getRendererSupabaseTarget: () => rendererSupabaseTarget(),
+  getEnvLayerView: () => envLayerView(),
+  getIdentityMode: () => appDbIdentityMode().mode,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  getWorkspaceStatus: () => agentSettings.configuredWorkspaceRootStatus(),
+  getSecretBackend: () => secretBackendState.secretBackendState(),
+  checkEngines: () => engineCheck.checkEngines(),
+});
+
+// ── ADP-307/900/727 — BAŞLANGIÇ SÜPÜRGE VE BAKIM SERVİSİ (src/features/system/startupSweepService.js - Faz 3.6.18)
+const startupSweepService = createStartupSweepService({
+  getPublicSupabaseEnv: () => publicSupabaseEnv(),
+  agentSettings,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  getMemoryIndexer: () => memoryIndexer(),
+  jarvisVoice,
+  mcpProcess,
+  helperReaper,
+  logLine,
+  autoIndexDelayMs: Number(process.env.CREWPANE_AUTO_INDEX_DELAY_MS || 15000),
 });
 
 // ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
@@ -6194,73 +6175,12 @@ function scheduleChangelogChecks() {
   changelogService.scheduleChangelogChecks();
 }
 
-// ADP-900 — HAFIZA İNDEKSİ İLK AÇILIŞTA KENDİLİĞİNDEN KURULUR.
-//
-// ADP-872 §5.2'nin açık sorusu buydu ve ölçülmüş cevabı şuydu: müşterinin
-// kurulumunda indeks HİÇ oluşmuyordu — çünkü tek başlatma yolu Hafıza sekmesindeki
-// "indeksle" bağlantısıydı ve kimse ona basmıyordu. İndeks olmayınca ajan spawn'ının
-// RAG bloğu da boş kalıyor (`index_not_built`), yani ölçülen jeton tasarrufu hiç
-// gerçekleşmiyordu.
-//
-// ÜÇ KISIT — üçü de bilinçli:
-//   • MODEL GEREKTİRMEZ. Bu indeksleme kelime katmanıdır (ADP-900 memoryIndexWorker
-//     `lexicalOnly`); onay akışıyla İLGİSİ YOKTUR ve tek bayt indirmez.
-//   • DÜŞÜK ÖNCELİKLİ + GECİKMELİ. Açılışın ilk saniyeleri pencere/ofis/pane
-//     kurulumuna ait; indeksleme oraya CPU rekabeti sokmaz.
-//   • KAPATILABİLİR ve GÖRÜNÜR. `memorySearch.autoIndex=false` → hiç koşmaz; koşarken
-//     durumu Hafıza sekmesindeki hapta akar (`auto:true` ile işaretli).
-const AUTO_INDEX_DELAY_MS = Number(process.env.CREWPANE_AUTO_INDEX_DELAY_MS || 15000);
-let autoIndexScheduled = false;
 function scheduleAutoMemoryIndex() {
-  if (autoIndexScheduled) return;
-  autoIndexScheduled = true;
-  const t = setTimeout(() => {
-    try {
-      if (agentSettings.readSettings().memorySearch?.autoIndex === false) {
-        logLine('memoryIndex(auto): kullanıcı kapatmış — atlandı');
-        return;
-      }
-      if (!agentWorkspaceRoot) {
-        logLine('memoryIndex(auto): çalışma alanı yok — atlandı');
-        return;
-      }
-      const svc = memoryIndexer();
-      if (svc.status().running) return;
-      const res = svc.start({ workspaceRoot: agentWorkspaceRoot, auto: true });
-      logLine(`memoryIndex(auto): ${res.ok ? `başladı → ${res.dbFile}` : `başlatılamadı (${res.reason})`}`);
-    } catch (err) {
-      // Hafıza indeksi bir açılışı ASLA bozamaz.
-      logLine(`memoryIndex(auto): başlatılamadı: ${err.message}`);
-    }
-  }, AUTO_INDEX_DELAY_MS);
-  t.unref?.();
+  return startupSweepService.scheduleAutoMemoryIndex();
 }
 
-// ADP-307 — açılışta e2e-artık taraması. SALT-OKUNUR: canlı ofis DB'sinden ASLA satır
-// silmez (gerçek veriyi otomatik silmek, düzeltmeye çalıştığımız hata sınıfının ta kendisi
-// — Bumblebee'nin satırını silen spec vakası). Hedefleri DB'nin kendisi söyler
-// (crewpane_e2e_residue RPC'si — bariyerle aynı desenler, kopya yok). Bulursa log'a
-// yazar; temizliği insan onaylar. Ağ hatası sessizce yutulur (açılışı bloklamaz).
 function scanE2EResidueAtStartup() {
-  const env = publicSupabaseEnv();
-  const url = env.NEXT_PUBLIC_CREWPANE_SUPABASE_URL;
-  const key = env.NEXT_PUBLIC_CREWPANE_SUPABASE_ANON_KEY;
-  if (!url || !key) return;
-  fetch(`${url}/rest/v1/rpc/crewpane_e2e_residue`, {
-    method: 'POST',
-    headers: { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: '{}',
-  })
-    .then((r) => (r.ok ? r.json() : []))
-    .then((rows) => {
-      if (!Array.isArray(rows) || rows.length === 0) return;
-      const where = [...new Set(rows.map((r) => r.table_name))].join(', ');
-      logLine(
-        `⚠️ [adp-307] ${rows.length} e2e test artığı bulundu (${where}) — bir spec bu DB'ye yazmış. ` +
-        `Otomatik SİLİNMEDİ. İncele: node e2e/prodResidueGuard.cjs`
-      );
-    })
-    .catch(() => { /* DB kapalı / eski şema — açılışı bloklama */ });
+  return startupSweepService.scanE2EResidueAtStartup();
 }
 
 const resetT = (key) => resetBootService.resetT(key);
@@ -6432,39 +6352,14 @@ app.whenReady().then(async () => {
   // 60 sn'den yasli surecler biçilir — yeni restore edilen bir pane'in MCP'si
   // yas kapisina takilir. `ps` okunamazsa hicbir sey iddia edilmez, hicbir sey
   // olmez. Acilisi BEKLETMEZ (fire-and-forget).
-  setTimeout(() => {
-    mcpProcess.reapOrphanMcp().then((res) => {
-      if (res && res.reaped.length) {
-        logLine(`mcp-sweep(boot) reaped=${res.reaped.length}/${res.scanned} `
-          + `pids=${res.reaped.map((r) => r.pid).join(',')}`);
-      }
-    }).catch((e) => logLine(`mcp-sweep(boot) failed: ${(e && e.message) || e}`));
-  }, 5000).unref?.();
-  // ADP-727 (katman A) — AÇILIŞTA YETİM TOPLA. Önceki oturum SIGKILL ile öldüyse
-  // (jetsam / Force Quit / çökme) `before-quit` koşmamıştır ve gömülü Next sunucusu
-  // PPID=1 olarak yaşamaya devam eder. Defterdeki her kaydı ÜÇLÜ kimlik kapısından
-  // geçirip (pid yaşıyor + ps başlangıç zamanı aynı + komut imzası tutuyor) öldürür;
-  // biri bile tutmazsa dokunmaz (8 gün sonra pid yeniden kullanılmış olabilir).
-  try {
-    const reap = helperReaper.reapStaleHelpers(crewpaneHome(), { log: logLine });
-    if (reap.reaped.length) logLine(`startup reap: ${reap.reaped.length} orphan helper(s) killed (${reap.reaped.map((r) => `${r.kind}:${r.pid}`).join(', ')})`);
-    else if (reap.checked) logLine(`startup reap: ${reap.checked} ledger entr(ies) checked, none stale`);
-    // ADP-727 — DEFTERSİZ YETİMLER. Defter yalnız BU sürümden sonrasını kapsar;
-    // Eren'in makinesinde kayıt öncesinden kalma 11 yetim vardı (en eskisi 8 gün
-    // 18 saat) ve hiçbiri defterde değildi. Süpürge onları PPID=1 + imza +
-    // ÇALIŞMA DİZİNİ ile bulur — cwd şart: Next süreç başlığını değiştirdiği için
-    // komut satırında yol kalmıyor ve aynı makinede BAŞKA projelerin (crewpane-com)
-    // next-server'ları da PPID=1 duruyor.
-    // ADP-835 (790 P3): win32'de İKİ ADIM DA farklı — reparenting olmadığı için
-    // yetimlik "ebeveyn canlı listede yok" ile ölçülür, kimlik ise cwd yerine
-    // CommandLine'dan kurulur (Win32_Process'te cwd alanı yok). Bkz.
-    // electron/platform/procProbe.cjs + helperReaper.sweepUnledgeredOrphans.
-    const sweep = helperReaper.sweepUnledgeredOrphans(
-      [REPO_ROOT, standaloneDir(), app.isPackaged ? process.resourcesPath : null],
-      { log: logLine },
-    );
-    if (sweep.reaped.length) logLine(`startup sweep: ${sweep.reaped.length} unledgered orphan(s) killed (${sweep.reaped.map((r) => r.pid).join(', ')})`);
-  } catch (e) { logLine(`startup reap failed: ${e.message}`); }
+  startupSweepService.scheduleMcpOrphanReap();
+  startupSweepService.sweepOrphanHelpers({
+    crewpaneHome,
+    repoRoot: REPO_ROOT,
+    standaloneDir,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+  });
   ensureSpawnHelperExecutable();
   rehydrateGrantedRoots(); // ADP-109 — re-grant folders the user opened before (restore)
 
@@ -6708,22 +6603,8 @@ app.whenReady().then(async () => {
   scheduleChangelogChecks();
   // ADP-900 — hafıza arama indeksini arka planda, düşük öncelikle, gecikmeli kur.
   scheduleAutoMemoryIndex();
-  // TTS-ORPHAN-01 · katman D — AÇILIŞTA YETİM `say` SÜPÜRGESİ. Önceki oturum
-  // SIGKILL/Force Quit ile gittiyse hiçbir kanca koşmamıştır; ppid 1'e düşmüş,
-  // BİZİM tmp yolumuza yazan `say` süreçleri sahipsizdir. Gerekçe ve üç koşullu
-  // kapı: electron/jarvisVoice.js · sweepOrphanSayProcesses.
-  try {
-    const swept = jarvisVoice.sweepOrphanSayProcesses();
-    if (swept.killed.length) logLine(`tts: ${swept.killed.length} yetim \`say\` süreci temizlendi (${swept.killed.join(', ')})`);
-    // WIN-TTS-SWEEP-01 — "atlandı" ARIZA DEĞİLDİR. Windows/Linux'ta avlanan iki
-    // ikili de (say/afplay) yok, dolayısıyla yetim de yok; `ps` hiç çağrılmaz.
-    // Eskiden bu durum her açılışta "koşamadı — ps-failed: …ENOENT" diye
-    // yazılıyor ve gerçek arızaları gürültüde saklıyordu (FB-1006).
-    else if (swept.skipped) logLine(`tts: yetim \`say\` süpürgesi atlandı (${swept.reason} — yerel say/afplay yalnız macOS'ta)`);
-    else if (swept.reason) logLine(`tts: yetim süpürgesi koşamadı — ${swept.reason}`);
-  } catch (e) {
-    logLine(`tts: yetim süpürgesi hata verdi — ${e && e.message}`);
-  }
+  // TTS-ORPHAN-01 · katman D — AÇILIŞTA YETİM `say` SÜPÜRGESİ.
+  startupSweepService.sweepOrphanSayProcesses();
   // MEMIDX-LEAK-01 — İNDEKSLEME ÇOCUKLARI UYGULAMAYLA BİRLİKTE GİDER (katman A).
   //
   // Ölçüldü (07.09 gecesi): bu kanca YOKKEN her açılış/kapanış bir yetim bıraktı —
@@ -6748,7 +6629,7 @@ app.whenReady().then(async () => {
   // kanıt bırakır ve "Sistem Durumu" ekranı aynı raporu gösterir. Bağlantı yoklaması
   // ağ beklediği için await EDİLMEZ: pencere açılışını hiçbir koşulda geciktirmez.
   runDoctorNow()
-    .then((report) => logLine(firstRunDoctor.formatDoctorLog(report)))
+    .then((report) => logLine(doctorService.formatDoctorLog(report)))
     .catch((e) => logLine(`[doctor] çalıştırılamadı: ${e && e.message}`));
 
   try {
