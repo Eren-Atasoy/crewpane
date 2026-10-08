@@ -52,6 +52,7 @@ const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
 const { createPaneRestoreService, createPtyResumeService } = require('./src/features/terminal');
+const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 let windowManager = null;
 let mobileService = null;
 
@@ -188,7 +189,6 @@ const delegationQueueStore = require('./src/agents/delegationQueueStore.cjs'); /
 // Renderer'ın motoru (delegation.ts) efemerdir — reload/crash'te tüm nöbetleri ölür ve
 // uçuştaki alt-görev hiçbir yerde kalıcı DEĞİLDİR (queue store yalnız queued+paused tutar).
 // Bu ikili o boşluğu kapatır: defter diskte, tespit main'de, kuyruk lider olmadan ilerler.
-const delegationSupervisorMod = require('./src/agents/delegationSupervisor.cjs');
 const delegationSupervisorStore = require('./src/agents/delegationSupervisorStore.cjs');
 // SUP-UI-01 — KUYRUK PANELİ. Yeni defter YOK: üç mevcut defteri (queue/supervisor/
 // resume) + canlı pane listesini TEK tabloya çeviren SAF çekirdek. Metin taşımaz,
@@ -197,7 +197,6 @@ const queueBoard = require('./src/agents/queueBoard.cjs');
 // SUP-UI-01 — limit-devam kuyruğunun deposu (ADP-087). Panel bu defteri de OKUR;
 // yazan taraf hâlâ resume daemon'ıdır (bu dosyada tek çağrı `loadQueue`/`queuePath`).
 const resumeQueueStore = require('./src/terminal/resumeQueue.cjs');
-const boardTaskSyncMod = require('./src/agents/boardTaskSync.cjs'); // ADP-838 — supervisor → Task Board statü senkronu
 // ADP-715/845 — TELEMETRİ. İki ayrı iş, TEK opt-out kapısı:
 //   telemetry.cjs → hata takibi (Sentry). ADP-845 K1: DSN/SDK YOK, yani bugün
 //     `{enabled:false}` döner — ama kablo ARTIK DOĞRU DOSYADA. (ADP-805 §2.2'de
@@ -301,7 +300,6 @@ const inputSim = require('./src/services/inputSim.cjs'); // ADP-265 — Jarvis i
 const screenCaptureMod = require('./src/services/screenCapture.cjs'); // ADP-817 — screen.capture çekirdeği (şema+yakalama+dürüst hata)
 const stdioGuard = require('./src/core/stdioGuard.cjs'); // ADP-303 — EPIPE/dead-stream guard (no crash dialog)
 const notifyLog = require('./src/services/notifyLog.cjs'); // ADP-538 — in-app worker completion → .agent-notifications DONE/FAIL satırı
-const notifyGateMod = require('./src/services/notifyGate.cjs'); // ADP-667 — bildirim tekilleştirme + toplama (TEK boğaz)
 const evidencePathMod = require('./src/services/evidencePath.cjs'); // ADP-735 — kanıt yolu: çok-adaylı kök çözümü (worker alt-projeye yazar)
 const resultRootMod = require('./src/services/resultRoot.cjs'); // RES-IDX-01 — sonuç kökü görevin PROJESİNDEN (prompt + supervisor aynı cevabı alır)
 const moduleGuard = require('./src/agents/moduleGuard.cjs'); // ADP-335 — modül hata sınırı (bir bug uygulamayı çökertmesin)
@@ -1127,6 +1125,25 @@ function supervisorFor(name) {
   return faultService.supervisorFor(name);
 }
 
+// ── ADP-659/660/667/672/838 — DELEGASYON SUPERVISOR SERVİSİ (src/features/agents/delegationSupervisorService.js - Faz 3.6.22)
+const delegationSupervisorService = createDelegationSupervisorService({
+  ptys,
+  crewpaneHome: () => crewpaneHome(),
+  logLine: (line) => logLine(line),
+  getAppWindow: () => appWindow,
+  planDenial: (feat, count, opts) => planDenial(feat, count, opts),
+  supervisorFor: (name) => supervisorFor(name),
+  resolveWorkerNotifyPath: (dept) => resolveWorkerNotifyPath(dept),
+  rendererSupabaseTarget: () => rendererSupabaseTarget(),
+  appDbTokenFor: (action) => appDbTokenFor(action),
+  telemetryBump: (key, by, props) => telemetryBump(key, by, props),
+  resetCommandFor: (cmd) => resetCommandFor(cmd),
+  maxTasksPerSession: 10,
+  killPane: (id, entry, aid, why) => killPane(id, entry, aid, why),
+  probeTranscriptVerdict: (paneId, needle, opts) => probeTranscriptVerdict(paneId, needle, opts),
+  probeTranscriptVerifiable: (paneId) => probeTranscriptVerifiable(paneId),
+});
+
 // TEST-ONLY sentetik hata enjeksiyonu — hata sınırının GERÇEK uygulamada tuttuğunu kanıtlamak
 // için (e2e). `CREWPANE_FAULT_INJECT=vt,gateway`. Env yoksa hiçbir etkisi yok.
 const FAULT_INJECT = String(process.env.CREWPANE_FAULT_INJECT || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -1806,28 +1823,12 @@ function leaderAutoRefreshConfig() {
 
 /** Bu liderin UÇUŞTAKİ (settle olmamış) delegasyon sayısı — defter main'de kalıcıdır. */
 function leaderInFlightCount(agentId) {
-  if (!agentId || !delegationSupervisor) return 0;
-  try {
-    const st = delegationSupervisor.leaderStatus(String(agentId));
-    const recs = (st && st.records) || [];
-    return recs.filter((r) => r.status !== 'done' && r.status !== 'failed' && r.status !== 'undelivered').length;
-  } catch {
-    // Defter okunamadıysa "uçuşta iş YOK" diyemeyiz → güvenli taraf: 1 say, ERTELE.
-    return 1;
-  }
+  return delegationSupervisorService.leaderInFlightCount(agentId);
 }
 
 /** Bu liderin AÇIK alt-görevleri (G5 geri yüklemesinin ikinci yarısı). */
 function leaderOpenSubtasks(agentId) {
-  if (!agentId || !delegationSupervisor) return [];
-  try {
-    const st = delegationSupervisor.leaderStatus(String(agentId));
-    return ((st && st.records) || []).filter(
-      (r) => r.status !== 'done' && r.status !== 'failed' && r.status !== 'undelivered',
-    );
-  } catch {
-    return [];
-  }
+  return delegationSupervisorService.leaderOpenSubtasks(agentId);
 }
 
 /**
@@ -4012,7 +4013,7 @@ const authService = createAuthService({
   appI18n,
   testSeamDeps: {
     updateCheck,
-    supervisorPushRenderer: (c, p) => supervisorPushRenderer(c, p),
+    supervisorPushRenderer: (c, p) => delegationSupervisorService.supervisorPushRenderer(c, p),
     planWaveLimit: (r) => planWaveLimit(r),
     spawnPty: (win, opts) => spawnPty(win, opts),
     ptys,
@@ -4023,7 +4024,7 @@ const authService = createAuthService({
     designPlanDenial: (opts) => designPlanDenial(opts),
     BrowserWindow,
     getRestoreSkippedByPlan: () => paneRestoreService.getRestoreSkippedByPlan(),
-    getSupervisorAdvanceBlocked: () => supervisorAdvanceBlocked,
+    getSupervisorAdvanceBlocked: () => delegationSupervisorService.getSupervisorAdvanceBlocked(),
   },
 });
 
@@ -7484,167 +7485,11 @@ function resolveWorkerNotifyPath(department) {
 // bağımsızdır ve pty defterinin + dosya sisteminin SAHİBİDİR: tamamlanmayı renderer'a
 // hiç sormadan ölçebilir. Kayıt DİSKTE → app restart'ı bile takibi kesmez.
 
-let delegationSupervisor = null;
-let supervisorSweepTimer = null;
+const supervisorPending = delegationSupervisorService.supervisorPending;
 
-// ── ADP-667 — BİLDİRİM KAPISI (tekilleştirme + toplama) ────────────────────
-// notify-log'a yazan TEK boğaz. Renderer follow-loop'u (IPC 'notify:workerEvent')
-// ve main supervisor'ı (`notifyOnce`) AYNI kapıdan geçer → "aynı bitiş iki-üç kez"
-// yapısal olarak imkânsız; aynı pencerede biten işler tek satırda toplanır.
-let notifyGateInstance = null;
-function notifyGate() {
-  if (notifyGateInstance) return notifyGateInstance;
-  const envNum = (name, fallback) => {
-    const v = Number(crewpaneEnv.readEnv(name));
-    return Number.isFinite(v) && v >= 0 ? v : fallback;
-  };
-  notifyGateInstance = notifyGateMod.createNotifyGate({
-    // ADP-586 — notify dosyası repo'ya commit'lenir → olay maskeden geçirilerek yazılır.
-    emit: (evt) =>
-      notifyLog.appendWorkerEvent(resolveWorkerNotifyPath(evt && evt.department), secretRedactor.redactDeep(evt)),
-    log: (line) => logLine(line),
-    opts: {
-      coalesceMs: envNum('NOTIFY_COALESCE_MS', notifyGateMod.DEFAULTS.coalesceMs),
-      dedupeTtlMs: envNum('NOTIFY_DEDUPE_TTL_MS', notifyGateMod.DEFAULTS.dedupeTtlMs),
-    },
-  });
-  return notifyGateInstance;
-}
-
-/** Supervisor'ın pane görünümü — main'in pty defteri (tek gerçek). */
-function supervisorListPanes() {
-  const out = [];
-  for (const [paneId, entry] of ptys) {
-    out.push({
-      paneId,
-      agentId: entry.agentId || null,
-      command: entry.command || null,
-      bytes: entry.bytes || 0,
-      // Delegasyon EXECUTION pane'i mi (ADP-136)? Lider/insan pane'i ASLA reap edilmez.
-      disallowSubagent: entry.disallowSubagent === true,
-    });
-  }
-  return out;
-}
-
-/**
- * Kanıt parmak izi — İÇERİK hash'i (mtime DEĞİL; ADP-575'te mtime hipotezi elenmişti).
- * null = dosya yok. Supervisor baseline'ı da bu fonksiyonla alınır → algoritma
- * renderer'ınkiyle (djb2) aynı olmak ZORUNDA değil, karşılaştırma hep main-içi.
- */
-function supervisorFingerprint(absPath) {
-  try {
-    const buf = fs.readFileSync(absPath);
-    return crypto.createHash('sha1').update(buf).digest('hex');
-  } catch {
-    return null;
-  }
-}
-
-/**
- * TEK pane'i geri kazan (hayalet reap). recycleWorkerPanes'in tek-pane hali —
- * AYNI politika: claude/codex → soft reset (/clear, warm oturum korunur, ADP-266),
- * bütçe dolmuşsa / shell ise kill. Lider pane'i buraya HİÇ gelmez (çağıran eler).
- */
-function reapWorkerPane(paneId, why) {
-  const entry = ptys.get(paneId);
-  if (!entry || entry.disallowSubagent !== true) return false;
-  const resetCmd = resetCommandFor(entry.command);
-  const overBudget = (entry.taskCount || 0) + 1 >= MAX_TASKS_PER_SESSION;
-  if (!resetCmd || overBudget) {
-    killPane(paneId, entry, entry.agentId, why);
-    return true;
-  }
-  // ADP-667 — HAYALET REAP ARTIK EKRANI SİLMEZ. Eskiden burada anında `/clear`
-  // yazılıyordu: worker'ın son çıktısı (özet/hata/commit satırı) o saniyede yok
-  // oluyordu ve pane bomboş bekliyordu. Eren: "aradaki sürede terminale bakıp ne
-  // yapmış OKUMAK istiyorum". Pane yalnız BAYRAKLANIR; gerçek temizlik sıradaki
-  // dispatch'in yazımından hemen önce (renderer'ın per-pane kuyruğunda,
-  // paneRecycler.flushPendingReset) koşar. Pane bu arada tamamen kullanılabilir.
-  entry.pendingReset = true;
-  logLine(`pane reap ERTELENDİ (çıktı ekranda kalsın) paneId=${paneId} agent=${entry.agentId ?? '-'} why=${why}`);
-  return true;
-}
-
-/**
- * Renderer'a istek + CEVAP. Kuyruk ilerletmenin gerçekten UYGULANDIĞINI bilmek şart:
- * `webContents.send` ateşle-unut olsaydı renderer yokken kayıt "ilerletildi" damgalanır
- * ve iş sonsuza dek kuyrukta kalırdı. Cevap gelmezse false → supervisor bir sonraki
- * tick'te YENİDEN dener (kayıt diskte, kayıp yok).
- */
-const supervisorPending = new Map();
-let supervisorReqSeq = 0;
-
-function supervisorAskRenderer(channel, payload, timeoutMs = 8000) {
-  const win = appWindow;
-  if (!win || win.isDestroyed()) return Promise.resolve(false);
-  const requestId = `sup-${++supervisorReqSeq}`;
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      supervisorPending.delete(requestId);
-      resolve(false);
-    }, timeoutMs);
-    supervisorPending.set(requestId, { resolve, timer });
-    try {
-      win.webContents.send(channel, { requestId, ...payload });
-    } catch {
-      clearTimeout(timer);
-      supervisorPending.delete(requestId);
-      resolve(false);
-    }
-  });
-}
-
-// ADP-660 — GÖZETİMSİZ DEVAM plan limiti. `dlgsup:advance` supervisor'ın
-// "sıradakini kendiliğinden başlat" kanalıdır = otopilot zinciri. Basic'te YALNIZ
-// bu kanal kapalıdır; kayıt defterde KALIR (iş kaybolmaz) ve bildirim + lider
-// uyandırma yolları çalışmaya devam eder → kullanıcı biteni görür, sırayı kendi
-// başlatır. Pro/Ultra'da hiçbir fark yoktur. Kullanıcı yükseltirse bir sonraki
-// tick'te kod değişmeden devam eder (karar her seferinde yeniden sorulur).
-//
-// Sayaç e2e içindir: "renderer cevap vermedi" ile "plan kapattı" AYNI `false`'a
-// düşer; kapının GERÇEKTEN devrede olduğunu ayırt edebilmek için ölçülür.
-let supervisorAdvanceBlocked = 0;
-
-function supervisorPushRenderer(channel, payload) {
-  if (channel === 'dlgsup:advance' && planDenial('autopilot')) {
-    supervisorAdvanceBlocked++;
-    return Promise.resolve(false);
-  }
-  return supervisorAskRenderer(channel, payload);
-}
-
-/** Pane exit / dispatch gibi olaylarda tick'i beklemeden kısa gecikmeyle süpür. */
 function scheduleSupervisorSweep(delayMs = 1500) {
-  if (!delegationSupervisor || supervisorSweepTimer) return;
-  supervisorSweepTimer = setTimeout(() => {
-    supervisorSweepTimer = null;
-    void delegationSupervisor.sweep();
-  }, delayMs);
-  if (supervisorSweepTimer.unref) supervisorSweepTimer.unref();
+  return delegationSupervisorService.scheduleSupervisorSweep(delayMs);
 }
-
-/**
- * KILL-SWITCH — `CREWPANE_SUPERVISOR=0` gözcüyü tamamen kapatır (davranış ADP-659
- * öncesiyle birebir aynı olur). Bir P0 alt-sistemi kapatılabilir olmalı: saha
- * teşhisinde "bunu supervisor mı yapıyor?" sorusu tek env ile cevaplanır ve bir
- * regresyon şüphesinde ölçüm ALINABİLİR olur (bu ADP'nin baseline ölçümü de
- * bununla yapıldı). Kapalıyken tüm yüzey no-op'tur — çağıranlar dallanmaz.
- */
-const SUPERVISOR_NULL = Object.freeze({
-  record: () => null,
-  settle: () => false,
-  ack: () => 0,
-  leaderStatus: () => ({ at: 0, records: [], untracked: [], disabled: true }),
-  sweep: async () => {},
-  start: () => {},
-  stop: () => {},
-  repairAfterRestart: () => 0,
-  markExternalShutdown: () => [],
-  externalShutdownNote: () => null,
-  snapshot: () => ({ version: 0, records: {}, disabled: true }),
-  config: () => ({ disabled: true }),
-});
 
 // ---------------------------------------------------------------------------
 // KILL-GUARD-01 (madde 5) — DIŞARIDAN KAPATILDIK: uçuştaki işi DAMGALA.
@@ -7665,9 +7510,9 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
     externalShutdownSignal = sig;
     try { logLine(`⚠️ DIŞ KAPANIŞ: ${sig} alındı — uygulama kapanıyor (bu quit'i biz istemedik)`); } catch { /* log çıkışı tutmaz */ }
     try {
-      const hits = (delegationSupervisor || SUPERVISOR_NULL).markExternalShutdown(sig);
+      const hits = delegationSupervisorService.markExternalShutdown(sig);
       if (hits && hits.length) {
-        const note = (delegationSupervisor || SUPERVISOR_NULL).externalShutdownNote(hits);
+        const note = delegationSupervisorService.externalShutdownNote(hits);
         if (note) logLine(note);
       }
     } catch { /* damga çıkışı ASLA geciktirmez */ }
@@ -7676,159 +7521,12 @@ for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
   });
 }
 
-/**
- * ADP-838 — supervisor'ın board yazarı (tek örnek, tembel kurulur).
- *
- * KILL-SWITCH: `CREWPANE_BOARD_SYNC=0` → board'a HİÇ yazılmaz (statü senkronu
- * ADP-838 öncesi gibi elle kalır). Bir statü şikâyetinde "bunu senkron mu yaptı?"
- * sorusu tek env ile cevaplanabilmeli.
- */
-let _boardTaskSync = null;
-function boardTaskSync() {
-  if (_boardTaskSync) return _boardTaskSync;
-  _boardTaskSync = boardTaskSyncMod.createBoardTaskSync({
-    target: () => {
-      const t = rendererSupabaseTarget();
-      return t && t.url && t.anonKey ? { url: t.url, anonKey: t.anonKey, schema: t.schema } : null;
-    },
-    // `appdb:token` IPC'si / mobil ofis ile AYNI seatGate kaynağı. null → anon
-    // (yerel/e2e `public` şeması bugünkü gibi çalışır).
-    accessToken: () => appDbTokenFor('supervisor:board-sync'),
-    enabled: () => crewpaneEnv.readEnv('BOARD_SYNC') !== '0',
-    log: (line) => logLine(line),
-  });
-  return _boardTaskSync;
+function ensureDelegationSupervisor() {
+  return delegationSupervisorService.ensureDelegationSupervisor();
 }
 
-/** Supervisor'ı (bir kez) kur ve başlat. */
-function ensureDelegationSupervisor() {
-  if (delegationSupervisor) return delegationSupervisor;
-  if (crewpaneEnv.readEnv('SUPERVISOR') === '0') {
-    logLine('supervisor: KAPALI (CREWPANE_SUPERVISOR=0) — ADP-659 öncesi davranış');
-    delegationSupervisor = SUPERVISOR_NULL;
-    return delegationSupervisor;
-  }
-  const guard = supervisorFor('delegation-supervisor');
-  const overrides = {};
-  // e2e dikişi: gerçek koşuda 15sn tick beklemek yerine testin hızını kullan.
-  const tickEnv = Number(process.env.CREWPANE_SUPERVISOR_TICK_MS);
-  if (Number.isFinite(tickEnv) && tickEnv > 0) overrides.tickMs = tickEnv;
-  const deliveryEnv = Number(process.env.CREWPANE_SUPERVISOR_DELIVERY_MS);
-  if (Number.isFinite(deliveryEnv) && deliveryEnv > 0) overrides.deliveryCheckMs = deliveryEnv;
-  const graceEnv = Number(process.env.CREWPANE_SUPERVISOR_PANE_GRACE_MS);
-  if (Number.isFinite(graceEnv) && graceEnv >= 0) overrides.paneGoneGraceMs = graceEnv;
-  const wakeEnv = Number(process.env.CREWPANE_SUPERVISOR_WAKE_ACK_MS);
-  if (Number.isFinite(wakeEnv) && wakeEnv > 0) overrides.wakeAckWindowMs = wakeEnv;
-  const reapEnv = Number(process.env.CREWPANE_SUPERVISOR_REAP_GRACE_MS);
-  if (Number.isFinite(reapEnv) && reapEnv >= 0) overrides.reapGraceMs = reapEnv;
-  // ADP-672 dikişleri: sessiz-worker eşiği (0 = kapalı) + uyandırma doğrulama penceresi.
-  const idleEnv = Number(process.env.CREWPANE_SUPERVISOR_IDLE_MS);
-  if (Number.isFinite(idleEnv) && idleEnv >= 0) overrides.idleMs = idleEnv;
-  const wakeVerifyEnv = Number(process.env.CREWPANE_SUPERVISOR_WAKE_VERIFY_MS);
-  if (Number.isFinite(wakeVerifyEnv) && wakeVerifyEnv >= 0) overrides.wakeVerifyMs = wakeVerifyEnv;
-  // ADP-667 dikişleri: uyandırma TOPLAMA penceresi + tuş-sessizliği + örnekleme gecikmesi.
-  const wakeCoalesceEnv = Number(process.env.CREWPANE_SUPERVISOR_WAKE_COALESCE_MS);
-  if (Number.isFinite(wakeCoalesceEnv) && wakeCoalesceEnv >= 0) overrides.wakeCoalesceMs = wakeCoalesceEnv;
-  const quietEnv = Number(process.env.CREWPANE_SUPERVISOR_INPUT_QUIET_MS);
-  if (Number.isFinite(quietEnv) && quietEnv >= 0) overrides.wakeInputQuietMs = quietEnv;
-  const sampleEnv = Number(process.env.CREWPANE_SUPERVISOR_SAMPLE_GAP_MS);
-  if (Number.isFinite(sampleEnv) && sampleEnv >= 0) overrides.wakeSampleGapMs = sampleEnv;
-  // ADP-692 dikişi: taslak kilidinin süresi (e2e otopilot senaryosunu dakikalarca bekletmemek için).
-  const draftEnv = Number(process.env.CREWPANE_SUPERVISOR_DRAFT_GRACE_MS);
-  if (Number.isFinite(draftEnv) && draftEnv >= 0) overrides.wakeDraftGraceMs = draftEnv;
-  // ADP-667 kill-switch: lider-pane uyandırmasının sahibi renderer'a geri verilir.
-  if (crewpaneEnv.readEnv('LEADER_WAKE_OWNER') === 'renderer') overrides.ownLeaderWake = false;
-
-  delegationSupervisor = delegationSupervisorMod.createDelegationSupervisor({
-    loadState: () => delegationSupervisorStore.loadState(crewpaneHome()),
-    saveState: (s) => delegationSupervisorStore.saveState(s, crewpaneHome()),
-    listPanes: supervisorListPanes,
-    readPaneBuffer: (paneId) => {
-      const e = ptys.get(paneId);
-      return e ? e.buffer || '' : '';
-    },
-    writePane: (paneId, text) => {
-      const e = ptys.get(paneId);
-      if (!e) return false;
-      try { e.child.write(text); return true; } catch { return false; }
-    },
-    reapPane: (paneId, why) => guard.run('reap', () => reapWorkerPane(paneId, why), false),
-    fingerprint: supervisorFingerprint,
-    // ADP-735 — kanıt VARLIK+YAŞ sondası. `fingerprint` baseline'a bağlıdır ve baseline
-    // yanlış kökten alınmışsa sessizce "kanıt yok" der; bu sonda yalnız diske bakar.
-    evidenceStat: (absPath) => {
-      try {
-        const s = fs.statSync(absPath);
-        return { exists: s.isFile(), mtimeMs: s.mtimeMs, size: s.size };
-      } catch {
-        return { exists: false, mtimeMs: 0, size: 0 };
-      }
-    },
-    // ADP-280 probu, main'den doğrudan: prompt worker'ın oturum defterinde mi?
-    // checked=false → null (bakılamadı) — yanlış-undelivered YOK.
-    // ENG-02 — motor farkında: claude=oturum jsonl, codex=rollout jsonl, diğer=null.
-    // ADP-705 — GÜNCEL oturum (bkz. currentSessionId): `/clear` sonrası bayat id ile
-    // okumak supervisor'ı da yanlış 'undelivered' üretmeye götürüyordu.
-    transcriptHas: (rec) => {
-      if (!rec.paneId || !rec.promptSignature) return null;
-      return probeTranscriptVerdict(rec.paneId, String(rec.promptSignature));
-    },
-    // ADP-672 — uyandırma TESLİMAT doğrulaması. Aynı transcript probu, bu kez LİDER
-    // pane'i için: "yazdığım mesaj liderin konuşmasına GERÇEKTEN girdi mi?".
-    // Canlı Fury vakasında pty yazımı başarılıydı ama liderin oturum defterinde o
-    // mesajın 0 eşleşmesi vardı (tur ortasında yutulmuş) — ve "teslim=ack" olduğu
-    // için kayıt kapanmış, lider bir daha hiç uyandırılmamıştı.
-    // ENG-02 — codex lider pane'i de doğrulanabilir: rollout defteri okunur.
-    wakeVerifiable: (paneId) => probeTranscriptVerifiable(paneId),
-    leaderTranscriptHas: (paneId, needle) => {
-      if (!needle) return null;
-      const e = ptys.get(paneId);
-      // Lider pane'inde ADP-705 yeniden-çapalaması KOŞMAZ (tarihsel davranış): defterdeki
-      // ham sessionId kullanılır. codex dalı zaten sessionId kullanmaz.
-      return probeTranscriptVerdict(paneId, String(needle), { sessionId: e ? e.sessionId : null });
-    },
-    // ADP-538/545 kanalı — supervisor'ın kendi tespitleri de AYNI notify-log'a düşer,
-    // yani liderin mevcut Monitor tail'i kod değişmeden supervisor'ı da duyar.
-    // ADP-538/545 kanalı ADP-667'de KAPIDAN geçer: renderer aynı bitişi yazdıysa
-    // ikinci satır düşer; aynı penceredeki bitişler tek satırda toplanır.
-    notify: (evt) => notifyGate().admit(evt),
-    // ADP-667 — idle-guard'ın 3. sinyali (son tuş basımı) + örnekleme gecikmesi.
-    lastInputAt: (paneId) => {
-      const e = ptys.get(paneId);
-      return e && typeof e.lastInputAt === 'number' ? e.lastInputAt : null;
-    },
-    // ADP-692 — son GÖNDERİM (ENTER) damgası. Taslak-uçuşta hükmünün ikinci yarısı.
-    lastSubmitAt: (paneId) => {
-      const e = ptys.get(paneId);
-      return e && typeof e.lastSubmitAt === 'number' ? e.lastSubmitAt : null;
-    },
-    // ADP-692 KANAL A — liderin `UserPromptSubmit` hook'unun bıraktığı makbuz. Hook AYRI
-    // bir süreçtir; supervisor defterine yazsaydı main'in oku-değiştir-yaz döngüsüyle
-    // yarışıp uçuştaki kayıtları silebilirdi → tek yönlü akış: hook makbuz yazar, main okur.
-    readBriefingReceipts: () => {
-      try {
-        const p = path.join(crewpaneHome(), leaderBriefing.RECEIPT_FILE);
-        return JSON.parse(fs.readFileSync(p, 'utf8'));
-      } catch {
-        return null;
-      }
-    },
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    pushRenderer: supervisorPushRenderer,
-    // ADP-838 — BOARD STATÜ SENKRONU. Hedef İKİNCİ KEZ TÜRETİLMEZ (ADP-773 kuralı):
-    // renderer'a giden `rendererSupabaseTarget()` ve `appdb:token` ile AYNI kaynak —
-    // mobil ofis ve görev MCP'si de tam olarak bunları kullanır.
-    boardSync: (input) => {
-      // ADP-845 — KABA SAYAÇ: yalnız "kaç delegasyon dağıtıldı". Görev kodu,
-      // başlık, departman ya da içerik HİÇBİRİ telemetriye gitmez.
-      if (input && input.phase === 'dispatch') telemetryBump('delegations');
-      return boardTaskSync().sync(input);
-    },
-    log: (line) => logLine(line),
-    opts: overrides,
-  });
-  delegationSupervisor.start();
-  return delegationSupervisor;
+function notifyGate() {
+  return delegationSupervisorService.notifyGate();
 }
 
 function startPtyResumeDaemonOnce() {

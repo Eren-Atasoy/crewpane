@@ -7,6 +7,10 @@ const { registerDelegationIpc } = require('./delegationIpc');
 const { registerTeamComposeIpc } = require('./teamComposeIpc');
 const { registerTeamScopeIpc } = require('./teamScopeIpc');
 const { createTeamComposeService } = require('./teamComposeService');
+const {
+  createDelegationSupervisorService,
+  supervisorFingerprint,
+} = require('./delegationSupervisorService');
 
 module.exports = {
   registerSkillsIpc,
@@ -16,4 +20,6 @@ module.exports = {
   registerTeamComposeIpc,
   registerTeamScopeIpc,
   createTeamComposeService,
+  createDelegationSupervisorService,
+  supervisorFingerprint,
 };
