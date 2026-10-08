@@ -33,10 +33,14 @@ const appDbIdentity = require('./src/config/appDbIdentity.cjs'); // ADP-622 — 
 const mixedTargetGuard = require('./src/config/mixedTargetGuard.cjs'); // ENV-01 — kimlik ↔ app DB karışımının reddi
 const crewpaneEnv = require('./src/config/crewpaneEnv.cjs'); // ADP-244 Faz 3 — env ikizleri (tek türetme noktası)
 const envProfileModule = require('./src/config/envProfile.cjs');
+const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
 const singleInstanceLock = require('./src/core/singleInstanceLock.cjs');
 const { renameWithRetrySync } = require('./platform/atomicWrite.cjs');
 const safeStorageIdentity = require('./src/security/safeStorageIdentity.cjs');
 const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
+const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
+const APP_URL_SCHEME = appScheme();
+const APP_URL_PREFIX = appSchemePrefix();
 
 // ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
@@ -61,6 +65,7 @@ const {
 } = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 const { createJarvisConversationService } = require('./src/features/voice');
+const { createBackendEnvService } = require('./src/features/services');
 let windowManager = null;
 let mobileService = null;
 
@@ -389,286 +394,46 @@ let agentWorkspaceRoot = agentSettings.resolveWorkspaceRoot(
 // RLS-protected client key — safe to hand an agent) from, in order: process.env → REPO_ROOT/
 // .env.local (dev) → ~/.crewpane/crewpane-public-env.json (packaged; written from .env.local).
 // Cached; returns {} when none found (board just stays unconfigured — no crash).
-let _publicSupabaseEnvCache = null;
-// ADP-723 — publicSupabaseEnv()'in verdiği KARARIN tamamı (kanal + kaçış izleri +
-// customerBuild). Rozet/doktor bunu okur; aynı kararı ikinci kez türetmek iki gerçeğe
-// yol açar (bu bug'ın kökü zaten "ekranda hangi kanaldayım yazmıyordu"ydu).
-let _lastBackendTarget = null;
-function publicSupabaseEnv() {
-  if (_publicSupabaseEnvCache) return _publicSupabaseEnvCache;
-  const URL_K = 'NEXT_PUBLIC_CREWPANE_SUPABASE_URL';
-  const ANON_K = 'NEXT_PUBLIC_CREWPANE_SUPABASE_ANON_KEY';
-  // ADP-621 — hedefle birlikte seyahat eden schema (bulut: 'app', yerel/e2e: 'public').
-  const SCHEMA_K = 'NEXT_PUBLIC_CREWPANE_SUPABASE_SCHEMA';
-  const out = {};
-  // CFG-01 — ÜÇ KADEMELİ "live" okuması artık publicBackendEnv.cjs'te (process.env →
-  // <repoRoot>/.env.local → ~/.crewpane/crewpane-public-env.json). Buradan taşındı
-  // çünkü AYRI SÜREÇLER (task MCP) main'in çözümlemesini miras alamıyor ve kendi
-  // yarım kopyalarını yazıyorlardı — ödeyen bir müşteri tam bu yüzden görev panosunu
-  // hiç kullanamadı. Karar tek yerde: aynı `live`, aynı `resolveBackendTarget`.
-  const live = publicBackendEnv.readLivePair({ repoRoot: REPO_ROOT });
-  if (live.url) out[URL_K] = live.url;
-  if (live.anonKey) out[ANON_K] = live.anonKey;
-
-  // ADP-621 — KANAL, üç kademeli çözümlemenin ÜSTÜNDE karar verir (electron/backendTarget.cjs):
-  //   prod → BULUT crewpane-id (`app` schema) · dev → yerel 54321 · test → e2e 55321.
-  // Bu, her Node tarafı tüketicinin (board MCP, agentRunner) zaten geçtiği TEK boğazdır;
-  // aynı hedef sharedWebPreferences() ile renderer'a da verilir — derleme-zamanı gömülü
-  // NEXT_PUBLIC_* değerlerini ezmenin TEK yolu odur.
-  // FAIL-CLOSED: prod kanalında loopback hedef reddedilir (müşteride "Failed to fetch" +
-  // boş ofis bug'ı — ADP-616 §5.2 — yapısal olarak imkânsız olur).
-  // ADP-305 sözleşmesi korunur: test kanalı her koşulda e2e stack'ine gider.
-  const target = backendTarget.resolveBackendTarget(process.env, instancePaths.instanceId(), {
-    url: out[URL_K],
-    anonKey: out[ANON_K],
-    // ENV-01 — ŞEMA DA TAŞINIR. `readLivePair` bunu zaten çözüyordu ama buraya hiç
-    // gelmiyordu; `resolveBackendTarget` de URL'den TAHMİN ediyordu → tek-stack yerel
-    // kurulumda (56321 + `app`) her istek `public`e gidip 404 dönüyordu (ENV-R2 vaka B2).
-    schema: live.schema,
-  });
-  _lastBackendTarget = target; // ADP-723 — kanal rozeti bu KARARI okur, ikinci kez türetmez
-  if (target.url && target.anonKey) {
-    out[URL_K] = target.url;
-    out[ANON_K] = target.anonKey;
-    // Bulut projede uygulama tabloları `public`te DEĞİL, `app` schema'sında. Schema
-    // hedefle birlikte taşınmazsa istemci yanlış schema'yı sorgular (404).
-    out[SCHEMA_K] = target.schema;
-  } else if (target.isE2E && target.keyMissing) {
-    // ADP-741 — TEST kanalında anahtar çözülemedi. Buradan sessizce geçmek `out`u
-    // .env.local'dan gelen CANLI çiftle (ADP-723/728 sonrası BULUT) bırakır, yani
-    // test kopyası ÜRETİM veritabanına bağlanırdı — ADP-305 sözleşmesinin tam tersi.
-    // Hedefi e2e stack'inde SABİTLE, anahtar yerine konuşan bir sentinel koy: istemci
-    // yalnızca 55321'e gider, oradan 401 alır ve sebebi hem log'da hem ağ isteğinde
-    // okunur. Sessiz yanlış-hedef yerine gürültülü doğru-hedef.
-    out[URL_K] = target.url;
-    out[ANON_K] = 'CREWPANE_E2E_ANON_KEY_MISSING';
-    out[SCHEMA_K] = target.schema;
-    logLine(
-      `⛔ [backend] ADP-741 — e2e anon anahtarı YOK (${target.keyMissing}). Hedef ${target.url} olarak ` +
-      `sabitlendi ama istekler 401 alacak. Çözüm: CREWPANE_E2E_SUPABASE_ANON_KEY ver ` +
-      // ADP-748: bu ipucu ESKİDEN bir `require('…')` çağrısını METİN olarak taşıyordu ve
-      // require-grafiği kapısı (scripts/verify_asar_requires.cjs) onu GERÇEK bir require
-      // sanıp yayını kırdı (kapı regex'tir; string/yorum bağlamı bilmez). İpucu artık
-      // modülü ADRESLE tarif eder — bilgi aynı, kapı yanlış alarm vermez.
-      `(anahtarı e2e/e2eAnonKey.cjs → resolveE2EAnonKey() çözer) ya da npm run e2e:db:start.`
-    );
-  }
-  for (const r of target.rejected) {
-    logLine(`[backend] ${target.instance} kanalında YEREL hedef reddedildi (${r.reason}): ${r.url} → ${target.url}`);
-  }
-  // ADP-780-B — paketli DEV build'in hedefi çözülemediyse SESSİZ KALMA: bu durumda
-  // kimlik PROD buluta düşer ve dev'de açılan hesap GERÇEK müşteri tablosuna girer.
-  // (Bir kez yaşandı: hedef JSON'u `build.files` kalıplarına uymadığı için asar'a
-  // hiç girmemişti ve app hiçbir şey söylemeden prod projeye bağlandı.)
-  try {
-    const devWarn = require('./src/config/devChannel.cjs').misconfigurationWarning();
-    if (devWarn) logLine(devWarn);
-  } catch (e) { logLine(`[dev-kanal] uyarı üretilemedi: ${e.message}`); }
-
-  _publicSupabaseEnvCache = out[URL_K] && out[ANON_K] ? out : {};
-  return _publicSupabaseEnvCache;
-}
-
-// ADP-622 — app DB'ye KİM olarak bağlanıyoruz? Karar saf modülde (appDbIdentity.cjs):
-// jeton YALNIZCA onu imzalayan projeye takılır. Bulut (auth == app DB, ADP-621 kararı)
-// → 'crewpane-id'; yerel 54321 / e2e 55321 → 'anon' (bugünkü davranış birebir).
-let _appDbIdentityLogged = null;
-function appDbIdentityMode() {
-  const decision = appDbIdentity.resolveIdentityMode({
-    authUrl: crewpaneIdConfig(process.env).supabaseUrl,
-    dbUrl: publicSupabaseEnv().NEXT_PUBLIC_CREWPANE_SUPABASE_URL,
-  });
-  const line = `${decision.mode}/${decision.reason}/${decision.project || '-'}`;
-  if (_appDbIdentityLogged !== line) {
-    _appDbIdentityLogged = line;
-    logLine(`[appdb] kimlik modu=${decision.mode} (${decision.reason}) hedef=${decision.project || '-'}`);
-  }
-  return decision;
-}
-
-/**
- * ADP-622/773 — app DB için TAZE kullanıcı jetonu. TEK KARAR NOKTASI.
- *
- * Üç yüzey (renderer `appdb:token` IPC'si · delegasyon köprüsü `/app-db/token` ·
- * mobil ofis) aynı cevabı vermek ZORUNDA: kimlik ayrışırsa bir yüzey okur diğeri
- * 401 alır ve bu "telefonda bozuk, Mac'te çalışıyor" olarak görünür (ADP-773 vakası).
- *
- * `ok:false` bir hata değil bir DURUM: çağıran anon'a düşer (yerel/e2e stack'lerde
- * kimlik zaten yoktur ve `public` şeması anon'a açıktır).
- *
- * @param {string} action  seat kapısının denetlediği eylem adı
- */
-// INC-20260917-02 — SON EMNİYET KEMERİ. Kapının kendisi (desktopAuth) artık 10sn'de
-// zaman aşımına uğruyor; buradaki üst sınır ONUN ÖTESİ içindir: Keychain kilidi,
-// safeStorage IO'su ya da ileride eklenecek bir çağrı asılırsa `appdb:token` IPC'si
-// renderer'ı açılışta SONSUZA kadar bekletmesin. Bu bir hata değil bir DURUM:
-// çağıran anon'a düşer (appDbTokenFor sözleşmesi).
-const APPDB_TOKEN_TIMEOUT_MS = 12_000;
 let seatGate = null;
 
-async function appDbTokenFor(action) {
-  const decision = appDbIdentityMode();
-  if (decision.mode !== 'crewpane-id') return { ok: false, reason: decision.reason };
-  if (!seatGate) return { ok: false, reason: 'not_ready' };
-  // ADP-646 — kimlik lisansa bağlı: paketsiz kullanıcıya jeton verilmez.
-  const denied = seatDenial(action);
-  if (denied) return { ok: false, reason: denied.reason, message: denied.message };
-  let timer = null;
-  try {
-    const deadline = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        const e = new Error(`appdb token ${APPDB_TOKEN_TIMEOUT_MS}ms içinde dönmedi`);
-        e.name = 'TimeoutError';
-        reject(e);
-      }, APPDB_TOKEN_TIMEOUT_MS); // unref YOK: kurtarma zamanlayıcısı, finally'de temizlenir
-    });
-    const p = seatGate.accessToken();
-    p.catch(() => {}); // yarışı süre kazanırsa geç gelen hata "unhandled" olmasın
-    return await Promise.race([p, deadline]);
-  } catch (e) {
-    if (e && e.name === 'TimeoutError') {
-      logLine(`appdb token timeout (${action}) — anon'a düşülüyor`);
-      return { ok: false, reason: 'timeout' };
-    }
-    logLine(`appdb token error (${action}): ${e.message}`); // jetonun KENDİSİ asla loglanmaz
-    return { ok: false, reason: 'error' };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+// ── ADP-201/621/622/723/741/773/ENV-01/02 — BACKEND VE SUPABASE ORTAM SERVİSİ (src/features/services/backendEnvService.js - Faz 3.6.41)
+const backendEnvService = createBackendEnvService({
+  repoRoot: REPO_ROOT,
+  publicBackendEnv,
+  backendTarget,
+  appDbIdentity,
+  envProfileModule,
+  mixedTargetGuard,
+  devChannel: require('./src/config/devChannel.cjs'),
+  crewpaneIdConfig,
+  instancePaths,
+  getSeatGate: () => seatGate,
+  seatDenial: (action) => seatDenial(action),
+  logLine,
+  envProfile: ENV_PROFILE,
+  appUrlScheme: APP_URL_SCHEME,
+  app,
+  dialog,
+});
+
+function publicSupabaseEnv() {
+  return backendEnvService.publicSupabaseEnv();
 }
-
-/** ADP-773 — mobil ofisin kimliği; masaüstü/ajan yüzeyleriyle AYNI kapıdan geçer. */
-const mobileAppDbToken = () => appDbTokenFor('mobile:/m/office');
-
-// ENV-01 Faz 3 — karışım kararı TEK KEZ verilir ve HER YÜZEY onu okur (rozet ikinci kez
-// türetmesin — `_lastBackendTarget` deseninin aynısı, ADP-723).
-let _mixedTargetDecision = null;
-
-/**
- * ENV-02 — DÖRT KATMANIN TEK GÖRÜNTÜSÜ (profil · şema · app DB · kimlik · giriş · posta).
- *
- * ⛔ İKİNCİ KEZ TÜREME YASAĞI: açılış banner'ı, doktorun "ortam" bölümü ve arayüz
- * rozeti AYNI nesneyi okur. Üç yüzey aynı soruyu üç kez sorarsa üç gerçek doğar —
- * ADP-723'ün rozeti tam bu yüzden `window.crewpaneDb`yi okur, kendi çözümlemesini
- * yapmaz. `mixed` alanı da burada ÜRETİLMEZ; `_mixedTargetDecision`den okunur.
- *
- * @returns {{profile:string|null, channel:string, scheme:string, dbUrl:string|null,
- *            dbSchema:string|null, authUrl:string|null, loginUrl:string|null,
- *            mailUrl:string|null, customerBuild:boolean,
- *            mixed:{level:string, reason:string, message:string|null}|null}}
- */
+function appDbIdentityMode() {
+  return backendEnvService.appDbIdentityMode();
+}
+function appDbTokenFor(action) {
+  return backendEnvService.appDbTokenFor(action);
+}
+const mobileAppDbToken = () => backendEnvService.mobileAppDbToken();
 function envLayerView() {
-  const idCfg = crewpaneIdConfig(process.env);
-  const dbEnv = publicSupabaseEnv();
-  return {
-    profile: ENV_PROFILE.name,
-    channel: _lastBackendTarget ? _lastBackendTarget.instance : instancePaths.instanceId(),
-    scheme: APP_URL_SCHEME,
-    dbUrl: dbEnv.NEXT_PUBLIC_CREWPANE_SUPABASE_URL || null,
-    dbSchema: dbEnv.NEXT_PUBLIC_CREWPANE_SUPABASE_SCHEMA || null,
-    authUrl: idCfg.supabaseUrl || null,
-    loginUrl: idCfg.loginUrl || null,
-    // Yalnız `local` profilinde anlamlı: giden e-posta yok, kodlar Mailpit'e düşer.
-    mailUrl: ENV_PROFILE.name === 'local' ? envProfileModule.LOCAL_MAILPIT_URL : null,
-    customerBuild: !!idCfg.customerBuild,
-    mixed: _mixedTargetDecision
-      ? {
-        level: _mixedTargetDecision.level,
-        reason: _mixedTargetDecision.reason,
-        message: _mixedTargetDecision.message || null,
-      }
-      : null,
-  };
+  return backendEnvService.envLayerView();
 }
-
-/**
- * ENV-01 Faz 2 madde 6 — AÇILIŞ BANNER'I + Faz 3 KARIŞIM KAPISI.
- *
- * Bugüne kadar `main.js:534` yalnız `[appdb] kimlik modu=…` basıyordu; `crewpaneIdConfig`in
- * SEÇTİĞİ `supabaseUrl`/`loginUrl` hiçbir log satırında geçmiyordu (grep: 0 sonuç).
- * "Neden fark edilmedi"nin cevabı buydu — dört katman artık TEK SATIRDA yazıyor.
- *
- * `block` ⇒ açılış DURUR (exit 1). Uyarı denendi ve işe yaramadı: `devChannel`in
- * "Bu kopyayla KAYIT OLMA" satırı log'a düşüyordu ve olay yine yaşandı (ADP-780-B).
- *
- * @returns {{level: string, reason: string}} karar (test/inceleme için)
- */
 function logEnvBannerAndGuard() {
-  const view = envLayerView();
-  const idCfg = crewpaneIdConfig(process.env);
-  const dbUrl = view.dbUrl;
-
-  logLine(envProfileModule.bootBannerLine(view));
-  if (ENV_PROFILE.overridden.length) {
-    logLine(`[env] profil EZİLDİ (kabuktaki açık env kazandı): ${ENV_PROFILE.overridden.join(', ')}`);
-  }
-  for (const r of ENV_PROFILE.rejected) {
-    logLine(`[env] kaçış yok sayıldı (${r.reason}): ${r.key}`);
-  }
-
-  const decision = mixedTargetGuard.checkMixedTargets({
-    authUrl: idCfg.supabaseUrl,
-    dbUrl,
-    loginUrl: idCfg.loginUrl,
-    instanceId: instancePaths.instanceId(),
-    allowMixed: mixedTargetGuard.truthy(process.env[mixedTargetGuard.ALLOW_MIXED_KEY]),
-    customerBuild: !!idCfg.customerBuild,
-  });
-  _mixedTargetDecision = decision;
-  if (decision.level === 'warn' && decision.message) logLine(`[env] ${decision.message}`);
-  if (decision.level === 'block') {
-    logLine(decision.message);
-    // ⚠️ MODAL YALNIZ PAKETLİ KOPYADA. `dialog.showErrorBox` main thread'i BLOKLAR ve
-    // kimse tıklamazsa süreç sonsuza kadar asılı kalır — kaynaktan koşuda (terminal,
-    // e2e harness'ı, CI) bu, "kapı çalıştı" ile "kapı kilitlendi"yi ayırt edilemez
-    // yapar (ölçüldü: T4'ün ilk koşusu SIGTERM'e kadar asıldı). Paketli kopyada
-    // terminal YOKTUR, kart tek görünür yüzeydir; kaynakta kart zaten yukarıdaki
-    // `logLine` ile terminale ve dosya log'una basılmış durumda.
-    if (app.isPackaged) {
-      try { dialog.showErrorBox('CrewPane — ortam karışımı', decision.message); } catch { /* headless */ }
-    }
-    app.exit(1);
-  }
-  return decision;
+  return backendEnvService.logEnvBannerAndGuard();
 }
-
-/** The {url, anonKey, schema} the RENDERER must use — same resolution as publicSupabaseEnv(). */
 function rendererSupabaseTarget() {
-  const env = publicSupabaseEnv();
-  const envView = envLayerView();
-  return {
-    url: env.NEXT_PUBLIC_CREWPANE_SUPABASE_URL,
-    anonKey: env.NEXT_PUBLIC_CREWPANE_SUPABASE_ANON_KEY,
-    schema: env.NEXT_PUBLIC_CREWPANE_SUPABASE_SCHEMA,
-    // ADP-622 — 'crewpane-id' ise renderer istemcisi her isteğe kullanıcının JWT'sini
-    // takar (oturum yoksa anon key'e düşer). Alan YOKSA istemci bugünkü gibi kurulur.
-    auth: appDbIdentityMode().mode === 'crewpane-id' ? 'crewpane-id' : undefined,
-    isE2E: instancePaths.instanceId() === 'test',
-    // ADP-723 — KANAL ROZETİ: renderer "hangi kopyadayım + hangi veri kaynağına
-    // bağlıyım" sorusunu tahmin etmesin. `channel` backendTarget'ın ÇÖZDÜĞÜ kanaldır
-    // (müşteri build'inde env ile 'dev' denilse bile 'prod'), yani ekranda yazan şey
-    // ile gerçek hedef aynı karardan gelir.
-    channel: _lastBackendTarget ? _lastBackendTarget.instance : instancePaths.instanceId(),
-    customerBuild: _lastBackendTarget ? !!_lastBackendTarget.customerBuild : undefined,
-    // ENV-01 Faz 3 — SARI ROZET: karışım kararı burada ÜRETİLMEZ, okunur. Renderer
-    // "kimlik ile app DB ayrı mı?" sorusunu ikinci kez türetirse iki gerçek doğar.
-    mixed: _mixedTargetDecision && _mixedTargetDecision.level === 'warn'
-      ? { reason: _mixedTargetDecision.reason, message: _mixedTargetDecision.message }
-      : undefined,
-    // ENV-02 — ORTAM ROZETİ: dört katman + Mailpit adresi. Renderer hiçbirini
-    // TÜRETMEZ (kimlik/giriş adresleri renderer'a bugüne kadar HİÇ ulaşmıyordu:
-    // ekranda yalnız app DB yazıyordu, yani "hangi kimlik sunucusundayım" sorusunun
-    // cevabı arayüzde YOKTU). Anon anahtarlar bu görüntüde YER ALMAZ.
-    env: {
-      profile: envView.profile,
-      scheme: envView.scheme,
-      dbUrl: envView.dbUrl,
-      dbSchema: envView.dbSchema,
-      authUrl: envView.authUrl,
-      loginUrl: envView.loginUrl,
-      mailUrl: envView.mailUrl,
-    },
-  };
+  return backendEnvService.rendererSupabaseTarget();
 }
 
 function hookScanHome() {
@@ -1856,11 +1621,6 @@ function notifyScreenshotsMovedOnce() {
 // ─── ADP-390 (ADR-027 / G9) — CrewPane hesabı + CrewPane seat ────────────────
 // Kurulum ve boğazlar src/features/auth/service.js içinde modülerleştirildi (Faz 3.6.8).
 const { createAuthService, createPlanLimitService, createApiKeyService, createAuthUrlService } = require('./src/features/auth');
-const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
-// ADP-780-B — bu kopyanın URL şeması (prod: crewpane · dev: crewpane-dev · test: crewpane-test).
-const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
-const APP_URL_SCHEME = appScheme();
-const APP_URL_PREFIX = appSchemePrefix();
 // ADP-801 — bu süreç bir OTOMASYON oturumu mu (e2e / ajan koşumu)?
 const { isAutomatedSession, automatedSessionReason } = require('./src/agents/automatedSession.cjs');
 const IS_AUTOMATED_SESSION = isAutomatedSession(process.env);

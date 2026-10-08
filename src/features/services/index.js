@@ -14,6 +14,7 @@ const { createBrowserService, BrowserService } = require('./browserService');
 const { createWorkspaceFileService, WorkspaceFileService } = require('./workspaceFileService');
 const { createCodeIndexService, CodeIndexService } = require('./codeIndexService');
 const { createWorkspaceRootService, WorkspaceRootService } = require('./workspaceRootService');
+const { createBackendEnvService, BackendEnvService, APPDB_TOKEN_TIMEOUT_MS } = require('./backendEnvService');
 
 module.exports = {
   createIntegrationService,
@@ -25,6 +26,9 @@ module.exports = {
   CodeIndexService,
   createWorkspaceRootService,
   WorkspaceRootService,
+  createBackendEnvService,
+  BackendEnvService,
+  APPDB_TOKEN_TIMEOUT_MS,
   registerWorktreeIpc,
   registerBrowserIpc,
   registerIntegIpc,
