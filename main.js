@@ -728,7 +728,7 @@ function notifyScreenshotsMovedOnce() {
 
 // ─── ADP-390 (ADR-027 / G9) — CrewPane hesabı + CrewPane seat ────────────────
 // Kurulum ve boğazlar src/features/auth/service.js içinde modülerleştirildi (Faz 3.6.8).
-const { createAuthService, createPlanLimitService, createApiKeyService, createAuthUrlService } = require('./src/features/auth');
+const { createAuthServicesBundle } = require('./src/features/auth');
 // ADP-801 — bu süreç bir OTOMASYON oturumu mu (e2e / ajan koşumu)?
 const { isAutomatedSession, automatedSessionReason } = require('./src/agents/automatedSession.cjs');
 const IS_AUTOMATED_SESSION = isAutomatedSession(process.env);
@@ -747,32 +747,38 @@ const prefsWhitelist = require('./prefs/prefsWhitelist.cjs');
 const syncSurface = require('./sync/syncIpc.cjs');
 const memoryIndexDerive = require('./src/memory/memoryIndexDerive.cjs');
 
-// ─── ADP-660/BL-01 — Katman Limitleri & Nudge Yönetimi (src/features/auth/planLimitService.js - Faz 3.6.13)
-const planLimitService = createPlanLimitService({
-  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  getAppWindow: () => appWindow,
-  analyticsNow: () => telemetryService.analyticsNow(),
-  logLine,
-});
-
-const authService = createAuthService({
-  instancePaths,
+// ── ADP-AUTH-BUNDLE — AUTH, PLAN & ANAHTAR SERVİSLERİ PAKETİ (src/features/auth/authServicesBundle.js - Faz 3.6.64)
+const {
+  planLimitService,
+  authService,
+  authUrlService,
+  apiKeyService,
+} = createAuthServicesBundle({
   app,
   shell,
+  instancePaths,
+  ptys,
+  agentSettings,
+  appI18n,
   logLine,
   getAppWindow: () => appWindow,
-  pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
+  analyticsNow: () => telemetryService.analyticsNow(),
   integrityReportOnce: () => integrityService.integrityReportOnce(),
-  ptys,
-  persistScreenTails: () => paneQueryService.persistScreenTails(),
+  paneQueryService,
   livePaneRegistry,
   crewpaneHome: () => crewpaneHome(),
-  killAllPtys: () => paneQueryService.killAllPtys(),
   noteQuit: (r) => noteQuit(r),
   armQuitBrake: (r) => armQuitBrake(r),
-  agentSettings,
-  getResourceGovernor: () => resourceGovernorService.resourceGovernor(),
-  appI18n,
+  resourceGovernorService,
+  appUrlPrefix: APP_URL_PREFIX,
+  isAutomatedSession: IS_AUTOMATED_SESSION,
+  automatedSessionReason: AUTOMATED_SESSION_REASON,
+  engineRegistry,
+  modelCatalog,
+  providers,
+  credentialGate,
+  agentRunner,
+  repoRoot: REPO_ROOT,
   testSeamDeps: {
     updateCheck,
     supervisorPushRenderer: (c, p) => delegationSupervisorService.supervisorPushRenderer(c, p),
@@ -782,17 +788,13 @@ const authService = createAuthService({
     livePaneRegistry,
     crewpaneHome: () => crewpaneHome(),
     killPane: (id, e, aid, r) => paneControlService.killPane(id, e, aid, r),
-    mobilePlanDenial: (opts) => mobileService.mobilePlanDenial(opts),
+    mobilePlanDenial: (opts) => (typeof mobileService !== 'undefined' && mobileService ? mobileService.mobilePlanDenial(opts) : null),
     designPlanDenial: ({ notify = true } = {}) => planLimitService.planDenial('designMode', 0, { notify }),
     BrowserWindow,
     getRestoreSkippedByPlan: () => paneRestoreService.getRestoreSkippedByPlan(),
     getSupervisorAdvanceBlocked: () => delegationSupervisorService.getSupervisorAdvanceBlocked(),
   },
 });
-
-// Auth routines directly dispatched via authService
-
-
 
 // ─── ADP-660 — PLAN LİMİTİ BOĞAZLARI (Basic ⇄ Pro/Ultra) ────────────────────
 // ADP-646 "paketin var mı" sorusunu kapattı; bu katman "HANGİ paket" sorusunu
@@ -830,16 +832,6 @@ const integrationService = createIntegrationService({
 });
 
 
-
-// ── ADP-719/801/833/954 — AUTH URL & DEEP LINK SERVICE (src/features/auth/authUrlService.js - Faz 3.6.36)
-const authUrlService = createAuthUrlService({
-  app,
-  appUrlPrefix: APP_URL_PREFIX,
-  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  isAutomatedSession: IS_AUTOMATED_SESSION,
-  automatedSessionReason: AUTOMATED_SESSION_REASON,
-  logLine: (line) => logLine(line),
-});
 
 let schemeVerdict = null;
 
@@ -894,17 +886,6 @@ const {
   logLine,
   repoRoot: REPO_ROOT,
   forceFirstRun: FORCE_FIRST_RUN,
-});
-
-// ── SKL-B3 / ADP-595 / AGENT-MODEL-01 — API Anahtarları ve Model Katalog Servisi (src/features/auth/apiKeyService.js - Faz 3.6.28)
-const apiKeyService = createApiKeyService({
-  engineRegistry,
-  modelCatalog,
-  providers,
-  credentialGate,
-  agentRunner,
-  repoRoot: REPO_ROOT,
-  logLine: (line) => logLine(line),
 });
 
 // ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcMainWiring.js - Faz 3.6.59)

@@ -12,8 +12,10 @@ const { createSeatGateService } = require('./seatGateService');
 const { createPlanLimitService, PLAN_NUDGE_MIN_MS } = require('./planLimitService');
 const { createApiKeyService, ApiKeyService } = require('./apiKeyService');
 const { createAuthUrlService, AuthUrlService } = require('./authUrlService');
+const { createAuthServicesBundle } = require('./authServicesBundle');
 
 module.exports = {
+  createAuthServicesBundle,
   createAuthService,
   createAccountBindingService,
   createSeatGateService,
