@@ -51,7 +51,7 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
-const { createPaneRestoreService } = require('./src/features/terminal');
+const { createPaneRestoreService, createPtyResumeService } = require('./src/features/terminal');
 let windowManager = null;
 let mobileService = null;
 
@@ -302,7 +302,6 @@ const screenCaptureMod = require('./src/services/screenCapture.cjs'); // ADP-817
 const stdioGuard = require('./src/core/stdioGuard.cjs'); // ADP-303 — EPIPE/dead-stream guard (no crash dialog)
 const notifyLog = require('./src/services/notifyLog.cjs'); // ADP-538 — in-app worker completion → .agent-notifications DONE/FAIL satırı
 const notifyGateMod = require('./src/services/notifyGate.cjs'); // ADP-667 — bildirim tekilleştirme + toplama (TEK boğaz)
-const notifyPathMod = require('./src/services/notifyPath.cjs'); // ADP-545 — notify-log yolu: dev + packaged tek aday-probe (lider tail hedefi)
 const evidencePathMod = require('./src/services/evidencePath.cjs'); // ADP-735 — kanıt yolu: çok-adaylı kök çözümü (worker alt-projeye yazar)
 const resultRootMod = require('./src/services/resultRoot.cjs'); // RES-IDX-01 — sonuç kökü görevin PROJESİNDEN (prompt + supervisor aynı cevabı alır)
 const moduleGuard = require('./src/agents/moduleGuard.cjs'); // ADP-335 — modül hata sınırı (bir bug uygulamayı çökertmesin)
@@ -770,7 +769,6 @@ function probeClaudeCliVersion() {
     /* PATH'te claude yok → yedek yok */
   }
 }
-let ptyResumeDaemon = null; // started once, after the first restoreLivePanes
 const AUTOTEST = process.env.CREWPANE_SPIKE_AUTOTEST === '1';
 
 // HATA-14 — TEK FREN, TEK DURUM. `app.quit()` KİBAR bir istektir (ADP-876);
@@ -1059,6 +1057,29 @@ const paneRestoreService = createPaneRestoreService({
   isRestoreDisabled: () => RESTORE_DISABLED,
   isAppProbe: () => APP_PROBE,
   getMode: () => MODE,
+});
+
+// ── ADP-limit/428/545/938 — PTY OTOMATİK DEVAM VE BİLDİRİM SERVİSİ (src/features/terminal/ptyResumeService.js - Faz 3.6.21)
+const ptyResumeService = createPtyResumeService({
+  ptys,
+  getAppWindow: () => appWindow,
+  crewpaneHome: () => crewpaneHome(),
+  logLine: (line) => logLine(line),
+  enforcePaneBudget: (opts) => enforcePaneBudget(opts),
+  respawnOptsFromEntry: (entry, ctx) => respawnOptsFromEntry(entry, ctx),
+  paneEngineResolver,
+  spawnPty: (win, opts) => spawnPty(win, opts),
+  killPane: (id, entry, aid, reason) => killPane(id, entry, aid, reason),
+  isAutoresumeDisabled: () => AUTORESUME_DISABLED,
+  isAppProbe: () => APP_PROBE,
+  getMode: () => MODE,
+  limitResume02: LIMIT_RESUME_02,
+  probeClaudeCliVersion: () => probeClaudeCliVersion(),
+  getClaudeCliVersionCache: () => claudeCliVersionCache,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  isPackaged: () => app.isPackaged,
+  repoRoot: REPO_ROOT,
+  getDepartmentDirs: () => agentSettings.readSettings().departmentDirs,
 });
 
 function analyticsNow() {
@@ -3779,7 +3800,7 @@ function killPaneExplicitAndCleanup(paneId) {
     isQuitting: app.isQuitting === true,
     registry: livePaneRegistry,
     homedir: crewpaneHome(),
-    resumeDaemon: ptyResumeDaemon,
+    resumeDaemon: ptyResumeService.getDaemon(),
     log: logLine,
   });
   if (res.killed) {
@@ -6584,7 +6605,7 @@ function killPane(paneId, entry, agentId, why) {
   ptys.delete(paneId);
   try { livePaneRegistry.freePane(paneId, crewpaneHome()); } catch { /* best-effort */ }
   // ADP-limit — a recycled worker pane's queued limit must not respawn it later.
-  if (ptyResumeDaemon) { try { ptyResumeDaemon.forgetPane(paneId); } catch { /* best-effort */ } }
+  ptyResumeService.forgetPane(paneId);
   logLine(`pane recycled (${why}) paneId=${paneId} agent=${agentId}`);
 }
 
@@ -6914,7 +6935,7 @@ function closePanesForControl(payload = {}) {
       isQuitting: app.isQuitting === true,
       registry: livePaneRegistry,
       homedir: crewpaneHome(),
-      resumeDaemon: ptyResumeDaemon,
+      resumeDaemon: ptyResumeService.getDaemon(),
       log: logLine,
     });
     if (res.killed) {
@@ -7450,18 +7471,7 @@ function restoreLivePanes(win) {
  * crewpane/docs (kurulum protokol hedefi) → root docs (dev) → instance fallback.
  */
 function resolveWorkerNotifyPath(department) {
-  return notifyPathMod.resolveNotifyPath({
-    envOverride: process.env.CREWPANE_RESUME_NOTIFY,
-    department,
-    workspaceRoot: agentWorkspaceRoot || (!app.isPackaged ? REPO_ROOT : null),
-    mapping: agentSettings.readSettings().departmentDirs,
-    log: logLine,
-    instanceFallback: path.join(instancePaths.crewpaneHome(crewpaneHome()), 'resume-notifications.log'),
-  });
-}
-
-function resolveResumeNotifyPath() {
-  return resolveWorkerNotifyPath(undefined);
+  return ptyResumeService.resolveWorkerNotifyPath(department);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7821,130 +7831,8 @@ function ensureDelegationSupervisor() {
   return delegationSupervisor;
 }
 
-/**
- * ADP-428 — CREWPANE_RESUME_RETRY_DELAYS_MS="300000,900000" → [300000,900000];
- * unset/garbage → undefined (core defaults). Boş token'lar ÖNCE atılır:
- * Number('') === 0, yoksa unset env [0]'a dönüşüp retry'ı anında ateşler.
- */
-function resumeRetryDelaysFromEnv() {
-  const delays = (process.env.CREWPANE_RESUME_RETRY_DELAYS_MS || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .map(Number)
-    .filter((n) => Number.isFinite(n) && n >= 0);
-  return delays.length ? delays : undefined;
-}
-
 function startPtyResumeDaemonOnce() {
-  if (ptyResumeDaemon || AUTORESUME_DISABLED || APP_PROBE || MODE === 'spike') return;
-  if (LIMIT_RESUME_02) probeClaudeCliVersion(); // LIMIT-RESUME-02 — yedek sürüm kaynağı
-  try {
-    ptyResumeDaemon = resumePtyDaemon.startPtyResumeDaemon({
-      getPanes: () => ptys,
-      // LIMIT-RESUME-02 — ana bayrak + yedek sürüm kaynağı (pane transcript'i önce).
-      limitResume02: LIMIT_RESUME_02,
-      claudeVersion: () => claudeCliVersionCache,
-      // Same write path the renderer's keystrokes take (pty:input above).
-      writePane: (paneId, data) => {
-        const entry = ptys.get(paneId);
-        if (!entry) return false;
-        try {
-          entry.child.write(data);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      /* TOK-C (D-02 v2) — OTOMATİK DEVAM DA BÜTÇEYE TABİ.
-         Bu daemon, insan başında yokken koşan tek şeydir: limit/çöküş sonrası
-         motora "devam" yazar ve o an para harcanmaya devam eder. Fren buraya
-         takılmazsa bütçe, kullanıcının EN ÇOK ihtiyaç duyduğu anda (gece,
-         gözetimsiz) hiç çalışmamış olurdu.
-         🔴 Yalnız METİN+ENTER yazımı (writeLine) sorar — SIFIR-JETONLU yoklama
-         (RES-05 `probePane`, tek ESC baytı) sormaz: o para harcamaz ve
-         engellenirse daemon pane'in canlılığını okuyamaz hâle gelirdi. */
-      budgetGate: (paneId) => {
-        const guard = enforcePaneBudget({ paneId, origin: spendGuard.SYSTEM_ORIGIN, source: 'resume-daemon' });
-        return { allow: guard.allow, reason: guard.reason };
-      },
-      // Engine exited (pane left the Map) → relaunch on its prior session via the
-      // SAME opts the ADP-192 restore path uses (agentId binding travels, ADR-005).
-      // ADP-938 — `opts.engineProfileId` verildiğinde AYNI oturum BAŞKA HESAPLA açılır
-      // (buildSpawn'ın ADP-936 `trusted.engineProfiles` boğazı çözer; renderer yol veremez).
-      // Verilmezse çağrı bugünküyle bit-bit aynıdır.
-      respawnPane: (entry, opts = {}) => {
-        if (!appWindow || appWindow.isDestroyed()) return null;
-        try {
-          // HATA-12-B — MÜŞTERİNİN ASIL SENARYOSU BURASI: "limit doldu → motoru
-          // değiştirdim". Pane limitte düşer, bu daemon onu DEFTERDEKİ motorla
-          // diriltirdi ve sürüklenme geri gelirdi. Artık `respawnOptsFromEntry`
-          // ajanın güncel motorunu okur (kendi iç çözümleyicisiyle).
-          const drifted = paneEngineResolver.drift(entry);
-          const base = respawnOptsFromEntry(entry, { where: 'limit-daemon' });
-          if (engineProfiles.isProfileId(opts.engineProfileId)) {
-            base.engineProfileId = opts.engineProfileId;
-          }
-          // PLAN-FIX-01 (F-4) — 'replace': limitli pane ÖNCE kapatılır (closePane, aşağıda),
-          // bu spawn onun YERİNE gelir. Net artış yok → tavan sorulmaz (yanlış ret yok).
-          base.spawnIntent = 'replace';
-          const res = spawnPty(appWindow, base);
-          // Sürüklenmede `--resume` KULLANILMADI (oturum eski motorundu). Daemon'ın
-          // bildirimi "--resume <id> ile açıldı" derse TEŞHİS YANILTIR (HATA-12 §C
-          // dersi) — sonucu işaretle, metni daemon düzeltsin.
-          if (res && drifted) res.engineSwitched = drifted;
-          return res;
-        } catch (e) {
-          logLine(`pty-resume respawn failed agent=${entry.agentId ?? '-'}: ${e.message}`);
-          return null;
-        }
-      },
-      // ADP-938 — geçiş bir re-spawn'dır: limitli pane ÖNCE kapanmalı, yoksa
-      // "bir ajan = bir pane" (ADP-761) dedupe'u ikinci pane'i reddeder.
-      closePane: (paneId) => {
-        const entry = ptys.get(paneId);
-        if (!entry) return false;
-        killPane(paneId, entry, entry.agentId, 'engine account switch (ADP-938)');
-        return true;
-      },
-      // ADP-938 — hesap havuzu ADP-936'nın deposundan gelir; burada YENİDEN
-      // YAZILMAZ, ÇAĞRILIR. Ayar her okumada TAZE alınır: kullanıcı Ayarlar'dan
-      // kapatınca bir sonraki limitte motor uyanmaz (uygulama yeniden başlamaz).
-      //
-      // 🪤 `home` AYRICA verilir ve daemon'ın `homedir`'ı DEĞİLDİR: kuyruk kökü
-      // `crewpaneHome()` = $HOME, profil deposu ise `instancePaths.crewpaneHome()`
-      // = ~/.crewpane (çok-hesapta accounts/u-…). Limit defteri profil deposunun
-      // yanında yaşamalı, yoksa "hangi hesap limitli" bilgisi $HOME'da yetim kalırdı.
-      engineAccounts: {
-        home: instancePaths.crewpaneHome(),
-        enabled: () => engineProfiles.autoSwitchOnLimit(instancePaths.crewpaneHome()),
-        listProfiles: (engine) => engineProfiles.listProfiles(instancePaths.crewpaneHome(), engine),
-        activeProfile: (engine) => engineProfiles.activeProfileId(instancePaths.crewpaneHome(), engine),
-        setActive: (engine, profileId) =>
-          engineProfiles.setActiveProfile(instancePaths.crewpaneHome(), engine, profileId),
-      },
-      homedir: crewpaneHome(),
-      notifyLog: resolveResumeNotifyPath(),
-      dryRun: process.env.CREWPANE_RESUME_DRYRUN === '1',
-      pollMs: Number(process.env.CREWPANE_RESUME_POLL_MS) || undefined,
-      verifyWindowMs: Number(process.env.CREWPANE_RESUME_VERIFY_MS) || undefined,
-      // ADP-428 — resetAt güvenlik payı + verify-fail yeniden-deneme zinciri (env ile ayarlanabilir).
-      resetBufferMs: Number(process.env.CREWPANE_RESUME_RESET_BUFFER_MS) || undefined,
-      verifyMaxAttempts: Number(process.env.CREWPANE_RESUME_MAX_SEND_ATTEMPTS) || undefined,
-      verifyRetryDelaysMs: resumeRetryDelaysFromEnv(),
-      log: logLine,
-      // Renderer toast/bell hook (ADP-042) — harmless when nothing listens.
-      // ADP-844 — ADP-428 FAIL'i yalnız uygulama içine düşer (yapışkan kırmızı toast +
-      // zil) ve resume notify LOG'una yazılır (resumeNotify.cjs) — pencere kapalıyken
-      // de kalıcı iz orada. Ekran-dışı uyarı ihtiyacı mobil uygulamanın işidir.
-      onEvent: (evt) => {
-        if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('resume:event', evt);
-      },
-    });
-  } catch (e) {
-    logLine(`pty-resume daemon failed to start: ${e.message}`);
-    ptyResumeDaemon = null;
-  }
+  return ptyResumeService.startPtyResumeDaemonOnce();
 }
 
 // ── SEC-02/HATA-14/ADP-905 — YAŞAM DÖNGÜSÜ & TEMİZ ÇIKIŞ YÖNETİCİSİ (src/main/lifecycle - Faz 3.6.19)
@@ -7984,11 +7872,7 @@ const lifecycleManager = createLifecycleManager({
     // ADP-limit — clear the pty resume timers before the ptys are torn down.
     {
       name: 'pty-resume-daemon',
-      run: () => {
-        const daemon = ptyResumeDaemon;
-        ptyResumeDaemon = null;
-        if (daemon) daemon.stop();
-      },
+      run: () => ptyResumeService.stop(),
     },
     // ADP-594 — stop the Responses→ChatCompletions adapter cleanly.
     { name: 'adapter', run: () => { if (adapter.isRunning()) adapter.stopAdapter(); } },
