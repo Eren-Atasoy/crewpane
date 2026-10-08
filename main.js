@@ -985,6 +985,20 @@ logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
 // ── ADP-335 — MODÜL HATA SINIRI & OBS-02 HATA TAKİBİ (src/features/system/faultService.js - Faz 3.6.10)
 const { createFaultService, createTelemetryService } = require('./src/features/system');
+// ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
+const { createUpdateService } = require('./src/features/update');
+
+const updateService = createUpdateService({
+  app,
+  BrowserWindow,
+  instancePaths,
+  agentSettings,
+  updateCheck,
+  updateChannel,
+  logLine,
+  getSeatGate: () => seatGate,
+  heartbeat: () => heartbeat(),
+});
 
 // ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
 const telemetryService = createTelemetryService({
@@ -996,8 +1010,8 @@ const telemetryService = createTelemetryService({
   getSeatGate: () => seatGate,
   appDbTokenFor: (action) => appDbTokenFor(action),
   rendererSupabaseTarget: () => rendererSupabaseTarget(),
-  currentUpdateChannel: () => currentUpdateChannel(),
-  isAutoUpdaterActive: () => Boolean(autoUpdaterRef),
+  currentUpdateChannel: () => updateService.currentUpdateChannel(),
+  isAutoUpdaterActive: () => updateService.isAutoUpdaterActive(),
   resolveCredential: (service) => credentialGate.resolveCredential(service, { rootDir: REPO_ROOT }),
   engineRegistry,
   safeStorage: require('electron').safeStorage,
@@ -5211,13 +5225,13 @@ function wireIpc() {
     agentRunner,
     resourceGovernorModule,
     killPaneExplicitAndCleanup,
-    updateStateForRenderer,
-    runUpdateCheck,
-    updateLicenseGateNow,
-    getAutoUpdaterRef: () => autoUpdaterRef,
-    getUpdateState: () => updateState,
-    setUpdateState: (s) => { updateState = s; },
-    pushUpdateState,
+    updateStateForRenderer: () => updateService.updateStateForRenderer(),
+    runUpdateCheck: (trigger) => updateService.runUpdateCheck(trigger),
+    updateLicenseGateNow: () => updateService.updateLicenseGateNow(),
+    getAutoUpdaterRef: () => updateService.getAutoUpdaterRef(),
+    getUpdateState: () => updateService.getUpdateState(),
+    setUpdateState: (s) => updateService.setUpdateState(s),
+    pushUpdateState: () => updateService.pushUpdateState(),
     updateCheck,
     noteQuit,
     worktreeStore,
@@ -5438,7 +5452,7 @@ function wireIpc() {
     leaderRefreshPolicy,
     handOverlayContract,
     updateChannel,
-    currentUpdateChannel: () => currentUpdateChannel(),
+    currentUpdateChannel: () => updateService.currentUpdateChannel(),
     aiProvidersPayload,
     engineModelCatalogPayload,
     appApiKeysPayload,
@@ -6241,263 +6255,12 @@ function createSpikeWindow() { return windowManager.createSpikeWindow(); }
 // Her iki modda: açılışta + ~6 saatte bir kontrol; ağ/limit hatası SESSİZ geçilir
 // (bildirim yok, çökme yok); ✕ = sürüm-bazlı kalıcı dismiss. `update:*` IPC yüzeyi
 // iki modda AYNI — renderer mode+phase'e göre buton etiketini seçer.
-let updateState = {
-  checked: false,
-  updateAvailable: false,
-  latestVersion: null,
-  lastCheckedAt: null,
-  // ADP-553 — updater yaşam döngüsü: idle → available → downloading → downloaded.
-  phase: 'idle',
-  progressPercent: null,
-  // ADP-620 — notify modunda kanala göre hesaplanan indirme adresi (null → sabit
-  // stable adresi). Updater modunda kullanılmaz (indirme uygulama içinde).
-  downloadUrl: null,
-};
-
-// electron-updater köprüsü (null = Faz 1 notify fallback'i).
-let autoUpdaterRef = null;
-
-/**
- * ADP-620 — bu koşunun dinlediği yayın kanalı ('stable' | 'beta').
- * Müşteri (paketli prod instance, ayar yok) → stable: beta release'leri GÖRMEZ.
- * Ayarlar'daki "Beta güncellemeleri al" toggle'ı ya da dev instance → beta.
- * Her kontrolden önce yeniden çözülür → toggle restart İSTEMEZ.
- */
 function currentUpdateChannel() {
-  return updateChannel.resolveChannel({
-    settingsValue: agentSettings.readSettings().updateChannel,
-    instanceId: instancePaths.instanceId(),
-    envValue: process.env.CREWPANE_UPDATE_CHANNEL || null,
-  });
+  return updateService.currentUpdateChannel();
 }
 
-/**
- * electron-updater'ı yalnız ÇALIŞABİLECEĞİ yerde başlat:
- * - paketli app + Resources/app-update.yml (publish config'li prod build), veya
- * - CREWPANE_UPDATE_CONFIG=<yml> e2e/dev dikişi (forceDevUpdateConfig).
- * Aksi halde null → Faz 1 notify akışı sürer. Hata = sessiz fallback.
- */
-function initAutoUpdater() {
-  try {
-    const devConfig = process.env.CREWPANE_UPDATE_CONFIG || null;
-    if (!devConfig) {
-      if (!app.isPackaged) return null; // dev'de Faz 1 (notify) akışı
-      // dev/test DMG'lerinde publish config yok → app-update.yml paketlenmez.
-      if (!fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return null;
-    }
-    const { autoUpdater } = require('electron-updater');
-    if (devConfig) {
-      autoUpdater.updateConfigPath = devConfig;
-      autoUpdater.forceDevUpdateConfig = true;
-    }
-    autoUpdater.autoDownload = false; // indirme yalnız kullanıcı "İndir" deyince
-    autoUpdater.autoInstallOnAppQuit = true; // indirilmişse normal çıkışta kurulur (zorlama değil)
-    // ADP-620 — KANAL: stable istemci allowPrerelease=false ile koşar → GitHub'ın
-    // /releases/latest'i prerelease'leri atladığı için beta release'i GÖREMEZ.
-    // (Kanal PAKETE gömülmez — app-update.yml'de `channel:` yok; bkz. updateChannel.cjs.)
-    logLine(`updater: yayın kanalı = ${updateChannel.applyChannel(autoUpdater, currentUpdateChannel())}`);
-    autoUpdater.logger = {
-      info: (m) => logLine(`updater: ${m}`),
-      warn: (m) => logLine(`updater[warn]: ${m}`),
-      error: (m) => logLine(`updater[error]: ${m}`),
-      debug: () => {},
-    };
-    autoUpdater.on('update-available', (info) => {
-      updateState = {
-        ...updateState,
-        checked: true,
-        updateAvailable: true,
-        latestVersion: `v${info.version}`, // Faz 1 tag biçimiyle aynı (dismiss uyumu)
-        lastCheckedAt: Date.now(),
-        phase: updateState.phase === 'downloaded' ? 'downloaded' : 'available',
-      };
-      logLine(`update-check(updater): yeni sürüm var → v${info.version}`);
-      noteUpdateResult('ok', `v${info.version}`); // ADP-845
-      pushUpdateState();
-    });
-    autoUpdater.on('update-not-available', (info) => {
-      updateState = {
-        ...updateState,
-        checked: true,
-        updateAvailable: false,
-        latestVersion: info && info.version ? `v${info.version}` : updateState.latestVersion,
-        lastCheckedAt: Date.now(),
-        phase: 'idle',
-        progressPercent: null,
-      };
-      logLine('update-check(updater): güncel');
-      noteUpdateResult('no-update', info && info.version ? `v${info.version}` : null); // ADP-845
-      pushUpdateState();
-    });
-    autoUpdater.on('download-progress', (p) => {
-      updateState = { ...updateState, phase: 'downloading', progressPercent: Math.round(p.percent) };
-      pushUpdateState();
-    });
-    autoUpdater.on('update-downloaded', (info) => {
-      updateState = {
-        ...updateState,
-        phase: 'downloaded',
-        progressPercent: 100,
-        latestVersion: `v${info.version}`,
-      };
-      logLine(`updater: v${info.version} indirildi — kullanıcı onayı bekleniyor (Yeniden başlat)`);
-      pushUpdateState();
-    });
-    autoUpdater.on('error', (err) => {
-      // Sessizlik sözleşmesi (ADP-533 ile aynı): ağ/feed hatası bildirim üretmez,
-      // app'i düşürmez; yarım indirme durumu geri 'available'a alınır.
-      logLine(`update-check(updater): sessiz geçildi (${err && err.message ? err.message.split('\n')[0] : 'error'})`);
-      // ADP-845 — HATA METNİ GİTMEZ, yalnız SINIFI. Metin URL/yol taşıyabilir.
-      noteUpdateResult(/403/.test(String(err && err.message)) ? 'http-403' : 'network', null);
-      if (updateState.phase === 'downloading') {
-        updateState = { ...updateState, phase: 'available', progressPercent: null };
-        pushUpdateState();
-      }
-    });
-    return autoUpdater;
-  } catch (err) {
-    logLine(`updater init başarısız → Faz 1 notify fallback (${err && err.message})`);
-    return null;
-  }
-}
-
-/**
- * LIC-ENFORCE-01 — güncelleme kanalının lisans kapısı (tek çağrı noktası).
- * Karar `updateCheck.updateLicenseGate` içinde; burada YALNIZ seatGate'in
- * anlık snapshot'ı verilir. seatGate yoksa kapı AÇIK sayılır: bir başlatma
- * sırası detayı güncelleme kanalını sessizce kapatmamalı.
- */
-function updateLicenseGateNow() {
-  try {
-    return updateCheck.updateLicenseGate(seatGate ? seatGate.state() : null);
-  } catch (e) {
-    logLine(`update-gate: değerlendirilemedi (${e && e.message}) — kanal AÇIK bırakıldı`);
-    return { allowed: true };
-  }
-}
-
-/** Renderer'a giden görünüm: durum + kurulu sürüm + toggle + sürüm-bazlı dismiss. */
-function updateStateForRenderer() {
-  const s = agentSettings.readSettings();
-  const gate = updateLicenseGateNow();
-  return {
-    ...updateState,
-    currentVersion: app.getVersion(),
-    // LIC-ENFORCE-01 — "neden güncelleme gelmiyor?" sorusunun cevabı VERİ olarak
-    // taşınır; kapı kapalıyken hiçbir yerde "güncel" YALANI kurulmaz.
-    licenseBlocked: gate.allowed === false,
-    licenseMessage: gate.allowed === false ? gate.message : null,
-    licenseBillingUrl: gate.allowed === false ? (gate.billingUrl || null) : null,
-    autoCheck: s.updateAutoCheck !== false,
-    // "Bu sürüm için sonra": dismiss sürüme bağlıdır — daha yeni bir sürüm çıkınca
-    // otomatik geçersizleşir (settings.updateDismissedVersion ≠ yeni tag).
-    dismissed: !!(updateState.latestVersion && s.updateDismissedVersion === updateState.latestVersion),
-    // ADP-620 — notify modunda beta kanalın indirme adresi tag'e bağlıdır (stable'ın
-    // sabit `releases/latest/download/…` adresi beta'yı ASLA göstermez).
-    downloadUrl: updateState.downloadUrl || updateCheck.DOWNLOAD_URL,
-    // ADP-553 — renderer buton etiketini moda göre seçer (uygulama-içi indirme vs tarayıcı).
-    mode: autoUpdaterRef ? 'updater' : 'notify',
-    // ADP-620 — hangi kanaldan güncelleniyoruz + Ayarlar toggle'ının durumu.
-    channel: currentUpdateChannel(),
-    channelPref: updateChannel.normalizeChannel(s.updateChannel) || 'auto',
-  };
-}
-
-function pushUpdateState() {
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed()) w.webContents.send('update:state', updateStateForRenderer());
-    } catch { /* best-effort */ }
-  }
-}
-
-/** Kontrolü koş; HER hata yolu sessiz (checkForUpdate throw etmez). Dönen değer IPC cevabı. */
-async function runUpdateCheck(trigger) {
-  if (trigger === 'auto' && agentSettings.readSettings().updateAutoCheck === false) {
-    return updateStateForRenderer();
-  }
-  // LIC-ENFORCE-01 — LİSANS KAPISI, AĞ ÇAĞRISINDAN ÖNCE. Sunucu bu hesabın
-  // erişimini kapattıysa yeni sürüm ne SORULUR ne İNDİRİLİR. Kurulu sürüm
-  // çalışmaya devam eder; çevrimdışı/bilinmeyen durumda kapı AÇIKTIR (sessiz geçiş).
-  const gate = updateLicenseGateNow();
-  if (!gate.allowed) {
-    logLine(`update-check(${trigger}): LİSANS KAPISI (${gate.reason}) — yeni sürüm sorulmadı/indirilmedi`);
-    pushUpdateState();
-    return updateStateForRenderer();
-  }
-  // ADP-553 — updater modu: kontrolü electron-updater yapar (latest-mac.yml);
-  // sonuç event'lerle updateState'e düşer. Hata sessiz (error handler'ı loglar).
-  const channel = currentUpdateChannel();
-  if (autoUpdaterRef) {
-    // ADP-620 — kanalı HER kontrolde yeniden uygula: Ayarlar'daki toggle restart
-    // beklemeden etki etsin (applyChannel idempotent + allowDowngrade'i geri alır).
-    updateChannel.applyChannel(autoUpdaterRef, channel);
-    try { await autoUpdaterRef.checkForUpdates(); } catch { /* sessiz — error event'i logladı */ }
-    return updateStateForRenderer();
-  }
-  // Faz 1 (notify): CREWPANE_UPDATE_FEED_URL = e2e dikişi; normalde GitHub API
-  // (kanala göre uç nokta seçimi updateCheck'te — stable yol değişmedi).
-  const res = await updateCheck.checkForUpdate({
-    currentVersion: app.getVersion(),
-    channel,
-    url: process.env.CREWPANE_UPDATE_FEED_URL || null,
-  });
-  if (res.ok) {
-    updateState = {
-      ...updateState,
-      checked: true,
-      updateAvailable: res.updateAvailable,
-      latestVersion: res.latestVersion,
-      lastCheckedAt: Date.now(),
-      phase: res.updateAvailable ? 'available' : 'idle',
-      downloadUrl: res.downloadUrl || null, // ADP-620 — kanala göre indirme adresi
-    };
-    logLine(`update-check(${trigger},${res.channel || channel}): latest=${res.latestVersion} current=${res.currentVersion} → ${res.updateAvailable ? 'yeni sürüm var' : 'güncel'}`);
-    noteUpdateResult(res.updateAvailable ? 'ok' : 'no-update', res.latestVersion); // ADP-845
-    pushUpdateState();
-  } else {
-    logLine(`update-check(${trigger}): sessiz geçildi (${res.reason})`);
-    noteUpdateResult(res.reason, null); // ADP-845
-  }
-  return updateStateForRenderer();
-}
-
-/**
- * ADP-845 — güncelleme kontrolünün sonucunu heartbeat'e işle (ADP-805 §4).
- * Bugün bu bilgi YALNIZ müşterinin kendi diskindeki log'a yazılıyor; "müşteri 3
- * haftadır eski sürümde çünkü feed 403 veriyor" vakası bize hiç ulaşmıyor.
- *
- * ⚠️ Serbest metin GİTMEZ: `updateCheck.cjs`'in reason'ı sabit kümeye eşlenir,
- * eşleşmeyen her şey 'error' olur (heartbeat.cjs zaten ikinci kez süzer).
- */
-function noteUpdateResult(reason, latestVersion) {
-  const r = String(reason || '');
-  const result = r === 'ok' || r === 'no-update' || r === 'timeout' || r === 'network' || r === 'bad-payload'
-    ? r
-    : (r.startsWith('http-') ? (r === 'http-403' ? 'http-403' : 'network') : 'error');
-  try {
-    heartbeat().noteUpdate({ result, checkedAt: Date.now(), latestSeen: latestVersion || null });
-  } catch { /* telemetri asla güncelleme akışını düşürmez */ }
-}
-
-let updateChecksScheduled = false;
 function scheduleUpdateChecks() {
-  if (updateChecksScheduled) return;
-  updateChecksScheduled = true;
-  autoUpdaterRef = initAutoUpdater(); // ADP-553 — mod seçimi (updater | notify)
-  // Test instance'ında feed dikişi yoksa OTOMATİK kontrol yok: e2e filosunun her app
-  // açılışı GitHub API'ye vurup rate-limit'e (60/saat/IP) takılmasın; güncelleme
-  // spec'i CREWPANE_UPDATE_FEED_URL / CREWPANE_UPDATE_CONFIG ile kendi mock
-  // sunucusunu verir.
-  if (
-    instancePaths.instanceId() === 'test' &&
-    !process.env.CREWPANE_UPDATE_FEED_URL &&
-    !process.env.CREWPANE_UPDATE_CONFIG
-  ) return;
-  // Kısa gecikme: açılışın kritik yolu (Next server + pencere) ile yarışmasın.
-  setTimeout(() => { runUpdateCheck('auto').catch(() => {}); }, 2500);
-  const timer = setInterval(() => { runUpdateCheck('auto').catch(() => {}); }, updateCheck.CHECK_INTERVAL_MS);
-  timer.unref?.();
+  updateService.scheduleUpdateChecks();
 }
 
 // ---------------------------------------------------------------------------
