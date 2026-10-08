@@ -75,6 +75,7 @@ const {
   registerDelegationIpc,
 } = require('./src/features/agents');
 const { registerPtyIpc } = require('./src/features/terminal');
+const { registerVoiceIpc } = require('./src/features/voice');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -6630,80 +6631,31 @@ function wireIpc() {
   ipcMain.handle('panes:restoreRecoverable', (event) =>
     acceptRecoverablePanes(BrowserWindow.fromWebContents(event.sender)));
 
-  // ADP-280 — teslim-doğrulama: pane'in claude transcript'inde (cwd+sessionId →
-  // ~/.claude/projects/<munged>/<id>.jsonl) verilen metin geçiyor mu? Pane bilgisi
-  // main'in pty defterinden çözülür — renderer path GEÇEMEZ. needle boyu sınırlı
-  // (probe fs'te yalnız OKUR; yine de girişi şekillendir).
-  // ADP-265 — Jarvis input simülasyonu: TEK dar kanal (ADR-016). YAPISAL sınır:
-  // sendInputEvent olayı yalnız KENDİ webContents'imize enjekte eder — başka
-  // uygulamaya/pencereye ulaşmak API gereği imkânsız (OS-genel input Eren
-  // kararıyla yasak sınıfı; Accessibility izni/native modül GEREKMEZ). Üstüne:
-  // şema doğrulaması + pencere-içi koordinat sınırı + rate-limit (inputSim.cjs).
-  // Onay katmanı renderer'da (actionBus onay-gerekli sınıfı, İzin ver/Reddet kartı).
-  const jarvisInputRate = inputSim.makeRateLimiter({});
-  ipcMain.handle('jarvis:input-event', (event, raw) => {
-    const v = inputSim.validateInputAction(raw);
-    if (!v.ok) return { ok: false, error: v.error };
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return { ok: false, error: 'pencere yok' };
-    const bounds = win.getContentBounds();
-    if (!inputSim.withinBounds(v.action, bounds)) {
-      return { ok: false, error: `koordinat pencere dışı (${v.action.x},${v.action.y}) — app-içi sınır` };
-    }
-    if (!jarvisInputRate.allow()) {
-      return { ok: false, error: 'eylem tavanı aşıldı — kısa bir süre sonra tekrar dene (rate-limit)' };
-    }
-    // Koordinatsız scroll pencere merkezine gider.
-    const action = { ...v.action };
-    if (action.op === 'scroll' && (action.x === undefined || action.y === undefined)) {
-      action.x = Math.round(bounds.width / 2);
-      action.y = Math.round(bounds.height / 2);
-    }
-    try {
-      for (const ev of inputSim.toInputEvents(action)) {
-        event.sender.sendInputEvent(ev);
-      }
-      logLine(`jarvis input-sim: ${action.op} ${action.op === 'type' ? `len=${action.text.length}` : `(${action.x ?? '-'},${action.y ?? '-'})`}`);
-      return { ok: true, op: action.op };
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-  });
-
-  // ADP-817 (FAZ 5) — EKRAN GÖRÜNTÜSÜ: Agent X'in ikinci main-ipc dar kanalı
-  // (input-sim emsali). Renderer yalnız "al" der; NE yakalanacağı (ana ekran ya da
-  // KENDİ penceremiz), NEREYE yazılacağı (hesap kökü, ADP-703) ve tavan MAIN'de.
-  // Renderer'dan yol GEÇMEZ → keyfi bir dosyanın üstüne yazılamaz. Onay kartı
-  // renderer'da (actionBus 'onay-gerekli'): ekran görüntüsü kullanıcının ekranındaki
-  // HER ŞEYİ taşır, bu yüzden serbest sınıfa asla girmez.
-  const jarvisShotRate = inputSim.makeRateLimiter({ max: 6, windowMs: 60000 });
-  ipcMain.handle('jarvis:screen-capture', async (_event, raw) => {
-    if (!jarvisShotRate.allow()) {
-      return { ok: false, reason: 'rate-limit', error: 'çok sık ekran görüntüsü — biraz bekle' };
-    }
-    // Dizin her çağrıda ÇÖZÜLÜR: hesap kökü hesap değişiminde değişir; başlangıçta
-    // bir kez okumak bayat köke yazardı (ADP-703 dersi).
-    // 🪤 Bu dosyadaki YEREL `crewpaneHome()` (main.js:477) hesap kökü DEĞİL —
-    // `CREWPANE_HOME || os.homedir()`. Onu kullanmak kareleri GERÇEK ev dizinine
-    // yazıyordu (e2e koşusunda ölçüldü: ~/agentx-shots). Tek doğru kaynak
-    // instancePaths.crewpaneHome() → ~/.crewpane[-test]/accounts/<hesap>.
-    const jarvisShots = screenCaptureMod.createScreenCapture({
-      dir: path.join(instancePaths.crewpaneHome(), 'agentx-shots'),
-      deps: {
-        fs,
-        execFile,
-        log: logLine,
-        // Pencere kapsamı TCC istemez: kendi webContents'imizi çekeriz (input-sim'in
-        // "yapısal sınır" fikri — API gereği başka uygulamaya ulaşamaz).
-        captureWindow: async () => {
-          const win = appWindow && !appWindow.isDestroyed() ? appWindow : null;
-          return win ? win.webContents.capturePage() : null;
-        },
-      },
-    });
-    const res = await jarvisShots.capture(raw);
-    logLine(`jarvis screen.capture: ${res.ok ? `ok ${res.path}` : `red ${res.reason} — ${res.error}`}`);
-    return res;
+  // ── Voice & Jarvis IPC Yüzeyi (Faz 3.5 — Sıra 10) ─────────────────────────
+  registerVoiceIpc({
+    ipcMain,
+    app,
+    BrowserWindow,
+    getAppWindow: () => appWindow,
+    openJarvisWidgetWindow,
+    closeJarvisWidgetWindow,
+    jarvisWidgetAlive,
+    windowManager,
+    jarvisWidget,
+    broadcastJarvisWidget,
+    jarvisWidgetPayload,
+    moveJarvisWidget,
+    showAppFromJarvisWidget,
+    agentSettings,
+    jarvisVoice,
+    REPO_ROOT,
+    appI18n,
+    grokVoice,
+    inputSim,
+    screenCaptureMod,
+    instancePaths,
+    getJarvisConv: () => jarvisConv,
+    logLine,
   });
 
   // ADP-136 — auto-switch the operator's tmux window to the team Jarvis is about to
@@ -6818,60 +6770,6 @@ function wireIpc() {
     return { ok: true };
   });
 
-  // ADP-816 (Faz 4) — TAŞINABİLİR SES WIDGET'I. Pop-out'la aynı disiplin: bu uçlar
-  // YALNIZ pencere + görüntü yönetir; ses/kayıt/karar zincirine hiçbiri dokunmaz.
-  ipcMain.handle('jarvisWidget:open', () => {
-    try {
-      return openJarvisWidgetWindow();
-    } catch (err) {
-      logLine(`jarvisWidget:open error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('jarvisWidget:close', () => {
-    try {
-      return closeJarvisWidgetWindow();
-    } catch (err) {
-      logLine(`jarvisWidget:close error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('jarvisWidget:toggle', () => {
-    try {
-      return jarvisWidgetAlive() ? closeJarvisWidgetWindow() : openJarvisWidgetWindow();
-    } catch (err) {
-      logLine(`jarvisWidget:toggle error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  ipcMain.handle('jarvisWidget:isOpen', () => ({ open: !!jarvisWidgetAlive() }));
-  // Ana pencerenin ses yüzeyi durumunu YAYINLAR (widget açık değilse main yalnız
-  // son fotoğrafı saklar — pencere sonradan açıldığında ekran boş kalmasın).
-  ipcMain.handle('jarvisWidget:publish', (_event, payload) => {
-    if (windowManager) windowManager.setJarvisWidgetSnapshot(jarvisWidget.normalizeSnapshot(payload));
-    broadcastJarvisWidget();
-    return { ok: true, open: !!jarvisWidgetAlive() };
-  });
-  /** Widget mount olurken son fotoğrafı ister (yayın beklemeden dolu açılır). */
-  ipcMain.handle('jarvisWidget:snapshot', () => jarvisWidgetPayload());
-  /** Sürükleme (frameless pencerenin tek taşıma yolu). */
-  ipcMain.handle('jarvisWidget:move', (_event, payload) => {
-    try {
-      return moveJarvisWidget(payload);
-    } catch (err) {
-      logLine(`jarvisWidget:move error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
-  /** Widget'taki "uygulamayı aç" — ana pencere kapalıysa yeniden yaratır. */
-  ipcMain.handle('jarvisWidget:showApp', () => {
-    try {
-      return showAppFromJarvisWidget();
-    } catch (err) {
-      logLine(`jarvisWidget:showApp error: ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  });
   // ── Agent X IPC Yüzeyi (Faz 3.5 — Sıra 8) ──────────────────────────────────
   registerAgentxIpc({
     ipcMain,
@@ -6884,20 +6782,6 @@ function wireIpc() {
     logLine,
   });
 
-  /** e2e/ölçüm yüzeyi: pencerenin GERÇEK bayrakları (iddia değil, ölçüm). */
-  ipcMain.handle('jarvisWidget:debug', () => {
-    const win = jarvisWidgetAlive();
-    if (!win) return { open: false };
-    return {
-      open: true,
-      bounds: win.getBounds(),
-      alwaysOnTop: win.isAlwaysOnTop(),
-      focusable: win.isFocusable(),
-      focused: win.isFocused(),
-      visible: win.isVisible(),
-      visibleOnAllWorkspaces: win.isVisibleOnAllWorkspaces(),
-    };
-  });
 
   // ADP-712 — PANE GÖRÜNÜM DURUMU (okunabilir mod). Aynı pane'in iki görünümü
   // (ızgara hücresi + ayrı pencere) TEK tercihi paylaşsın diye durum main'de
@@ -7129,188 +7013,6 @@ function wireIpc() {
     logLine,
   });
 
-  // ADP-121 (ADR-009 Faz 120a) — Jarvis voice core: STT (Whisper) + brain
-  // (claude -p) + TTS (macOS `say`). The renderer widget captures mic + runs the
-  // state machine; these handlers own the API key, the brain process, and `say`.
-  // The OpenAI key is read from .env.local ONLY (jarvisVoice private cache) and
-  // NEVER returned to the renderer — only a boolean capability flag.
-  ipcMain.handle('jarvis:config', () => {
-    const s = agentSettings.readSettings();
-    return {
-      ok: true,
-      hasOpenAiKey: !!jarvisVoice.openAiKey(REPO_ROOT),
-      // ADP-642 — anahtar yokken kullanıcıya gösterilecek cümle ADP-628 kapısından
-      // gelir (renderer ikinci bir kopya yazmaz; sır İÇERMEZ, testli).
-      keyMissingMessage: jarvisVoice.openAiKeyMissingMessage(),
-      // ADP-749 — cümlenin MAKİNE ikizi: "Ayarlar'ı aç" düğmesi hangi sekmeye +
-      // hangi alana gidecek. Renderer kategori adını hardcode ETMEZ (eski bug:
-      // 'engines' → OpenAI alanı olmayan sekme).
-      keyMissingTarget: jarvisVoice.openAiKeySettingsTarget(),
-      voice: jarvisVoice.SAY_VOICE,
-      // ADP-903 — ASİSTANIN KONUŞTUĞU DİL (arayüz dili DEĞİL, ADR-VOICE-LOCALE).
-      // Renderer bunu KENDİSİ TÜREMEZ: `appI18n.voiceLocale` tek okuma noktasıdır
-      // (i18n/index.cjs'in kendi kuralı) ve buradan PUSH edilir — ikinci bir
-      // 'follow-ui' çözümleyicisi doğsaydı sesli izin sorusu, ayarlar panelinin
-      // gösterdiği dilden BAŞKA bir dilde sorulabilirdi.
-      voiceLocale: appI18n.voiceLocale(s),
-      pushToTalkKey: s.pushToTalkKey,
-      wakeModelPath: s.wakeModelPath,
-      ttsEngine: (s.jarvis && s.jarvis.ttsEngine) || 'openai',
-      // ADP-848 — TTS SAĞLAYICI KATMANI (motor listesi + anahtar bayrakları +
-      // DÜRÜST maliyet + Türkçe önizleme cümlesi). SIR İÇERMEZ. Renderer fiyat
-      // ya da varsayılan HİÇBİR ŞEYİ kendisi türetmez: sayı tek yerde yaşasın
-      // ki UI'daki kopyası sessizce bayatlamasın (ADP-827 grok.cost deseni).
-      tts: jarvisVoice.ttsProviders.ttsConfig(s, { rootDir: REPO_ROOT }),
-      ttsVoice: (s.jarvis && s.jarvis.ttsVoice) || jarvisVoice.DEFAULT_TTS_VOICE,
-      // ADP-859B — GÖRÜNÜM TERCİHİ (küçük/büyük). Renderer bunu localStorage'da
-      // TUTAMAZ: gömülü sunucunun portu her açılışta değişiyor, origin değişince
-      // localStorage boş geliyor (ölçüldü). Tek gerçek settings.json.
-      view: (s.jarvis && s.jarvis.view) || null,
-      ttsModel: (s.jarvis && s.jarvis.ttsModel) || jarvisVoice.DEFAULT_TTS_MODEL,
-      // ADP-812 — VAD kuyruk-sessizliği ayarlanabilir (varsayılan 600 ms).
-      // Renderer sabit YAZMAZ: pencere buradan gelir, bozuk değer sıkıştırılır.
-      silenceMs: jarvisVoice.normalizeSilenceMs(s.jarvis && s.jarvis.silenceMs),
-      // ADP-854B — İKİ AYRI EŞİK. `endpointMaxMs` = cümle ORTASINDAYKEN beklenen
-      // tavan (uyarlanabilir pencere) · `sleepAfterMs` = OTURUM uyku eşiği.
-      // Renderer bunları kendisi türetmez; bozuk değer burada sıkıştırılır.
-      endpointMaxMs: jarvisVoice.normalizeEndpointMaxMs(
-        s.jarvis && s.jarvis.endpointMaxMs,
-        s.jarvis && s.jarvis.silenceMs,
-      ),
-      sleepAfterMs: jarvisVoice.normalizeSleepAfterMs(s.jarvis && s.jarvis.sleepAfterMs),
-      // ADP-916 — "hiç konuşulmadı" eşiği. ADP-818'de renderer'a SABİT yazılıydı;
-      // artık diğer üçüyle aynı kapıdan geçer (renderer kendi sabitini uydurmaz,
-      // yalnız köprü yoksa modül sabitine düşer).
-      noSpeechMs: jarvisVoice.normalizeNoSpeechMs(s.jarvis && s.jarvis.noSpeechMs),
-      // AGENTX-WAKE-01 — UYKU TÜRÜ + kontrol kolu. Renderer kendi varsayılanını
-      // UYDURMAZ (ADP-827 deseni): karar tek yerde, burada.
-      silentSleep: !!(s.jarvis && s.jarvis.silentSleep === true),
-      wakeLegacy: !!(s.jarvis && s.jarvis.wakeLegacy === true),
-      // ADP-813 — hangi STT motoru geçerli + yerel yol kurulu mu (SIR İÇERMEZ).
-      // Teşhis için: "yerel çalışıyor sanıyorum ama bulut faturası geliyor" sorusu
-      // ekrandan cevaplanabilsin.
-      sttEngine: jarvisVoice.resolveSttEngine(s),
-      localStt: jarvisVoice.whisperLocal.status({ settings: s }),
-      // ADP-827 (Faz 7) — SES MODU. 'local' = yerel/ücretsiz (VARSAYILAN, her koşulda
-      // çalışır) · 'grok' = xAI Grok Voice (gerçek zamanlı, KULLANICININ anahtarı, ÜCRETLİ).
-      // Renderer bu değeri kendisi TÜRETMEZ: fail-safe kararı (bozuk değer → yerel)
-      // tek yerde, main'de. Fiyat/etiket de buradan PUSH edilir → renderer'da ikinci
-      // bir fiyat kopyası yok, dolayısıyla sessizce bayatlayamaz (ADP-614 dersi).
-      voiceMode: grokVoice.resolveVoiceMode(s),
-      hasXaiKey: grokVoice.hasGrokKey(),
-      grok: {
-        model: grokVoice.resolveGrokModel(s),
-        voice: grokVoice.resolveGrokVoice(s),
-        voices: grokVoice.GROK_VOICES,
-        models: Object.values(grokVoice.GROK_MODELS),
-        cost: grokVoice.grokCostNotice(grokVoice.resolveGrokModel(s)),
-        keyMissingMessage: grokVoice.grokKeyMissingMessage(),
-        keyMissingTarget: grokVoice.grokKeySettingsTarget(),
-      },
-    };
-  });
-  // ─── ADP-827 (Faz 7) — GROK VOICE OTURUMU ────────────────────────────────
-  // Anahtar MAIN'de kalır (ADP-628): WebSocket'i main açar, renderer yalnız ses
-  // baytı yollar ve olay alır. Oturum TEK: ikinci `connect` öncekini kapatır —
-  // aksi hâlde unutulan bir soket DAKİKA ÜCRETİ yazdırmaya devam ederdi.
-  //
-  // 🔴 MALİYET SINIRI: oturum yalnız UYANIK modda açık durur. Uyandırma kelimesi
-  // YEREL (ücretsiz) kalır — 7/24 ses akıtmak ADP-804'te ölçülen 61–203 USD/ay'lık
-  // tabloyu üretirdi. Kapanış yolu bu yüzden `grok:close` ve uyku olayına bağlıdır.
-  let grokSession = null;
-  const grokBroadcast = (evt) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try { if (!w.isDestroyed()) w.webContents.send('grok:event', evt); } catch { /* kapanan pencere */ }
-    }
-  };
-  const grokTeardown = (reason) => {
-    if (!grokSession) return null;
-    const usage = grokSession.usage();
-    try { grokSession.close(); } catch { /* zaten kapalı */ }
-    grokSession = null;
-    // Fatura şeffaflığı: her kapanışta ne kadar sürdü + tahmini kaç USD.
-    logLine(`grok: oturum kapandı reason=${reason} sn=${usage.seconds.toFixed(1)} usd≈${usage.usd.toFixed(4)}`);
-    grokBroadcast({ type: 'usage', ...usage, reason });
-    return usage;
-  };
-
-  ipcMain.handle('grok:connect', async () => {
-    const s = agentSettings.readSettings();
-    if (grokVoice.resolveVoiceMode(s) !== grokVoice.VOICE_MODE_GROK) {
-      // Mod kapalıyken bağlanmak = kullanıcının seçmediği bir ücreti başlatmak.
-      return { ok: false, reason: 'mode-off', message: 'Ses modu "Grok Voice" değil.' };
-    }
-    grokTeardown('reconnect');
-    try {
-      grokSession = grokVoice.createGrokSession({
-        settings: s,
-        // CREWPANE_GROK_URL: yalnız yerel prova (mock sunucu) içindir; boşsa xAI.
-        url: process.env.CREWPANE_GROK_URL || undefined,
-        silenceMs: jarvisVoice.normalizeSilenceMs(s.jarvis && s.jarvis.silenceMs),
-        onEvent: grokBroadcast,
-        log: logLine, // sır ASLA geçmez (grokVoice içinde testli)
-      });
-      const info = await grokSession.connect();
-      return { ok: true, ...info };
-    } catch (err) {
-      grokSession = null;
-      // Anahtar yoksa kapının KENDİ metni gider (sessiz başarısızlık yasak).
-      const cred = err && err.code === 'ERR_CREDENTIAL_REQUIRED';
-      return {
-        ok: false,
-        reason: cred ? 'no-xai-key' : 'connect-failed',
-        message: cred ? err.userMessage : String((err && err.message) || err),
-        credential: cred ? 'xai' : undefined,
-        credentialTarget: cred ? grokVoice.grokKeySettingsTarget() : undefined,
-      };
-    }
-  });
-  // Ses akışı `send` (invoke DEĞİL): 20 ms'de bir gelen parçada yanıt beklemek
-  // kuyruk kurar. Kayıp bir parça turu bozmaz, geciken bir parça bozar.
-  ipcMain.on('grok:audio', (_event, base64) => { if (grokSession) grokSession.appendAudio(base64); });
-  ipcMain.handle('grok:say', (_event, text) => ({ ok: !!(grokSession && grokSession.say(text)) }));
-  ipcMain.handle('grok:interrupt', () => ({ ok: !!(grokSession && grokSession.interrupt()) }));
-  ipcMain.handle('grok:close', () => ({ ok: true, usage: grokTeardown('close') }));
-  ipcMain.handle('grok:status', () => ({
-    ok: true,
-    active: !!grokSession,
-    snapshot: grokSession ? grokSession.snapshot() : null,
-    usage: grokSession ? grokSession.usage() : null,
-  }));
-  // Uygulama kapanırken açık kalan oturum = boşa yanan dakika ücreti.
-  app.on('before-quit', () => grokTeardown('quit'));
-
-  ipcMain.handle('jarvis:voices', () => jarvisVoice.TTS_VOICES);
-  // ADP-848 — SESLİ ÖNİZLEME: aynı Türkçe cümle, İSTENEN motorda. Eski çağrı
-  // biçimi ({voice}) korunur (motor gönderilmezse ayardaki motor kullanılır).
-  // Anahtar yoksa ses YİNE çıkar (ücretsiz motor) ama sonuç kimin konuştuğunu
-  // (`spokenBy`) ve nedenini (`fallback.notice`) taşır — sessiz ölüm yok.
-  // ADP-848-B — ELEVENLABS SES LİSTESİ: kullanıcının KENDİ anahtarıyla, KENDİ
-  // hesabından. Kodda sabit ses listesi YOK. Anahtar yoksa/çağrı patlarsa dönüş
-  // `status` alanıyla ne olduğunu ve ne yapılacağını Türkçe söyler — seçici
-  // sessizce boş kalmaz. SIR DÖNMEZ (yalnız ses id/ad/etiket).
-  ipcMain.handle('jarvis:tts-voice-list', async (_event, payload) => {
-    const s = agentSettings.readSettings();
-    const engine = payload && payload.engine;
-    // Bugün yalnız ElevenLabs'in listesi uzaktan çekiliyor; diğer motorların
-    // sesleri sabittir ve `ttsConfig().engines[].voices` ile zaten geliyor.
-    if (engine && engine !== 'elevenlabs') {
-      return { ok: false, reason: 'static-voices', voices: [], status: null };
-    }
-    return jarvisVoice.ttsProviders.listElevenVoices({ settings: s, ctx: { rootDir: REPO_ROOT } });
-  });
-
-  ipcMain.handle('jarvis:tts-preview', (_event, payload) => {
-    const s = agentSettings.readSettings();
-    const apiKey = jarvisVoice.openAiKey(REPO_ROOT);
-    return jarvisVoice.ttsPreview({
-      engine: payload && payload.engine,
-      voice: (payload && payload.voice) || undefined,
-      settings: s,
-      apiKey,
-      ctx: { rootDir: REPO_ROOT },
-    });
-  });
 
   // ADP-203 — user Settings (~/.crewpane/settings.json). The renderer Settings panel
   // reads/writes the workspace root, OpenAI key, push-to-talk key, wake-model path.
@@ -8985,76 +8687,7 @@ function wireIpc() {
     }
     return { ok: false, reason: 'bad-mode' };
   });
-  // ADP-642 — başarısız STT'de kapının KULLANICI CÜMLESİ de köprüden geçer
-  // (`message` + `credential`); renderer ham sebep kodunu ekrana basmaz.
-  // ADP-813 (Faz 1) — İMZA AYNI, motor değişti: önce yerel whisper.cpp kalıcı
-  // sunucusu (ölçüldü ~450–600 ms, $0), o kurulu değilse/çökerse bulut `whisper-1`.
-  // Ayar `jarvis.sttEngine` ile buluta sabitlenebilir.
-  ipcMain.handle('jarvis:transcribe', async (_event, payload) =>
-    jarvisVoice.withUserMessage(
-      await jarvisVoice.transcribeSpeech({
-        ...(payload || {}),
-        apiKey: jarvisVoice.openAiKey(REPO_ROOT),
-        settings: agentSettings.readSettings(),
-        log: logLine,
-      })));
-  // ADP-813 — kayıt başlarken yerel sunucuyu ısıt (soğuk ilk tur 1301 ms → 549 ms).
-  // Motor 'openai' ise HİÇBİR ŞEY yapmaz: kimsenin kullanmadığı 750 MB'lık süreci
-  // ayakta tutmak bu makinedeki "ağır iş yasağı"na aykırı olurdu.
-  ipcMain.handle('jarvis:sttWarmup', async () => {
-    const s = agentSettings.readSettings();
-    if (jarvisVoice.resolveSttEngine(s) !== 'local') return { ok: false, reason: 'engine-not-local' };
-    // ADP-814 — taslak (base) sunucusu da ısıtılır: İLK kısmi hipotez kullanıcı daha
-    // ilk cümlesini bitirmeden ekranda olsun. Ateşle-unut — final ısıtmayı BEKLETMEZ
-    // (aksi hâlde canlı transkript uğruna asıl transkript gecikirdi).
-    jarvisVoice.whisperLocal.warmupDraft({ settings: s, log: logLine }).catch(() => {});
-    return jarvisVoice.whisperLocal.ensureServer({ settings: s, log: logLine });
-  });
-  // 🔴 ADP-908 — SESSİZ ÖLÜMÜN SONU. Kısmi hipotez başarısız olduğunda renderer
-  // sonucu YUTAR (`if (!r?.ok || !r.text) return`) — doğru davranış: ekranda yarım
-  // bir hata satırı olmamalı. Ama bu, ÖZELLİĞİN GÜNLERCE ÖLÜ KALMASINI da mümkün
-  // kıldı: canlı transkript hiç görünmüyordu ve logda TEK BİR SATIR bile yoktu
-  // (final katman buluta düştüğü için cevaplar gelmeye devam ediyordu → kimse
-  // fark etmedi; kök neden `whisper-server --convert`in çalışma dizinine yazması
-  // ve teslim edilen uygulamanın cwd'sinin `/` olmasıydı).
-  // Kural: sebep DEĞİŞTİĞİNDE bir kez yaz — 500 ms'de bir tetiklenen bir yolda
-  // her turu loglamak defteri boğar, hiç loglamamak arızayı görünmez yapar.
-  let partialLastReason = null;
-  const notePartialFailure = (reason, detail) => {
-    if (!reason || reason === partialLastReason) return;
-    partialLastReason = reason;
-    logLine(`[stt:taslak] kısmi hipotez üretilemedi (${reason})${detail ? ' — ' + String(detail).slice(0, 160) : ''} → canlı transkript EKRANDA GÖRÜNMEZ`);
-  };
-  // ADP-814 (Faz 2) — KISMİ transkript: kayıt sürerken kümülatif ses → `base` modeli.
-  // Bilinçli olarak `transcribeSpeech` DEĞİL: buluta fallback YOK. Kısmi hipotez
-  // atılabilir bir üründür; onun için para harcamak (ve bulut gecikmesini beklemek)
-  // canlı transkriptin amacına aykırı. Yerel yol kapalıysa sebep döner, renderer
-  // canlı transkripti sessizce kapatır ve HİÇBİR ŞEY bozulmaz.
-  ipcMain.handle('jarvis:transcribePartial', async (_event, payload) => {
-    const s = agentSettings.readSettings();
-    if (jarvisVoice.resolveSttEngine(s) !== 'local') {
-      notePartialFailure('engine-not-local');
-      return { ok: false, reason: 'engine-not-local' };
-    }
-    const r = await jarvisVoice.whisperLocal.transcribePartial({ ...(payload || {}) }, { settings: s, log: logLine });
-    if (r && r.ok && r.text) partialLastReason = null;
-    else notePartialFailure((r && r.reason) || 'bilinmeyen', r && r.detail);
-    return r;
-  });
-  // ADP-815 (Faz 3) — KATMAN 2 ISITMA: kalıcı `claude` oturumunu kayıt başlarken
-  // ayağa kaldır. ÖLÇÜLDÜ: ilk (soğuk) tur 4–13 s, ısınmış tur p50 2.5 s. Tetik
-  // ADP-813 ile aynı gerekçe: BOOT değil NİYET — hiç konuşmayan kullanıcı bir
-  // `claude` süreci taşımaz, konuşan kullanıcı açılışı konuşma süresine gizler.
-  // Ateşle-unut; oturum kurulamazsa `decide` soğuk yola düşer (regresyon yok).
-  ipcMain.handle('jarvis:brainWarmup', async () => jarvisVoice.warmupBrain());
-  // ADP-815 — gözcü/ölçüm yüzeyi: e2e ve ölçüm scriptleri oturumun GERÇEKTEN
-  // ayakta olduğunu (ve kaç turdur soğuk yola düşüldüğünü) buradan görür.
-  ipcMain.handle('jarvis:brainStats', () => jarvisVoice.brainStats());
-  // ADP-815 — ÇÖKME GÖZCÜSÜNÜN GERÇEK TESTİ: oturumu kasten öldür. Kabul kanıtı
-  // "gözcü kodu var" değil "öldürdüm, tur yine cevap verdi" olmalı.
-  ipcMain.handle('jarvis:brainKill', (_e, payload) =>
-    ({ ok: jarvisVoice.killBrainForTest((payload && payload.signal) || 'SIGKILL') }));
-  ipcMain.handle('jarvis:think', (_event, payload) => jarvisVoice.decide(payload || {}));
+
   // B-06 — ONBOARDING ŞABLON ÖNERİSİ (ONBOARDING-PRESETS-SPEC §4.2). DAR kanal:
   // renderer serbest metni + ŞABLON KATALOĞUNU yollar, cevap yalnız o kataloğun
   // içinden bir id olabilir (presetAdvisor doğrular). Genel amaçlı "modele sor"
@@ -9076,89 +8709,7 @@ function wireIpc() {
       env: { ...process.env, PATH: agentRunner.augmentedPath(process.env.PATH) },
     });
   });
-  ipcMain.handle('jarvis:speak', async (_event, payload) => {
-    const s = agentSettings.readSettings();
-    const apiKey = jarvisVoice.openAiKey(REPO_ROOT);
-    // ADP-812 — `deliver:'renderer'` istenirse mp3 base64 döner ve main hiçbir
-    // oynatıcı süreci (afplay) açmaz; sesi renderer <audio> ile çalar (~0.9 s).
-    // Payload'ı OLDUĞU GİBİ geçiriyoruz: eski çağıranlar (mobil köprü, e2e)
-    // `deliver` göndermez → varsayılan 'main', davranış birebir eski.
-    const wanted = jarvisVoice.ttsProviders.resolveTtsEngine(s);
-    const r = await jarvisVoice.speakWithSettings({ ...(payload || {}), settings: s, apiKey });
-    // 🔴 ADP-902 — TTS YOLUNUN LOG'U HİÇ YOKTU. Eren "ElevenLabs seçtim, macOS
-    // sesi geliyor" dediğinde uygulama log'unda konuyla ilgili TEK BİR SATIR
-    // bulunmuyordu (ölçüldü: crewpane-shell.log'da 'tts' geçen kayıt yok) — yani
-    // "istek atıldı mı, kaç döndü, neden düşüldü" sorularının hiçbiri diskten
-    // cevaplanamıyordu. Sır GEÇMEZ: yalnız motor adı + makine sebebi yazılır.
-    try {
-      const spoke = (r && r.engine) || '?';
-      const fb = r && r.fallback;
-      // E2E-MUTE-01 — "ses çıktı mı" sorusunun DİSKTEN cevabı. Susturulmuş koşuda
-      // `çıkış=yok` yazar ve sayaç (audible/suppressed) satırda görünür; kapı bunu
-      // pgrep ölçümüyle ÇAPRAZ doğrular (tek kaynağa güvenilmez).
-      const st = jarvisVoice.ttsMute.audioOutputStats();
-      logLine(
-        `tts: istenen=${wanted} konuşan=${spoke} bayt=${(r && r.bytes) || 0} ms=${(r && r.ms) || 0}` +
-        ` çıkış=${r && r.muted ? 'yok(susturuldu)' : (r && r.playIn) || 'main'}` +
-        ` sayaç[duyulur=${st.audible} bastırılan=${st.suppressed} sentez=${st.synthesized}]` +
-        (fb ? ` DÜŞÜLDÜ from=${fb.from} sebep=${fb.reason}` : ''),
-      );
-      if (fb && fb.detail) logLine(`tts: sağlayıcı yanıtı → ${String(fb.detail).slice(0, 400)}`);
-    } catch { /* teşhis log'u ses yolunu ASLA kıramaz */ }
-    return r;
-  });
-  // ── AGENTX-RT-3 — AKAN TTS ────────────────────────────────────────────────
-  // `jarvis:speak` SON baytı bekler; bu kanal İLK baytı yollar. PCM parçaları
-  // `jarvis:speech-chunk` olayıyla İSTEYEN pencereye gider (yayın YOK: iki
-  // pencere açıkken ses iki kez çalmasın). İptal yolda olan isteği de keser.
-  const _speechStreams = new Map(); // streamId → AbortController
-  ipcMain.handle('jarvis:speakStream', async (event, payload) => {
-    const req = payload || {};
-    const streamId = String(req.streamId || `s${Date.now()}${Math.random().toString(36).slice(2, 6)}`);
-    const ac = new AbortController();
-    // Aynı pencerenin ÖNCEKİ akışı hâlâ koşuyorsa kes: barge-in'in main ayağı.
-    for (const [id, prev] of _speechStreams) {
-      if (prev.wc === event.sender) { try { prev.ac.abort(); } catch { /* zaten bitti */ } _speechStreams.delete(id); }
-    }
-    _speechStreams.set(streamId, { ac, wc: event.sender });
-    const send = (c) => {
-      if (event.sender.isDestroyed()) { try { ac.abort(); } catch { /* kapandı */ } return; }
-      event.sender.send('jarvis:speech-chunk', { streamId, ...c });
-    };
-    let r;
-    try {
-      r = await jarvisVoice.speakStreamWithSettings({
-        text: req.text,
-        settings: agentSettings.readSettings(),
-        apiKey: jarvisVoice.openAiKey(REPO_ROOT),
-        onChunk: send,
-        signal: ac.signal,
-      });
-    } catch (e) {
-      r = { ok: false, reason: 'stream-threw', detail: String((e && e.message) || e) };
-    } finally {
-      _speechStreams.delete(streamId);
-    }
-    try {
-      // ADP-902 ile aynı disiplin: ses yolunun DİSKTEN cevaplanabilir kaydı.
-      logLine(
-        `tts-akış: id=${streamId} ok=${r && r.ok} sebep=${(r && r.reason) || '-'} ` +
-        `önbellek=${r && r.cached ? 'evet' : 'hayır'} ilkBayt=${(r && r.firstByteMs) != null ? r.firstByteMs : '-'}ms ` +
-        `bayt=${(r && r.bytes) || 0} parça=${(r && r.emitted) || 0} grup=${(r && r.groups) || 0} ms=${(r && r.ms) || 0}`,
-      );
-    } catch { /* teşhis log'u ses yolunu ASLA kıramaz */ }
-    return { ...r, streamId };
-  });
-  ipcMain.on('jarvis:speakStreamCancel', (event, streamId) => {
-    for (const [id, s] of _speechStreams) {
-      if ((streamId && id === streamId) || (!streamId && s.wc === event.sender)) {
-        try { s.ac.abort(); } catch { /* zaten bitti */ }
-        _speechStreams.delete(id);
-      }
-    }
-  });
 
-  ipcMain.on('jarvis:stopSpeaking', () => jarvisVoice.stopPlayback());
 
   // ADP-139 (DOGFOOD Engel #2) — self-host dev affordances.
   //  • app:info        → { mode, packaged, rebuildSupported } so the renderer can
@@ -12885,20 +12436,6 @@ jarvisConv.onChange((event) => {
   }
 });
 
-ipcMain.handle('jarvis:conv:get', () => jarvisConv.snapshot());
-ipcMain.handle('jarvis:conv:append', (_e, turn) => jarvisConv.appendTurn(turn || {}));
-ipcMain.handle('jarvis:conv:approval', (_e, approval) => jarvisConv.openApproval(approval || {}));
-/**
- * Tek kazanan: kapalı onayı ikinci kez kapatmak null döner → çağıran çalıştırmaz.
- * ADP-322 — `choice` (fan-out kartının çıkışı) de tek-kazanan kapısından geçer.
- */
-ipcMain.handle('jarvis:conv:resolve', (_e, p) =>
-  jarvisConv.closeApproval((p || {}).approvalId, (p || {}).decision, (p || {}).choice),
-);
-ipcMain.handle('jarvis:conv:clear', () => {
-  jarvisConv.clear();
-  return { ok: true };
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ASK-CARD-01 (FB-1009) — LİDERİN KARAR SORUSU: pane üstünde kart + "cevap bekliyor".
