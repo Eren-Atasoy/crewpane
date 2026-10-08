@@ -58,6 +58,10 @@ const {
   registerBrowserIpc,
   registerIntegIpc,
   registerSprintIpc,
+  registerGitIpc,
+  registerTaskIpc,
+  registerCodeIntelIpc,
+  registerWorkspaceIpc,
 } = require('./src/features/services');
 const { registerMemoryIpc } = require('./src/features/memory');
 const { registerHandIpc } = require('./src/features/hand');
@@ -6502,6 +6506,56 @@ function wireIpc() {
     logLine,
   });
 
+  registerGitIpc({
+    ipcMain,
+    resolveInRoots,
+    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+    codeIntel,
+    gitBranchCache,
+    GIT_BRANCH_TTL_MS,
+    readGitBranch,
+    resolveSearchRoot,
+    withinActiveRoots,
+    displayPath,
+  });
+
+  registerTaskIpc({
+    ipcMain,
+  });
+
+  registerCodeIntelIpc({
+    ipcMain,
+    agentSettings,
+    worktreeStore,
+    crewpaneHome,
+    projectRepos,
+    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+    branchName,
+    codeIndexStore,
+    codeIndexHealth,
+    codeIndexRepoPath,
+    codeIndexFreshness,
+    codeIndexJobs,
+    getAppWindow: () => appWindow,
+    spawn,
+    logLine,
+  });
+
+  registerWorkspaceIpc({
+    ipcMain,
+    app,
+    BrowserWindow,
+    dialog,
+    appI18n,
+    supervisorFor,
+    notifyGate,
+    workspacePlanDenial,
+    workspaceOnboarding,
+    rememberWorkspaceRoot,
+    switchWorkspaceRoot,
+    logLine,
+  });
+
   // ── Memory IPC Yüzeyi (Faz 3.5 — Sıra 4) ───────────────────────────────────
   registerMemoryIpc({
     ipcMain,
@@ -6750,77 +6804,7 @@ function wireIpc() {
   // ADP-082 (ADR-006) — workspace file bridge for the embedded code editor.
   // Root-guarded + size-capped; the sandboxed renderer reads/writes/lists ONLY
   // inside the workspace root (path-traversal/symlink escapes rejected above).
-  // ADP-538 — worker-completion notify: delegasyon follow-loop'u (renderer) buraya
-  // emit eder; satır resume-daemon'la AYNI log dosyasına düşer (resolveResumeNotifyPath:
-  // dev → docs/.agent-notifications, paketli → instance dir, env CREWPANE_RESUME_NOTIFY
-  // override — e2e bu dikişle deterministik dosyaya yönlendirir). Liderlerin Monitor
-  // tail'i bu satırlarla OTOMATİK tetiklenir; in-app delegasyon bu satırları hiç
-  // yazmıyordu (yalnız eski tmux watch-agent-result yazardı) — ADP-538'in kök fix'i.
-  // ADP-667 — HER İKİ yazar (renderer follow-loop'u + main supervisor'ı) buradan
-  // geçer: aynı bitiş iki kez yazılmaz, aynı pencerede biten işler TEK satırda
-  // toplanır. Dönüş `duplicate` çağırana "bunu zaten biri bildirdi" der.
-  ipcMain.handle('notify:workerEvent', (_event, evt) =>
-    supervisorFor('notify-log').run(
-      'workerEvent',
-      // ADP-545 — yol departman-farkındalıklı: chatflow/education olayları kendi
-      // takım dosyalarına, crewpane (ve departmansız) olaylar workspace'in
-      // crewpane/docs hedefine (kurulumda liderlerin tail'lediği dosyalar).
-      // ADP-586 — notify dosyası (docs/.agent-notifications) REPO'ya commit'lenir:
-      // bir FAIL detayına düşen jeton kalıcı olur → olay maskeden geçirilerek yazılır.
-      () => {
-        const res = notifyGate().admit(evt || {});
-        return { ok: res.accepted, duplicate: res.duplicate === true };
-      },
-      { ok: false },
-    ));
 
-  // ADP-206 — editor code-intelligence: git diff (committed vs working) + workspace file
-  // list (⌘P) + content grep (⌘⇧F). Read-only `git` against the configured workspace root.
-  // TASK-MQTIX5XW2HFST — confine the path to an active root (parity with search), then let
-  // codeIntel narrow to the file's ENCLOSING git repo: agentWorkspaceRoot is the non-git multi-
-  // project parent, so diffing against it returned empty (no red/green). Pass the absolute path.
-  ipcMain.handle('git:diff', (_event, filePath) => {
-    const abs = resolveInRoots(filePath);
-    if (!abs) return { ok: false, reason: 'path-denied' };
-    return codeIntel.gitDiffFile(agentWorkspaceRoot, abs);
-  });
-  // ADP-402 — pane header'ındaki git-branch rozeti: pane cwd'si → saran repo'nun
-  // branch adı. Subprocess YOK (.git/HEAD dosya okuması); renderer 1.5s pane
-  // poll'una bindiği için cwd başına kısa TTL cache. Root-guard: cwd aktif
-  // root'ların dışındaysa (örn. HOME'da açılmış shell) reddedilir → rozet çizilmez.
-  // B-02 — `opts.force` TTL'i atlar (ANINDA senkron: görev değişimi, attach, merge
-  // sonrası). Zorlama YALNIZ olay başına gelir; poll yolu force GÖNDERMEZ, yoksa
-  // her 1.5 sn'de her pane için dosya okuması yapılırdı (ADP-284 ihlali).
-  ipcMain.handle('git:branch', (_event, cwd, opts) => {
-    const abs = resolveInRoots(cwd);
-    if (!abs) return { ok: false, reason: 'path-denied' };
-    const force = opts && opts.force === true;
-    const hit = gitBranchCache.get(abs);
-    if (!force && hit && Date.now() - hit.at < GIT_BRANCH_TTL_MS) return hit.value;
-    const value = { ok: true, branch: readGitBranch(abs) };
-    gitBranchCache.set(abs, { at: Date.now(), value });
-    return value;
-  });
-  // TASK-MQTIVZSDYPNRH — search scopes to the editor's ACTIVE workspace (2nd arg), not the
-  // global root. codeIntel returns ABSOLUTE paths; we confine them to the active-root
-  // sandbox and rebase to the renderer's display form (workspace-relative or absolute) so
-  // a click opens the file through the SAME fileApi guard.
-  ipcMain.handle('workspace:listFiles', async (_event, root) => {
-    const base = resolveSearchRoot(root);
-    if (!base) return { ok: false, reason: 'workspace_not_configured' }; // ADP-232-C
-    const r = await codeIntel.listWorkspaceFiles(base);
-    if (!r.ok) return r;
-    return { ...r, files: r.files.filter(withinActiveRoots).map(displayPath) };
-  });
-  ipcMain.handle('workspace:grep', async (_event, payload) => {
-    const { query, root } = payload && typeof payload === 'object' ? payload : { query: payload, root: undefined };
-    const base = resolveSearchRoot(root);
-    if (!base) return { ok: false, reason: 'workspace_not_configured' }; // ADP-232-C
-    const r = await codeIntel.grepWorkspace(base, query);
-    if (!r.ok) return r;
-    const hits = r.hits.filter((h) => withinActiveRoots(h.file)).map((h) => ({ ...h, file: displayPath(h.file) }));
-    return { ...r, hits };
-  });
 
   // ── Delegation Queue & Supervisor IPC Yüzeyi (Faz 3.5 — Sıra 8) ────────────
   registerDelegationIpc({
@@ -7379,33 +7363,7 @@ function wireIpc() {
     return { ok: true, restarting: true, closedPanes, level: req.level };
   });
 
-  // ── TASK-CLEAN — GÖREV TEMİZLEME KÖPRÜSÜ (Brain Backend) ─────────────────────
-  ipcMain.handle('task:cleanTeamDone', async (_e, opts) => {
-    try {
-      const taskBrainService = require('./src/services/taskBrainService.cjs');
-      return await taskBrainService.cleanTeamDoneTasks(opts);
-    } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) };
-    }
-  });
 
-  ipcMain.handle('task:cleanAll', async () => {
-    try {
-      const taskBrainService = require('./src/services/taskBrainService.cjs');
-      return await taskBrainService.cleanAllTasks();
-    } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) };
-    }
-  });
-
-  ipcMain.handle('task:listSummary', async () => {
-    try {
-      const taskBrainService = require('./src/services/taskBrainService.cjs');
-      return await taskBrainService.listTasksSummary();
-    } catch (err) {
-      return { ok: false, error: (err && err.message) || String(err) };
-    }
-  });
 
 
   // ADP-703 — hesap deposu durumu (Ayarlar + e2e sızıntı nöbeti okur). SIR İÇERMEZ.
@@ -7929,265 +7887,7 @@ function wireIpc() {
   //     makinede açılır; kararı ağ çağrısına bağlamak spawn'ı ağa bağımlı kılardı.
   // Ayar ekranı ikisini birlikte yazar; bu köprü YEREL yarısıdır. Renderer bir YOL
   // dayatamaz (G-1): repoPath'i main kendisi çözer.
-  ipcMain.handle('project:config:get', (_e, input) => {
-    const wanted = Array.isArray(input?.slugs)
-      ? input.slugs.filter((x) => typeof x === 'string' && x.trim()).map((x) => x.trim().toLowerCase())
-      : [];
-    const s = agentSettings.readSettings();
-    const isoMap = (s && s.projectIsolation && typeof s.projectIsolation === 'object') ? s.projectIsolation : {};
-    const repoMap = (s && s.projectRepos && typeof s.projectRepos === 'object') ? s.projectRepos : {};
-    let stored = {};
-    try { stored = worktreeStore.listProjects(crewpaneHome()) || {}; } catch { stored = {}; }
-    const slugs = [...new Set([...wanted, ...Object.keys(isoMap), ...Object.keys(repoMap), ...Object.keys(stored)])];
-    const projects = slugs.map((slug) => {
-      const rec = (() => { try { return worktreeStore.getProject(slug, crewpaneHome()); } catch { return null; } })();
-      const repo = projectRepos.resolveProjectRepo(slug, agentWorkspaceRoot, {
-        settings: s, store: worktreeStore, homedir: crewpaneHome(), log: () => {},
-      });
-      return {
-        slug,
-        isolation: isoMap[slug] === 'worktree' ? 'worktree' : 'off',
-        defaultBranch: (rec && rec.defaultBranch) || 'dev',
-        // Yol GÖSTERİLİR ama kullanıcı buradan yazamaz: "izolasyon açık ama repo yok"
-        // hâli EKRANDA görünmezse spawn anında sürpriz bir blokla karşılaşılır (H-5).
-        repoPath: repo ? repo.repoPath : null,
-        repoSource: repo ? repo.source : null,
-      };
-    });
-    return { ok: true, workspaceRoot: agentWorkspaceRoot, projects };
-  });
 
-  ipcMain.handle('project:config:set', (_e, input) => {
-    const slug = typeof input?.slug === 'string' ? input.slug.trim().toLowerCase() : '';
-    if (!slug) return { ok: false, why: 'slug gerekli' };
-    const isolation = input?.isolation === 'worktree' ? 'worktree' : input?.isolation === 'off' ? 'off' : null;
-    if (!isolation) return { ok: false, why: "isolation 'worktree' ya da 'off' olmalı" };
-    const branch = typeof input?.defaultBranch === 'string' && input.defaultBranch.trim()
-      ? input.defaultBranch.trim() : 'dev';
-    // Dal adı git gramerinden geçmeli — bozuk bir hedef merge anında patlardı.
-    const refErr = branchName.refFormatError(branch);
-    if (refErr) return { ok: false, why: `varsayılan dal geçersiz: ${refErr}` };
-
-    const s = agentSettings.readSettings();
-    const nextMap = { ...(s.projectIsolation && typeof s.projectIsolation === 'object' ? s.projectIsolation : {}) };
-    nextMap[slug] = isolation;
-    const applied = agentSettings.applySettingsPatch({ projectIsolation: nextMap });
-
-    // Varsayılan dal defterde yaşar ve defter YOL İSTER (göreli yol iki cwd'de iki
-    // şeydir). Repo çözülemiyorsa dal yazılamaz — bunu SÖYLERİZ, sessizce yutmayız.
-    const repo = projectRepos.resolveProjectRepo(slug, agentWorkspaceRoot, {
-      settings: applied.next, store: worktreeStore, homedir: crewpaneHome(), log: logLine,
-    });
-    let branchSaved = false;
-    if (repo) {
-      try {
-        branchSaved = worktreeStore.setProject(slug, { repoPath: repo.repoPath, defaultBranch: branch }, crewpaneHome()) === true;
-      } catch (e) {
-        logLine(`project:config:set defterine yazılamadı (${slug}): ${e.message}`);
-      }
-    }
-    logLine(`proje ayarı: ${slug} izolasyon=${isolation} dal=${branch}${repo ? ` repo=${repo.repoPath}` : ' repo=YOK'}`);
-    return {
-      ok: true,
-      persisted: applied.persisted !== false,
-      persistError: applied.persistError || null,
-      branchSaved,
-      repoPath: repo ? repo.repoPath : null,
-      why: repo ? null : 'bu proje için git deposu bulunamadı — izolasyon açıkken görev spawn edilemez (H-5)',
-    };
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // CIDX-1 — KOD İNDEKSİ KÖPRÜSÜ (Ayarlar → Hafıza & arama → "Kod indeksi")
-  // ═══════════════════════════════════════════════════════════════════════════
-  // Üç çağrı, üçü de SIRSIZ: bu MCP %100 yereldir, anahtar istemez (CODE-INDEX-R1
-  // §6) → `credentialVault` yoluna hiç girmez. Köprüden yalnız SLUG geçer; ikilinin
-  // ve deponun YOLUNU main çözer (G-1 — renderer yol dayatamaz).
-  //
-  // ⚠️ Anahtar VARSAYILAN KAPALI ve bu bir ölçümdür, tercih değil — ama gerekçesi
-  // 09.09'da değişti (CODEINDEX-PROOF-01 §4): "her turda ≈5.300 jeton + oturumların
-  // %29'unda amorti" ölçülmemiş bir tahmindi; gerçek yük 216 jeton/tur. Kapalı kalma
-  // sebebi artık DEĞER: A/B'de araçlar kendiliğinden çağrılmadı, doğruluk değişmedi.
-  // Bu yüzden "hepsini aç" düğmesi YOKTUR.
-  ipcMain.handle('codeIndex:list', async (_e, input) => {
-    const wanted = Array.isArray(input?.slugs)
-      ? input.slugs.map((x) => codeIndexStore.projectKey(x)).filter(Boolean) : [];
-    const s = agentSettings.readSettings();
-    const map = (s && s.codeIndex && typeof s.codeIndex === 'object') ? s.codeIndex : {};
-    const repoMap = (s && s.projectRepos && typeof s.projectRepos === 'object') ? s.projectRepos : {};
-    let stored = {};
-    try { stored = worktreeStore.listProjects(crewpaneHome()) || {}; } catch { stored = {}; }
-    const slugs = [...new Set([...wanted, ...Object.keys(map), ...Object.keys(repoMap), ...Object.keys(stored)])]
-      .map((x) => codeIndexStore.projectKey(x)).filter(Boolean).sort();
-    const bin = (() => { try { return codeIndexStore.findBinary({ env: process.env }); } catch { return null; } })();
-    // CODEINDEX-PROOF-01 — SAĞLIK ARACIN KENDİSİNDEN SORULUR (defter yeterli değil).
-    // 09.09'da ölçüldü: crewpane indeksi (91.080 düğüm) çalışma ortasında bozuldu,
-    // `.db.corrupt`a döndü ve projeden düştü — defter ise hâlâ "taze" diyordu.
-    // `cli list_projects` 0,56 sn sürüyor (ölçüldü) ve bu çağrı zaten Ayarlar
-    // açılışında bir kez koşuyor. Patlarsa `null` → "soramadım", KAYIP DEĞİL.
-    //
-    // 🪤 spawnSync KULLANILMAZ. İlk yazımda öyleydi ve yanlıştı: main süreci
-    // Electron'un TEK UI iş parçacığıdır — orada senkron beklemek, ikili yavaş
-    // ya da asılıysa uygulamanın TAMAMINI dondurur (zaman aşımı kadar). Sağlık
-    // satırı bir konfor bilgisidir; uğruna pencere kilitlenmez. Asenkron okunur,
-    // 5 sn'de cevap gelmezse "soramadım" (null) denir ve ekran bunu SÖYLER.
-    const toolProjects = await new Promise((resolve) => {
-      if (!bin) { resolve(null); return; }
-      let done = false;
-      const finish = (v) => { if (!done) { done = true; resolve(v); } };
-      try {
-        const child = require('node:child_process').spawn(bin.path, ['cli', 'list_projects', '{}'],
-          { stdio: ['ignore', 'pipe', 'ignore'] });
-        let out = '';
-        child.stdout.on('data', (d) => { if (out.length < 8 * 1024 * 1024) out += d; });
-        child.on('error', () => finish(null));
-        child.on('close', () => finish(codeIndexHealth.parseProjects(out)));
-        setTimeout(() => { try { child.kill(); } catch { /* zaten indi */ } finish(null); }, 5000).unref();
-      } catch { finish(null); }
-    });
-    const corrupt = codeIndexHealth.corruptNames(codeIndexHealth.defaultCacheDir());
-    const injections = (() => { try { return codeIndexStore.injectionsThisSession(); } catch { return {}; } })();
-    return {
-      ok: true,
-      // İkili YOKSA bu bir HATA DEĞİLDİR: ürün 262 MB'lık ikiliyi GÖMMEZ (§12.1).
-      // UI bunu anlatır ve anahtarı pasif bırakır — ölü bir özellik gibi görünmesin.
-      installed: !!bin,
-      binPath: bin ? bin.path : null,
-      binName: codeIndexStore.BIN_NAME,
-      installUrl: codeIndexStore.INSTALL_URL,
-      // WIN-PARITY-01 — kurulum KOMUTU platforma göre; Windows'ta `curl … | bash`
-      // göstermek çalışmayacak bir komut vermekti (ENG-13'ün kapattığı sınıf).
-      installHint: codeIndexStore.installHint(process.platform),
-      platform: process.platform,
-      serverName: codeIndexStore.SERVER_NAME,
-      // ANAHTARIN SINIRI (CIDX-1 sürüşünde ÖLÇÜLDÜ): kullanıcının kendi
-      // `~/.claude.json`'ında zaten bir kayıt varsa araçlar anahtar KAPALIYKEN de
-      // pane'e girer. Ürün onu kapatamaz (kullanıcının yapılandırması onundur) —
-      // ama SÖYLEYEBİLİR. Söylemezse kapalı anahtarın yanındaki araç listesi
-      // "ayar çalışmıyor" diye okunur.
-      userRegistered: (() => { try { return codeIndexStore.userRegisteredServers({}); } catch { return []; } })(),
-      projects: slugs.map((slug) => {
-        const rec = map[slug] || null;
-        const repoPath = codeIndexRepoPath(slug);
-        const fresh = codeIndexFreshness(repoPath, rec ? rec.indexedSha : null);
-        // Defter + aracın gerçeği yan yana. `health.state` defterinkini EZEBİLİR
-        // (missing/corrupt) — ama yalnız araca gerçekten sorabildiysek.
-        // 🪤 YOL EŞLEŞTİRMESİ REALPATH İSTER: araç `root_path`i çözülmüş yazar,
-        // bizim yolumuz sembolik bağ ya da `/tmp`→`/private/tmp` gibi bir takma ad
-        // olabilir. Ham karşılaştırma, VAR olan bir indeksi "kayboldu" ilan ederdi.
-        const realRepoPath = (() => {
-          if (!repoPath) return repoPath;
-          try { return require('node:fs').realpathSync(repoPath); } catch { return repoPath; }
-        })();
-        const health = codeIndexHealth.healthFor({
-          repoPath: realRepoPath,
-          ledger: {
-            indexedSha: rec ? rec.indexedSha : null,
-            lastIndexedAt: rec ? rec.lastIndexedAt : null,
-            enabled: !!(rec && rec.enabled === true),
-          },
-          ledgerState: fresh.state,
-          tool: toolProjects,
-          corrupt,
-        });
-        return {
-          slug,
-          repoPath,
-          enabled: !!(rec && rec.enabled === true),
-          indexedSha: rec ? rec.indexedSha : null,
-          lastIndexedAt: rec ? rec.lastIndexedAt : null,
-          state: health.state,
-          staleFiles: fresh.staleFiles,
-          indexing: codeIndexJobs.has(slug),
-          // SAĞLIK SATIRI — "nasıl anlayacağız?" sorusunun kalıcı cevabı.
-          symbols: health.symbols,
-          graphEdges: health.edges,
-          toolAsked: health.toolAsked,
-          toolName: health.toolName,
-          injectedThisSession: injections[slug] || 0,
-        };
-      }),
-    };
-  });
-
-  // Anahtarı çevir. REPLACE disiplini (projectIsolation emsali): harita bütün olarak
-  // yazılır, yarım birleşmiş bir kayıt "kapattım sanıyordum" sınıfı sessiz bir açık
-  // kol bırakmaz — bu ayar her turda para yakar.
-  ipcMain.handle('codeIndex:set', (_e, input) => {
-    const slug = codeIndexStore.projectKey(input?.slug);
-    if (!slug) return { ok: false, why: 'proje kimliği gerekli' };
-    const enabled = input?.enabled === true;
-    const s = agentSettings.readSettings();
-    const next = { ...(s.codeIndex && typeof s.codeIndex === 'object' ? s.codeIndex : {}) };
-    const prev = next[slug] || {};
-    next[slug] = { enabled, indexedSha: prev.indexedSha || null, lastIndexedAt: prev.lastIndexedAt || null };
-    const applied = agentSettings.applySettingsPatch({ codeIndex: next });
-    logLine(`kod indeksi: ${slug} → ${enabled ? 'AÇIK' : 'kapalı'} (bir sonraki pane'den itibaren)`);
-    return {
-      ok: true,
-      enabled,
-      persisted: applied.persisted !== false,
-      persistError: applied.persistError || null,
-      // Açık pane'ler ETKİLENMEZ: MCP argv spawn anında bağlanır. Bunu SÖYLERİZ,
-      // yoksa kullanıcı açık pane'de aracı arar ve "çalışmıyor" der.
-      restartHint: true,
-    };
-  });
-
-  // "Şimdi indeksle" — ARKA PLANDA. İkili tek koşumda dakikalar sürebilir; invoke'u
-  // beklemek Ayarlar penceresini kilitlerdi. İlerleme `codeIndex:progress` ile
-  // itilir, sonuç defterimize (settings.codeIndex[slug].indexedSha) yazılır.
-  // Sha'yı BİZ yazıyoruz çünkü aracın kendi `index_status`'ı indeksin sha'sını
-  // BİLMİYOR (CIDX-0 §3.2) — tazelik başka türlü ölçülemez.
-  ipcMain.handle('codeIndex:index', (_e, input) => {
-    const slug = codeIndexStore.projectKey(input?.slug);
-    if (!slug) return { ok: false, why: 'proje kimliği gerekli' };
-    if (codeIndexJobs.has(slug)) return { ok: false, why: 'bu proje zaten indeksleniyor' };
-    const bin = (() => { try { return codeIndexStore.findBinary({ env: process.env }); } catch { return null; } })();
-    if (!bin) return { ok: false, why: `${codeIndexStore.BIN_NAME} kurulu değil` };
-    const repoPath = codeIndexRepoPath(slug);
-    if (!repoPath) return { ok: false, why: 'bu proje için git deposu bulunamadı' };
-    const headSha = (() => {
-      try {
-        return require('node:child_process')
-          .execFileSync('git', ['-C', repoPath, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 4000 }).trim();
-      } catch { return null; }
-    })();
-    const push = (payload) => {
-      if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('codeIndex:progress', { slug, ...payload });
-    };
-    let child;
-    try {
-      child = spawn(bin.path, ['cli', 'index_repository', '--repo-path', repoPath], {
-        cwd: repoPath, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
-      });
-    } catch (e) {
-      return { ok: false, why: `indeksleme başlatılamadı: ${e.message}` };
-    }
-    codeIndexJobs.set(slug, child);
-    logLine(`kod indeksi: ${slug} indeksleniyor (${repoPath})`);
-    let tail = '';
-    const onOut = (buf) => { tail = (tail + buf.toString()).slice(-2000); push({ running: true }); };
-    child.stdout.on('data', onOut);
-    child.stderr.on('data', onOut);
-    child.on('error', (e) => { logLine(`kod indeksi: ${slug} hata ${e.message}`); });
-    child.on('close', (code) => {
-      codeIndexJobs.delete(slug);
-      const ok = code === 0;
-      if (ok && headSha) {
-        try {
-          const cur = agentSettings.readSettings();
-          const map = { ...(cur.codeIndex && typeof cur.codeIndex === 'object' ? cur.codeIndex : {}) };
-          const prev = map[slug] || {};
-          map[slug] = { enabled: prev.enabled === true, indexedSha: headSha, lastIndexedAt: Date.now() };
-          agentSettings.applySettingsPatch({ codeIndex: map });
-        } catch (e) { logLine(`kod indeksi: ${slug} defteri yazılamadı (${e.message})`); }
-      }
-      logLine(`kod indeksi: ${slug} bitti çıkış=${code}`);
-      push({ running: false, ok, exitCode: code, tail: ok ? null : tail.slice(-400) });
-    });
-    return { ok: true, started: true, repoPath };
-  });
 
   ipcMain.handle('settings:get', () => {
     const s = agentSettings.readSettings();
@@ -8438,86 +8138,7 @@ function wireIpc() {
   // commitWorkspaceRoot'tan geçer → bundle-içi kök NET hatayla reddedilir
   // (inside-app-bundle) ve settings.workspaceRoot yazımı restartRequired döner
   // (ADP-232 Faz A tek-tık relaunch'ı renderer tetikler).
-  ipcMain.handle('workspace:provision', async (event, req) => {
-    const mode = req && typeof req === 'object' ? req.mode : null;
-    const forbiddenPrefix = app.isPackaged ? process.resourcesPath : null;
-    // BL-01 — paket tavanı BURADA da: 'create' önerilen ~/CrewPane'i, 'pick'
-    // seçilen klasörü BENİMSER; ikisi de "yeni çalışma alanı"dır. İlk kurulumda
-    // sayım 0'dır → hiçbir katman ilk alanını açmaktan alıkonmaz.
-    const planReject = (denial) => {
-      logLine(`workspace:provision REDDEDİLDİ (plan): ${denial.tier} tavan=${denial.limit} kullanım=${denial.current}`);
-      return { ok: false, reason: 'plan_limit', error: denial.message, title: denial.title,
-        limit: denial.limit, current: denial.current, tier: denial.tier,
-        requiredTier: denial.requiredTier, action: 'upgrade' };
-    };
-    if (mode === 'create') {
-      const gate = workspacePlanDenial(workspaceOnboarding.defaultWorkspaceDir());
-      if (gate) return planReject(gate);
-      const res = workspaceOnboarding.provisionDefaultWorkspace({ forbiddenPrefix });
-      logLine(`workspace:provision create → ${res.ok ? res.root : `FAIL ${res.reason}`}`);
-      if (res.ok) rememberWorkspaceRoot(res.root);
-      return res;
-    }
-    if (mode === 'pick') {
-      const win = BrowserWindow.fromWebContents(event.sender);
-      let result;
-      try {
-        result = await dialog.showOpenDialog(win ?? undefined, {
-          title: appI18n.t('main.dialog.chooseWorkspace.title'),
-          buttonLabel: appI18n.t('main.dialog.chooseWorkspace.button'),
-          properties: ['openDirectory', 'createDirectory'],
-        });
-      } catch (err) {
-        return { ok: false, reason: 'dialog-failed', detail: err.message };
-      }
-      if (!result || result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
-        return { ok: false, reason: 'canceled' };
-      }
-      const gate = workspacePlanDenial(result.filePaths[0]);
-      if (gate) return planReject(gate);
-      const res = workspaceOnboarding.commitWorkspaceRoot(result.filePaths[0], { forbiddenPrefix });
-      logLine(`workspace:provision pick → ${res.ok ? res.root : `FAIL ${res.reason}`}`);
-      if (res.ok) rememberWorkspaceRoot(res.root);
-      return res;
-    }
-    return { ok: false, reason: 'bad-mode' };
-  });
-  // ADP-232-B — CANLI çalışma alanı geçişi (yeniden başlatmadan). İlk-açılış
-  // (workspace:provision) app'i relaunch ederdi; bu yol AÇIK bir kurulumu, çalışan
-  // pane'ler/işler ölmeden yeni köke taşır. Yol yine renderer'dan gelmez: 'pick' OS
-  // dialog'undan alır. ('current' modu Ayarlar'ın YAZDIĞI kökü, kullanıcının input'una
-  // güvenen settings:set ile aynı sözleşmeyle, canlı uygular.)
-  ipcMain.handle('workspace:switch', async (event, req) => {
-    const mode = req && typeof req === 'object' ? req.mode : null;
-    if (mode === 'pick') {
-      const win = BrowserWindow.fromWebContents(event.sender);
-      let result;
-      try {
-        result = await dialog.showOpenDialog(win ?? undefined, {
-          title: appI18n.t('main.dialog.switchWorkspace.title'),
-          buttonLabel: appI18n.t('main.dialog.chooseWorkspace.button'),
-          properties: ['openDirectory', 'createDirectory'],
-        });
-      } catch (err) {
-        return { ok: false, reason: 'dialog-failed', detail: err.message };
-      }
-      if (!result || result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
-        return { ok: false, reason: 'canceled' };
-      }
-      return switchWorkspaceRoot(result.filePaths[0]);
-    }
-    // 'current' — Ayarlar zaten settings.workspaceRoot'a yazdı; onu canlı uygula.
-    if (mode === 'current') {
-      const target = agentSettings.readSettings().workspaceRoot;
-      if (!target) return { ok: false, reason: 'not-a-directory' };
-      return switchWorkspaceRoot(target);
-    }
-    // Doğrudan yol (Ayarlar input'u — settings:set ile aynı güven sınırı).
-    if (req && typeof req.root === 'string' && req.root.trim()) {
-      return switchWorkspaceRoot(req.root.trim());
-    }
-    return { ok: false, reason: 'bad-mode' };
-  });
+
 
   // B-06 — ONBOARDING ŞABLON ÖNERİSİ (ONBOARDING-PRESETS-SPEC §4.2). DAR kanal:
   // renderer serbest metni + ŞABLON KATALOĞUNU yollar, cevap yalnız o kataloğun
