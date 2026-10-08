@@ -29,8 +29,10 @@ const { createStartupSweepService } = require('./startupSweepService');
 const { createAppLocaleService, AppLocaleService } = require('./appLocaleService');
 const { createRebuildService, RebuildService } = require('./rebuildService');
 const { createResourceGovernorService } = require('./resourceGovernorService');
+const { createSystemServicesBundle } = require('./systemServicesBundle');
 
 module.exports = {
+  createSystemServicesBundle,
   createCrashWatchdogService,
   createFaultService,
   createTelemetryService,

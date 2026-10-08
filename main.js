@@ -147,7 +147,6 @@ const agentSettings = require('./src/agents/agentSettings.cjs'); // ADP-203 — 
 const appI18n = require('./i18n/index.cjs'); // ADP-888 — ana sürecin ARAYÜZ DİLİ katmanı (diyalog/bildirim metinleri)
 const updateCheck = require('./src/services/updateCheck.cjs'); // ADP-533 — Faz 1 güncelleme bildirimi (yalnız bildir + tarayıcıda indir)
 const announcements = require('./src/services/announcements.cjs'); // ADP-675 — uygulama-içi duyuru feed'i (normalize + hedefleme)
-const changelogFeed = require('./src/services/changelogFeed.cjs'); // A-10 — uygulama-içi "Yenilikler" paneli (crewpane.dev/changelog.json)
 const updateChannel = require('./src/services/updateChannel.cjs'); // ADP-620 — yayın kanalı (stable=müşteri | beta=önce biz)
 const reportsWatcher = require('./src/services/reportsWatcher.cjs'); // ADP-298 — rapor dizinleri değişince renderer'a olay
 const skillEngineSync = require('./src/agents/skillEngineSync.cjs'); // SKL-B0 — eşitleme TETİĞİ (açılış/kök değişimi/elle) + durum özeti
@@ -253,11 +252,6 @@ const spendGuard = require('./src/security/spendGuard.cjs'); // TOK-C (D-02 v2) 
 const dispatchPolicy = require('./src/agents/dispatchPolicy.cjs'); // TOK-B (D-03) — "sürdür mü, taze oturum mu" kararının SAF çekirdeği
 const paneViewState = require('./src/terminal/paneViewState.cjs'); // ADP-712 — pane görünüm durumu (okunabilir mod) pencereler arası tek gerçek
 const paneDraft = require('./src/terminal/paneDraft.cjs'); // ADP-786 — gönderilmemiş prompt taslağı pencereler/mod arası tek gerçek
-const tempImageStore = require('./src/services/tempImageStore.cjs'); // WIN-IMG-01 — ajana giden geçici görsellerin OTURUM-kapsamlı ömrü (TTL yarışı yok)
-const attachmentStoreMod = require('./src/services/attachmentStore.cjs'); // BOARD-IMG-2 — görev kartı ekleri: içerik-adresli, KALICI depo (TTL yok)
-// FDBK-01 — uygulama içi geri bildirim formunun main ucu: maskelenmiş log kesiti +
-// AgentShot son çekimleri. Salt-okunur ve dar kapsamlı (bkz. feedbackBridge.cjs).
-const feedbackBridgeMod = require('./src/services/feedbackBridge.cjs');
 // ─── ADP-584/585/586 — Entegrasyon Merkezi (Dalga 0) ─────────────────────────
 const integrationCatalog = require('./src/mcp/integrationCatalog.cjs'); // ADP-584/588 — servis şablonları (tek kaynak)
 const credentialGate = require('./src/security/requireCredential.cjs'); // ADP-628 — anahtar çözümlemesinin TEK boğazı
@@ -562,110 +556,34 @@ logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
 const {
   createFaultService,
-  createTelemetryService,
-  createAnnounceService,
-  createChangelogService,
-  createResetBootService,
-  createMediaService,
-  createDoctorService,
-  createStartupSweepService,
-  createAppLocaleService,
   createRebuildService,
+  createSystemServicesBundle,
 } = require('./src/features/system');
 
-// ── ADP-888/885/889 — UYGULAMA YERELLEŞTİRME SERVİSİ (src/features/system/appLocaleService.js - Faz 3.6.42)
-const appLocaleService = createAppLocaleService({
+// ── ADP-SYS-BUNDLE — SİSTEM SERVİSLERİ PAKETİ (src/features/system/systemServicesBundle.js - Faz 3.6.60)
+const {
+  appLocaleService,
+  updateService,
+  announceService,
+  changelogService,
+  resetBootService,
+  mediaService,
+  doctorService,
+  startupSweepService,
+  telemetryService,
+} = createSystemServicesBundle({
   app,
   BrowserWindow,
-  appI18n,
-  agentSettings,
-  logLine,
-});
-
-// ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
-const { createUpdateService } = require('./src/features/update');
-
-const updateService = createUpdateService({
-  app,
-  BrowserWindow,
-  instancePaths,
-  agentSettings,
-  updateCheck,
-  updateChannel,
-  logLine,
-  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  heartbeat: () => telemetryService.heartbeat(),
-});
-
-// ── ADP-675 — UYGULAMA-İÇİ DUYURU SERVİSİ (src/features/system/announceService.js - Faz 3.6.15a)
-const announceService = createAnnounceService({
-  app,
-  BrowserWindow,
-  instancePaths,
-  agentSettings,
-  announcements,
-  currentUpdateChannel: () => updateService.currentUpdateChannel(),
-  logLine,
-});
-
-// ── A-10 — UYGULAMA İÇİ "YENİLİKLER" SERVİSİ (src/features/system/changelogService.js - Faz 3.6.15b)
-const changelogService = createChangelogService({
-  BrowserWindow,
-  instancePaths,
-  changelogFeed,
-  logLine,
-});
-
-// ── RESET-03 — KURULUM SIFIRLAMA & AÇILIŞ TEMİZLİK SERVİSİ (src/features/system/resetBootService.js - Faz 3.6.16)
-const resetBootService = createResetBootService({
-  app,
   dialog,
-  appI18n,
-  installReset,
-  resetGate,
-  helperReaper,
-  analyticsNow: () => telemetryService.analyticsNow(),
-});
-
-// ── ADP-035/BOARD-IMG/FDBK — MEDYA, GEÇİCİ GÖRSEL & GÖREV EK DEPOSU (src/features/system/mediaService.js - Faz 3.6.17)
-const mediaService = createMediaService({
   nativeImage,
-  instancePaths,
-  tempImageStore,
-  attachmentStoreMod,
-  feedbackBridgeMod,
   logLine,
-  getBoundAccount: () => (typeof authService !== 'undefined' && authService ? authService.getBoundAccount() : null),
-  getLogPath: () => LOG_PATH,
-});
-
-// ── ADP-625/ADP-907 — SİSTEM TEŞHİS VE DOKTOR SERVİSİ (src/features/system/doctorService.js - Faz 3.6.18)
-const doctorService = createDoctorService({
-  firstRunDoctor,
-  crewpaneEnv,
-  instancePaths,
-  os,
   getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  getRendererSupabaseTarget: () => backendEnvService.rendererSupabaseTarget(),
-  getEnvLayerView: () => backendEnvService.envLayerView(),
-  getIdentityMode: () => backendEnvService.appDbIdentityMode().mode,
+  getBoundAccount: () => (typeof authService !== 'undefined' && authService ? authService.getBoundAccount() : null),
+  backendEnvService,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-  getWorkspaceStatus: () => agentSettings.configuredWorkspaceRootStatus(),
-  getSecretBackend: () => secretBackendState.secretBackendState(),
-  checkEngines: () => engineCheck.checkEngines(),
-});
-
-// ── ADP-307/900/727 — BAŞLANGIÇ SÜPÜRGE VE BAKIM SERVİSİ (src/features/system/startupSweepService.js - Faz 3.6.18)
-const startupSweepService = createStartupSweepService({
-  getPublicSupabaseEnv: () => backendEnvService.publicSupabaseEnv(),
-  agentSettings,
-  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-  getMemoryIndexer: () => memoryService.memoryIndexer(),
-  jarvisVoice,
-  mcpProcess,
-  helperReaper,
-  logLine,
-  autoIndexDelayMs: Number(process.env.CREWPANE_AUTO_INDEX_DELAY_MS || 15000),
+  getMemoryIndexer: () => (typeof memoryService !== 'undefined' && memoryService ? memoryService.memoryIndexer() : null),
+  getLogPath: () => LOG_PATH,
+  repoRoot: REPO_ROOT,
 });
 
 // ── RESET-03/ENV-08/CRASH-R1 — AÇILIŞ KAPILARI & DOĞRULAMA (src/main/lifecycle/startupGate.js - Faz 3.6.19)
@@ -689,23 +607,6 @@ const startupGate = createStartupGate({
   i18n: require('./i18n/index.cjs'),
   logTarget: () => (typeof LOG_TARGET !== 'undefined' ? LOG_TARGET : null),
   logPath: () => (typeof LOG_PATH !== 'undefined' ? LOG_PATH : ''),
-});
-
-// ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
-const telemetryService = createTelemetryService({
-  app,
-  instancePaths,
-  agentSettings,
-  crewpaneEnv,
-  logLine,
-  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  appDbTokenFor: (action) => backendEnvService.appDbTokenFor(action),
-  rendererSupabaseTarget: () => backendEnvService.rendererSupabaseTarget(),
-  currentUpdateChannel: () => updateService.currentUpdateChannel(),
-  isAutoUpdaterActive: () => updateService.isAutoUpdaterActive(),
-  resolveCredential: (service) => credentialGate.resolveCredential(service, { rootDir: REPO_ROOT }),
-  engineRegistry,
-  safeStorage: require('electron').safeStorage,
 });
 
 // ── ADP-192/734/761/905 — PANE GERİ YÜKLEME VE KURTARMA SERVİSİ (src/features/terminal/paneRestoreService.js - Faz 3.6.20)
