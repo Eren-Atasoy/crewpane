@@ -303,54 +303,6 @@ const backendEnvService = createBackendEnvService({
 // CREWPANE_TMUX_BIN / CREWPANE_EXTERNAL_URL): it relocates ~/.crewpane so the
 // e2e fixture can drive a real restart→resume on an isolated registry file.
 const RESTORE_DISABLED = process.env.CREWPANE_DISABLE_RESTORE === '1';
-// ═══════════════════════════════════════════════════════════════════════════
-// ENG-10 — YETENEK MATRİSİNİN DEFTERİ (+ e2e SAHTE-MOTOR DİKİŞİ)
-// ═══════════════════════════════════════════════════════════════════════════
-// Rozetlerin ÜÇ hâlini (tam / kısmi / yok) gerçek bir kısıtlı motor beklemeden
-// ölçebilmek için defter enjekte edilebilir olmalı. Dikiş ENG-08'in AUTH dikişiyle
-// AYNI disiplindedir ve aynı env adlarını kullanır (ikinci bir bayrak icat etmek
-// iki ayrı "test modu" demek olurdu):
-//   • açık opt-in bayrağı ŞART (ambient env tek başına yetmez),
-//   • gelen her kayıt ürünün KENDİ şemasından geçer (`validateRegistry`) — geçmeyen
-//     kayıt YÜKLENMEZ (fail-closed): test kendi hayalini değil ürünün sözleşmesini
-//     doğrular,
-function parseFakeDescriptors(env) {
-  if (env.CREWPANE_FAKE_ENGINE_DESCRIPTORS !== '1') return null;
-  try {
-    const raw = JSON.parse(String(env.CREWPANE_FAKE_ENGINE_DESCRIPTORS_JSON || '{}'));
-    return (raw && typeof raw === 'object') ? raw : null;
-  } catch {
-    return null;
-  }
-}
-
-function mergeFakeDescriptors(baseMap, raw) {
-  let added = 0;
-  for (const [id, d] of Object.entries(raw)) {
-    if (!d || typeof d !== 'object' || baseMap[id]) continue; // gerçek kaydı EZMEZ
-    const verdict = engineRegistry.validateRegistry({ [id]: d });
-    if (!verdict || verdict.ok !== true) {
-      const errs = (verdict && verdict.errors && verdict.errors[id]) || [];
-      logLine(`engine:capabilityMatrix fake descriptor REDDEDİLDİ id=${id} errors=${errs.length}: ${errs.slice(0, 3).join(' · ')}`);
-      continue;
-    }
-    baseMap[id] = d;
-    added += 1;
-  }
-  return added;
-}
-
-function capabilityRegistry() {
-  const raw = parseFakeDescriptors(process.env);
-  if (!raw) return engineRegistry;
-  const map = {};
-  for (const id of engineRegistry.engineIds()) map[id] = engineRegistry.getEngine(id);
-  const added = mergeFakeDescriptors(map, raw);
-  if (!added) return engineRegistry;
-  logLine(`engine:capabilityMatrix fake descriptors loaded count=${added}`);
-  return engineRegistry.createRegistry(map);
-}
-
 
 function crewpaneHome() {
   return process.env.CREWPANE_HOME || os.homedir();
@@ -1170,7 +1122,6 @@ function _collectMobileVoiceAndSystemDeps() {
     updateChannel,
     appLocaleService,
     engineCheck,
-    capabilityRegistry,
     paneCapabilityMatrix,
     engineOffering,
     engineAuth,

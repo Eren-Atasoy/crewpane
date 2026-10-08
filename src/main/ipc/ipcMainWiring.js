@@ -64,6 +64,7 @@ const defaultStaticModules = {
   leaderRefreshPolicy: require('../../agents/leaderRefreshPolicy.cjs'),
   teamScope: require('../../agents/teamScope.cjs'),
   livePaneRegistry: require('../../agents/livePaneRegistry.cjs'),
+  capabilityRegistry: require('../../agents/capabilityRegistry.cjs'),
 };
 
 /**
