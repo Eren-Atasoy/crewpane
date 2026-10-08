@@ -74,6 +74,8 @@ const {
   registerEngineIpc,
   registerEngineAuthIpc,
   registerEngineProfilesIpc,
+  registerAccountIpc,
+  registerPlanIpc,
 } = require('./src/features/auth');
 const {
   registerSkillsIpc,
@@ -6635,9 +6637,7 @@ function wireIpc() {
     mobileProbe,
   });
 
-  // SKL-B3 — Ayarlar'daki "Doğrula" düğmesinin ucu. Renderer yalnız SERVİS ADI verir;
-  // anahtar bu sınırı hiçbir yönde geçmez.
-  ipcMain.handle('appkey:verify', async (_event, service) => verifyAppApiKey(String(service || '')));
+
 
   // ── PTY Terminal IPC Yüzeyi (Faz 3.5 — Sıra 9) ─────────────────────────────
   registerPtyIpc({
@@ -6910,71 +6910,32 @@ function wireIpc() {
     products: [], productLabels: planCatalog.productLabels(),
     graceRemainingSeconds: 0,
   });
-  // ADP-780-B — `scheme` kabloda taşınır: giriş ekranının "elle yapıştır" alanı,
-  // bu kopyanın GERÇEKTEN dinlediği şemayı yazmalı. Renderer'da ikinci bir sabit
-  // olsaydı dev build'de "crewpane:// ile başlayan adresi yapıştır" der, ama
-  // main `crewpane-dev://` beklerdi → kullanıcı doğru adresi yapıştırıp reddedilirdi.
-  // ONB-D3 — `bootSplash` de kabloda taşınır: açılış perdesini renderer çizer ama
-  // AÇIK/KAPALI kararı ana süreçtedir (env yalnız burada okunur; renderer'da ikinci
-  // bir kaynak olsaydı e2e harness'ının kapatma yolu sessizce etkisiz kalırdı).
-  ipcMain.handle('crewpane:get', () => ({
-    ok: true, scheme: APP_URL_SCHEME, bootSplash: gateOverrides(process.env).bootSplash, ...accountState(),
-  }));
-  ipcMain.handle('crewpane:signIn', async () => {
-    if (!seatGate) return { ok: false, reason: 'not_ready' };
-    try {
-      const res = await seatGate.signIn(); // SİSTEM TARAYICISI (webview YASAK)
-      return { ok: true, url: res.url };
-    } catch (e) {
-      logLine(`crewpane:signIn error: ${e.message}`);
-      return { ok: false, reason: 'sign_in_failed', detail: e.message };
-    }
-  });
-  // ADP-703 — ÇIKIŞ artık YEREL DEPOYU da kapsar: oturum silinir, veri kökü anonim
-  // köke döner ve uygulama yeniden başlar (hesap değişimi = yeniden başlatma, §3.3).
-  // A hesabının verisi SİLİNMEZ — `accounts/<A>` olduğu gibi durur, tekrar girişte geri gelir.
-  //
-  // ÇALIŞAN AJAN GUARD'I (Eren'in açık korkusu): pane koşuyorsa çıkış SESSİZCE yapılmaz.
-  // İlk çağrı `panes_running` ile REDDEDER ve listeyi döner; kullanıcı onaylarsa çağıran
-  // `force:true` ile tekrar gelir. Kapanış yolu quit-snapshot'ı yazdığı için pane'ler
-  // A'ya tekrar girildiğinde restore edilebilir (veri kaybı yok).
-  //
-  // ADP-863 — ÜÇ GİRİŞ YOLU, TEK KARAR YERİ:
-  //   { probe:true } → HİÇBİR ŞEY YAPMAZ, yalnız "ne kapanacak" sayılarını + onay
-  //                    metnini döner. Arayüz onay diyaloğunu bununla kurar; böylece
-  //                    pane YOKKEN de kullanıcı yeniden başlatmayı ÖNCEDEN görür
-  //                    (eskiden sessizce çıkıp yeniden başlıyordu — çökme sanılıyordu).
-  //   (bayraksız)    → guard: pane varsa `panes_running` ile REDDEDER.
-  //   { force:true } → kullanıcı onay diyaloğunda "Çıkış yap"a bastı; guard atlanır.
-  // `force` YALNIZ kullanıcı onayının taşıyıcısıdır — sessiz bir bypass şalteri değil.
-  ipcMain.handle('crewpane:signOut', async (_e, opts) => {
-    if (!seatGate) return { ok: false, reason: 'not_ready' };
-    const force = !!(opts && opts.force);
-    const probe = !!(opts && opts.probe);
-    const panes = runningPaneSummary();
-    if (probe) {
-      return { ok: false, reason: 'probe', panes, ...signOutConfirmCopy(panes), ...accountState() };
-    }
-    if (panes.length && !force) {
-      return {
-        ok: false,
-        reason: 'panes_running',
-        panes,
-        ...signOutConfirmCopy(panes),
-        ...accountState(),
-      };
-    }
-    // ADP-876 — SIRA: önce pane'ler temiz kapanır (hesap kökü HÂLÂ A'yken defter
-    // yazılır), sonra oturum kapanır, sonra yeniden başlatma. Eskiden pane'ler
-    // ancak `before-quit` içinde ölüyordu, yani çıkış anında hâlâ canlıydılar.
-    const closedPanes = closePanesForSignOut();
-    await seatGate.signOut();
-    const nextKey = accountScope.ANON_ACCOUNT_KEY;
-    if (boundAccount && boundAccount.key !== nextKey) {
-      relaunchForAccountChange(nextKey, 'signOut');
-      return { ok: true, restarting: true, closedPanes, ...accountState() };
-    }
-    return { ok: true, closedPanes, ...accountState() };
+  // ADP-390, ADP-703, ADP-719, SEC-01 — ACCOUNT & CREWPANE IPC (Faz 3.5 — Sıra 11)
+  registerAccountIpc({
+    ipcMain,
+    app,
+    shell,
+    getSeatGate: () => seatGate,
+    getAccountState: () => accountState(),
+    getAppUrlScheme: () => APP_URL_SCHEME,
+    getAppUrlPrefix: () => APP_URL_PREFIX,
+    gateOverrides,
+    logLine,
+    runningPaneSummary,
+    signOutConfirmCopy,
+    closePanesForSignOut,
+    accountScope,
+    getBoundAccount: () => boundAccount,
+    relaunchForAccountChange,
+    instancePaths,
+    schemeOwnership,
+    getSchemeVerdict: () => schemeVerdict,
+    setSchemeVerdict: (v) => { schemeVerdict = v; },
+    isAutomatedSession: IS_AUTOMATED_SESSION,
+    automatedSessionReason: AUTOMATED_SESSION_REASON,
+    secretBackendState,
+    handleAuthUrl,
+    crewpaneIdConfig,
   });
 
   // ─── RESET-03 — KURULUMU SIFIRLA ───────────────────────────────────────────
@@ -7110,246 +7071,18 @@ function wireIpc() {
 
 
 
-  // ADP-703 — hesap deposu durumu (Ayarlar + e2e sızıntı nöbeti okur). SIR İÇERMEZ.
-  ipcMain.handle('account:get', () => ({
-    ok: true,
-    accountKey: boundAccount ? boundAccount.key : null,
-    userId: boundAccount ? boundAccount.userId : null,
-    email: boundAccount ? boundAccount.email : null,
-    root: boundAccount ? boundAccount.root : null,
-    deviceId: boundAccount ? boundAccount.deviceId : null,
-    instanceRoot: instancePaths.instanceHome(),
-    runningPanes: runningPaneSummary().length,
-  }));
-
-  // ADP-703 — renderer companyId'yi çözünce meta'ya YAZ (ADP-704 bulut eşlemesi bunu
-  // kullanır). Yol companyId'ye BAĞLI DEĞİL (§3.1) — bu yalnız kayıt.
-  ipcMain.handle('account:setCompany', (_e, companyId) => {
-    if (!boundAccount) return { ok: false, reason: 'not_bound' };
-    const id = typeof companyId === 'string' && companyId.trim() ? companyId.trim() : null;
-    try {
-      accountScope.upsertAccountMeta(boundAccount.root, { companyId: id });
-      return { ok: true, companyId: id };
-    } catch (e) {
-      logLine(`[account] companyId yazılamadı: ${e.message}`);
-      return { ok: false, reason: 'write_failed' };
-    }
+  // ADP-660, BL-03, ADP-622, SKL-B3 — PLAN & APPDB IPC (Faz 3.5 — Sıra 11)
+  registerPlanIpc({
+    ipcMain,
+    verifyAppApiKey,
+    planLimits,
+    getSeatGate: () => seatGate,
+    getPtys: () => ptys,
+    workspaceOnboarding,
+    crewpaneIdConfig,
+    logLine,
+    appDbTokenFor,
   });
-  // ADP-719 — GİRİŞ DÖNÜŞÜ DOĞRU UYGULAMAYA MI GELİYOR? Login duvarı bunu okur
-  // ve sorun varsa kullanıcıya SEBEBİ + tek-tık düzeltmeyi gösterir. `repair:true`
-  // ile şema sahipliği bu uygulamaya geri alınır (kullanıcı düğmesine bağlı).
-  // SIR İÇERMEZ. Sessiz dosya silme YOK — Electron tarafı yalnız LaunchServices
-  // eşlemesini düzeltir; başka bir paketi kaldırmak kullanıcının kararıdır ve
-  // ekranda yol/isim ile gösterilir.
-  ipcMain.handle('crewpane:schemeHealth', async (_e, opts) => {
-    try {
-      if (opts && opts.repair) {
-        // ADP-954 — ŞEMA SABİT YAZILMAZ. Burada `'crewpane'` sabitti: dev/test
-        // build'inde "Onar" düğmesi PROD şemasını talep ediyor (ADP-780-B'nin
-        // kanal ayrımını bozuyor) ve kullanıcının GERÇEKTEN dinlediği şemayı
-        // (crewpane-dev) hiç ölçmüyordu → onarım "başarılı" görünüp giriş
-        // yine gelmiyordu. Tek boğaz appScheme.cjs (APP_URL_SCHEME).
-        schemeVerdict = await schemeOwnership.claimAndVerify({
-          app, scheme: APP_URL_SCHEME, log: logLine,
-          allowDevClaimEnv: 'CREWPANE_ALLOW_DEV_PROTOCOL_CLAIM',
-          automated: IS_AUTOMATED_SESSION,
-          automatedReason: AUTOMATED_SESSION_REASON,
-          // LX-SCHEME-01 — platform AÇIK geçer (ölçülmüş ders PIPE-03: bir
-          // fonksiyonun `process.platform` yedeğine güvenen çağrı, yanlış
-          // platformda sessizce koşar). Linux dalını sürükleyen tek anahtar bu.
-          platform: process.platform,
-        });
-      }
-      return { ok: true, ...(schemeVerdict || { severity: null, conflicts: [] }) };
-    } catch (e) {
-      logLine(`crewpane:schemeHealth error: ${e.message}`);
-      return { ok: false, reason: 'check_failed', severity: null, conflicts: [] };
-    }
-  });
-  // LX-SAFESTORAGE-01 (ADR §9 madde 2) — GİRİŞ DUVARI "oturum saklanabilecek mi"yi
-  // SORABİLSİN. Açılışta ölçülen hüküm okunur; burada YENİDEN ölçüm YOK ve SIR YOK
-  // (yalnız arka ucun adı + kullanılabilirlik + sözlük anahtarı döner).
-  ipcMain.handle('crewpane:secretBackend', async () => {
-    try {
-      const s = secretBackendState.secretBackendState();
-      return {
-        ok: true,
-        measured: s.measured,
-        available: s.available,
-        backend: s.backend,
-        plaintext: s.plaintext,
-        canStore: s.canStore,
-        reasonKey: s.reasonKey,
-      };
-    } catch (e) {
-      logLine(`crewpane:secretBackend error: ${e.message}`);
-      return { ok: false, measured: false, canStore: null, reasonKey: null };
-    }
-  });
-  // ADP-719 — İKİNCİ GİRİŞ YOLU: deep-link hiç dönmezse kullanıcı tarayıcının
-  // adres çubuğundaki dönüş bağlantısını yapıştırır. Deep-link ile AYNI
-  // işleyiciye gider (handleAuthUrl) — ikinci bir giriş yolu YAZILMAZ.
-  ipcMain.handle('crewpane:pasteCallback', async (_e, url) => {
-    const text = typeof url === 'string' ? url.trim().replace(/^["']|["']$/g, '') : '';
-    // ADP-954 — handleAuthUrl ile AYNI kural: şema kıyası harf-duyarsız
-    // (RFC 3986 §3.1). Kullanıcı adres çubuğundan kopyaladığı bağlantıyı
-    // farklı harf düzeniyle yapıştırdığında "geçersiz" duvarına çarpmasın.
-    if (!text.toLowerCase().startsWith(APP_URL_PREFIX.toLowerCase()) || !text.includes('code=')) {
-      return { ok: false, reason: 'invalid_url', expectedPrefix: APP_URL_PREFIX };
-    }
-    logLine('crewpane:pasteCallback — elle yapıştırılan dönüş bağlantısı işleniyor');
-    handleAuthUrl(text);
-    return { ok: true };
-  });
-  ipcMain.handle('crewpane:refresh', async () => {
-    if (!seatGate) return { ok: false, reason: 'not_ready' };
-    const res = await seatGate.refreshLicense();
-    return { ok: !!res.ok, reason: res.reason, ...accountState() };
-  });
-  // ADP-646 — "Paket al": SİSTEM TARAYICISINDA faturalandırma sayfası. Ödeme akışı
-  // app'in içinde AÇILMAZ (kart bilgisi app penceresine girmez — login ile aynı
-  // RFC 8252 duruşu). Adres crewpaneId.cjs'te loginUrl'den TÜRETİLİR; app içinde
-  // ikinci bir sabit yok, e2e yerel stack'i de otomatik doğru adresi alır.
-  ipcMain.handle('crewpane:openBilling', async () => {
-    const url = crewpaneIdConfig(process.env).billingUrl;
-    try {
-      await shell.openExternal(url);
-      logLine(`crewpane:openBilling → ${url}`);
-      return { ok: true, url };
-    } catch (e) {
-      logLine(`crewpane:openBilling error: ${e.message}`);
-      return { ok: false, reason: 'open_failed', url };
-    }
-  });
-
-  // ─── SEC-01 — CİHAZ DEFTERİ (Ayarlar → Hesap) ──────────────────────────────
-  // Cihaz TAVANI sunucuda zorlanıyor. Bu iki uç, tavanın müşteriyi KİLİTLEMEMESİ
-  // için var: kullanıcı kendi cihazını kendisi çıkarabilmeli. Sır GEÇMEZ —
-  // erişim jetonu main'de kalır, renderer yalnız listeyi ve sonucu görür.
-  ipcMain.handle('crewpane:devices', async () => {
-    if (!seatGate) return { ok: false, reason: 'not_ready' };
-    const res = await seatGate.listDevices().catch((e) => ({ ok: false, reason: 'error', detail: e.message }));
-    if (!res.ok) logLine(`crewpane:devices başarısız (${res.reason})`);
-    return res;
-  });
-  ipcMain.handle('crewpane:deviceRevoke', async (_e, deviceId) => {
-    if (!seatGate) return { ok: false, reason: 'not_ready' };
-    const id = String(deviceId || '');
-    if (!id) return { ok: false, reason: 'missing_device_id' };
-    const res = await seatGate.revokeDevice(id)
-      .catch((e) => ({ ok: false, reason: 'error', detail: e.message }));
-    logLine(`crewpane:deviceRevoke ${id} → ${res.ok ? 'çıkarıldı' : res.reason}`);
-    return res;
-  });
-  // SEC-02 — "DİĞER CİHAZLARI BIRAK". `deviceRevoke`tan AYRI bir uçtur çünkü AYRI
-  // bir şey yapar: koltuğu boşaltır ama cihazı hesapta BIRAKIR. Aynı uca
-  // bağlasaydık kullanıcı "bırak" derken makinesini hesabından silmiş olurdu.
-  ipcMain.handle('crewpane:deviceReleaseOthers', async () => {
-    if (!seatGate) return { ok: false, reason: 'not_ready' };
-    const res = await seatGate.releaseOtherDevices()
-      .catch((e) => ({ ok: false, reason: 'error', detail: e.message }));
-    // SONUÇ ÖLÇÜLEREK döner: "bıraktım" demek "artık girebiliyorum" demek DEĞİL.
-    // Bırakmanın ardından seatGate lisansı tazeler; hâlâ reddediliyorsak ekran
-    // bunu SÖYLEMELİ (başarı cümlesi, başarısızlığın üstünü örtemez).
-    const after = (() => { try { return seatGate.state(); } catch { return null; } })();
-    const denied = !!(after && after.device && after.device.denied);
-    logLine(`crewpane:deviceReleaseOthers → ${res.ok ? `${res.released} cihaz bırakıldı` : res.reason}`
-      + ` (ret devam=${denied})`);
-    return { ...res, denied };
-  });
-
-  // ADP-660 — PLAN ÖZETİ (nudge + Ayarlar): hangi katmandayız, ne zorlanıyor,
-  // tavan/kullanım. Karar ÜRETMEZ (tek karar yeri planLimits.decide, çağıranı main);
-  // renderer bu özetle yalnız BİLGİ gösterir — ikinci bir limit mantığı kurmaz.
-  ipcMain.handle('plan:get', () => ({
-    ok: true,
-    ...planLimits.describe(seatGate ? seatGate.state() : null, {
-      agents: ptys.size,
-      // BL-01 — özet KULLANIMI da göstermeli, yoksa Ayarlar "1/1 alan" yerine
-      // "0/1" yazar ve kullanıcı reddi anlamsız bulur. Sayım yolu, kararın
-      // kullandığı yolun AYNISI (ikinci bir sayaç yok).
-      workspaces: (() => {
-        try { return workspaceOnboarding.knownWorkspaces().length; } catch { return 0; }
-      })(),
-      // SEC-01 — cihaz sayısı SUNUCUDAN gelir (istemcide sayılamaz: diğer
-      // makineleri görmüyoruz). Sunucu henüz bir şey söylemediyse 0 kalır ve
-      // özet "0/1" gösterir — Ayarlar → Hesap gerçek listeyi ayrıca çeker.
-      devices: (() => {
-        const s = seatGate ? seatGate.state() : null;
-        return (s && s.device && Number(s.device.registered_active || s.device.active)) || 0;
-      })(),
-      // SEC-02 — AYNI ANDA AKTİF sayısı da sunucudan gelir. Ayrı bir sayaçtır:
-      // "kaç cihazım var" ile "şu an kaçı açık" iki farklı soru, iki farklı ret.
-      devicesConcurrent: (() => {
-        const s = seatGate ? seatGate.state() : null;
-        return (s && s.device && Number(s.device.concurrent_active)) || 0;
-      })(),
-    }),
-    // "Yükselt" hedefi kapı ekranıyla AYNI adres (app içinde ikinci sabit yok).
-    billingUrl: crewpaneIdConfig(process.env).billingUrl,
-  }));
-
-  // ─── BL-03 — YÜKSELTME SONRASI YENİDEN ÖLÇÜM ────────────────────────────────
-  // Sorun: lisans jetonu +72s yaşar ve açılışta/girişte tazelenir. Kullanıcı
-  // tarayıcıda Pro'ya geçtiğinde app'in elindeki jeton HÂLÂ Basic'tir → "yükselttim
-  // ama hâlâ kilitli". Bu, iade sebebi ve destek yüküdür; çözümü kullanıcıya
-  // "uygulamayı yeniden başlat" dedirtmek DEĞİL, reddin bittiği yerde tazelemektir.
-  //
-  // İki adım, İKİSİ DE MEVCUT UÇLAR (yeni ödeme/karar yolu AÇILMADI):
-  //   1. `seatGate.refreshLicense()` — `crewpane:refresh`in çağırdığı FONKSİYONUN
-  //      AYNISI (ağ hatasında cached jeton korunur; offline ≠ kilit).
-  //   2. `planLimits.decide` — reddi üreten KARARIN AYNISI, reddin KENDİ
-  //      (feature, current) çiftiyle. Renderer "sınır kalktı mı"yı KENDİ hesaplamaz:
-  //      ikinci bir tavan mantığı iki gerçek olurdu (ADP-660 duruşu).
-  // `describe(snapshot)` sayaçsız çağrılır — burada sorulan tek şey KATMAN etiketi;
-  // yetenek kararı yukarıdaki `decide` satırından gelir.
-  ipcMain.handle('plan:recheck', async (_event, input) => {
-    const feature = typeof (input && input.feature) === 'string' ? input.feature : '';
-    const asked = Number(input && input.current);
-    const current = Number.isFinite(asked) ? asked : 0;
-    let refreshed = false;
-    let reason = null;
-    if (seatGate) {
-      try {
-        const res = await seatGate.refreshLicense();
-        refreshed = !!(res && res.ok);
-        reason = (res && res.reason) || null;
-      } catch (e) {
-        reason = 'refresh_failed';
-        logLine(`plan:recheck — jeton tazelenemedi (${e.message}) — eldeki jetonla ölçülür`);
-      }
-    }
-    const snapshot = seatGate ? seatGate.state() : null;
-    const decision = planLimits.decide({ snapshot, feature, current });
-    const summary = planLimits.describe(snapshot);
-    const allowed = decision.allowed !== false;
-    logLine(`plan:recheck ${feature || '-'}(${current}) → tazelendi=${refreshed}${reason ? ` (${reason})` : ''} katman=${summary.tier} izin=${allowed}`);
-    return {
-      ok: true,
-      refreshed,
-      reason,
-      feature,
-      allowed,
-      tier: summary.tier,
-      tierLabel: summary.tierLabel,
-      // Hâlâ reddediliyorsa hedef katman DEĞİŞMİŞ olabilir (ör. Basic→Pro yetmedi):
-      // düğmenin metni her zaman GÜNCEL karardan beslenir.
-      requiredTierLabel: allowed ? null : (decision.requiredTierLabel || null),
-    };
-  });
-
-  // ─── ADP-622 — UYGULAMA DB KİMLİĞİ (renderer) ───────────────────────────────
-  // İstisna, bilinçli: `crewpaneApi`den sır GEÇMEZ kuralının aksine bu kanal
-  // renderer'a ACCESS TOKEN verir — çünkü Supabase istemcisi renderer'da yaşıyor
-  // ve `Authorization: Bearer` başlığını O atmak zorunda (ADP-621'in kablosu).
-  // Sınırlar: (a) YALNIZ access token — refresh token ve oturum dokümanı main'de
-  // (safeStorage) kalır, (b) yalnız jetonu İMZALAYAN projeye gider (appDbIdentity;
-  // farklı proje → 'different_project', jeton üretilmez bile), (c) zaten aynı
-  // renderer'a giden anon key ile aynı güven sınırı — RLS yine sunucuda zorlar.
-  // ADP-646 — GÖREV/OFİS kimliği de lisansa bağlı: paketsiz kullanıcıya jeton verilmez
-  // → görev panosu yazamaz/okuyamaz (istemci anon'a düşer, RLS keser).
-  // ADP-773 — karar `appDbTokenFor`da TEK yerde; mobil ofis de oradan geçer.
-  ipcMain.handle('appdb:token', () => appDbTokenFor('appdb:token'));
   // TC-01, TC-FIX-01, TC-02 — TEAM COMPOSE IPC (Faz 3.5 — Sıra 11)
   registerTeamComposeIpc({
     ipcMain,
