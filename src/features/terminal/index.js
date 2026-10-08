@@ -7,6 +7,7 @@ const { createPtyResumeService } = require('./ptyResumeService');
 const { createPtyIsolationService, PtyIsolationService } = require('./ptyIsolationService');
 const { createPtySpawnService, PtySpawnService } = require('./ptySpawnService');
 const { createPaneControlService, PaneControlService } = require('./paneControlService');
+const { createPaneDispatchService, PaneDispatchService, REFRESH_SUBMIT_GAP_MS } = require('./paneDispatchService');
 
 module.exports = {
   registerPtyIpc,
@@ -19,4 +20,7 @@ module.exports = {
   PtySpawnService,
   createPaneControlService,
   PaneControlService,
+  createPaneDispatchService,
+  PaneDispatchService,
+  REFRESH_SUBMIT_GAP_MS,
 };

@@ -48,7 +48,7 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
-const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService } = require('./src/features/terminal');
+const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService, createPaneDispatchService, REFRESH_SUBMIT_GAP_MS } = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 let windowManager = null;
 let mobileService = null;
@@ -1103,7 +1103,7 @@ const ptySpawnService = createPtySpawnService({
   sessionAnchor: { forget: (id) => sessionAnchor.forget(id) },
   dispatchStore: { clear: (id) => dispatchStore.clear(id) },
   dispatchApplied: { delete: (id) => dispatchApplied.delete(id) },
-  leaderRefreshState: { delete: (id) => leaderRefreshState.delete(id) },
+  leaderRefreshState: { delete: (id) => (paneDispatchService && paneDispatchService.leaderRefreshState ? paneDispatchService.leaderRefreshState.delete(id) : undefined) },
   invalidateGitBranchCache: (dir) => invalidateGitBranchCache(dir),
   isQuitting: () => Boolean(app.isQuitting),
   isAutotest: () => AUTOTEST,
@@ -1450,660 +1450,60 @@ function enforcePaneBudget({ paneId, entry, origin, source }) {
    gider — "ajanın hafızası sebepsiz silinmiş" hâli bu ürünün en pahalı yalanı
    olurdu.                                                                    */
 
-/** Dağıtım hafızası: pane'e SON dağıtılan iş + kalıp korpusu (kimlik yok, adres var). */
-const dispatchStore = dispatchPolicy.createStore({
-  corpusWindow:
-    (((tokenCost.DEFAULT_PRICING.contextEconomics || {}).dispatch || {}).relatedness || {}).corpusWindow || 50,
+// ── LDR-F1 / ENT-F1 — PANE DISPATCH & LEADER REFRESH SERVICE (src/features/terminal/paneDispatchService.js - Faz 3.6.33)
+const paneDispatchService = createPaneDispatchService({
+  ptys,
+  tokenUsage,
+  tokenCost,
+  dispatchPolicy,
+  currentSessionId: (paneId) => currentSessionId(paneId),
+  logLine: (line) => logLine(line),
+  enforcePaneBudget: (opts) => enforcePaneBudget(opts),
+  spendGuard,
+  leaderRefreshPolicy,
+  leaderRole,
+  agentSettings,
+  delegationSupervisorService,
+  leaderComposer,
+  transcriptProbe,
+  secretRedactor,
+  getAppWindow: () => appWindow,
+  createDeliverPrompt,
+  agentxDeliverMod,
+  authorizeTeamScope: (opts) => authorizeTeamScope(opts),
+  jarvisWidgetAlive: () => jarvisWidgetAlive(),
+  labelTaskCodeOf: (label) => labelTaskCodeOf(label),
+  sessionAnchor,
 });
 
-/** Pane'in tazeleme künyesi (kartın "uygulandı" satırı): paneId → {atMs, code, handoff…}. */
-const dispatchApplied = new Map();
-
-/** ESC → `/clear` dizisinin zamanlaması — paneRecycler.ts sabitlerinin AYNISI. */
-const REFRESH_ESC_GAP_MS = 150;
-const REFRESH_SUBMIT_GAP_MS = 400;
-const REFRESH_GRACE_MS = 3000;
-/**
- * Devir özeti için beklenecek en uzun süre; dolarsa özet YOK (uydurulmaz).
- * LDR-F1 — E2E DİKİŞİ: `CREWPANE_HANDOFF_TIMEOUT_MS` bu süreyi KISALTABİLİR.
- * Sebep: G3'ün kırmızı dalı ("motor sessiz → `/clear` YAZILMAZ") ancak zaman
- * aşımı GERÇEKTEN dolunca ölçülebilir; 90 sn'yi beklemek o kanıtı pratikte
- * alınamaz kılardı. Değer YALNIZ AŞAĞI çekilebilir (üretimde kimse timeout'u
- * uzatıp devir turunu pahalılaştıramasın) ve geçersiz/eksik env varsayılanı
- * AYNEN bırakır — ADP-428'in `CREWPANE_RESUME_RETRY_DELAYS_MS` deseni.
- */
-const HANDOFF_TIMEOUT_MS = (() => {
-  const raw = Number(process.env.CREWPANE_HANDOFF_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw >= 1_000 && raw < 90_000 ? raw : 90_000;
-})();
-const HANDOFF_POLL_MS = 1_500;
-/** Devir özetinin prompt'a taşınacak en büyük boyu (bağlam şişmesin diye). */
-const HANDOFF_MAX_CHARS = 4_000;
-
-/**
- * Bir pane için SÜRDÜR/TAZELE kararı — kartın gördüğü ÖLÇÜMÜN aynısından türer.
- * @param {string} paneId
- * @param {object|null} entry pty defteri satırı
- * @param {{text?: string|null}} opts dağıtılmak ÜZERE olan iş metni (varsa)
- */
-function calculateIdleMinutes(last) {
-  if (!last || typeof last.atMs !== 'number') return null;
-  return Math.floor(Math.max(0, Date.now() - last.atMs) / 60_000);
-}
-
-function calculateRelatedness(paneId, textOpt, th) {
-  const nextText = typeof textOpt === 'string' ? textOpt : null;
-  const cfg = th ? th.relatedness : null;
-  return dispatchPolicy.relatedness({
-    prevText: dispatchStore.lastText(paneId),
-    nextText,
-    corpus: dispatchStore.corpus(),
-    cfg,
-  });
-}
+const dispatchStore = paneDispatchService.dispatchStore;
+const dispatchApplied = paneDispatchService.dispatchApplied;
+const dispatchSleep = paneDispatchService.dispatchSleep;
+const deliverToPane = paneDispatchService.deliverToPane;
+const agentxDeliverer = paneDispatchService.agentxDeliverer;
 
 function paneDispatchDecisionFor(paneId, entry, opts = {}) {
-  const e = entry || ptys.get(paneId);
-  if (!e) return null;
-  try {
-    const isStandard = e.command === 'claude' || e.command === 'codex';
-    const engine = isStandard ? e.command : null;
-    const usage = tokenUsage.usageForPane({
-      paneId,
-      engine: e.command || null,
-      cwd: e.cwd || null,
-      sessionId: currentSessionId(paneId),
-      startedAt: e.startedAt || null,
-    });
-    const th = dispatchPolicy.thresholdsFrom(tokenCost.DEFAULT_PRICING, engine);
-    const last = usage.lastRequest || null;
-    const idleMinutes = calculateIdleMinutes(last);
-    const rel = calculateRelatedness(paneId, opts.text, th);
-    const decision = dispatchPolicy.decide({
-      measured: usage.sessionFound === true,
-      ctxTokens: last ? last.ctxTokens : null,
-      idleMinutes,
-      requests: typeof usage.sessionRequests === 'number' ? usage.sessionRequests : null,
-      related: rel.related,
-      thresholds: th,
-    });
-    return { ...decision, relatedness: rel, engine, applied: dispatchApplied.get(paneId) || null };
-  } catch (err) {
-    logLine(`dağıtım kararı alınamadı paneId=${paneId}: ${err.message}`);
-    return null;
-  }
+  return paneDispatchService.paneDispatchDecisionFor(paneId, entry, opts);
 }
 
-/** Kararın TEK log biçimi (DoD: "dispatch bu kuralı uyguluyor — log kanıtı"). */
 function logDispatchDecision(paneId, decision, source) {
-  const m = (decision && decision.measured) || {};
-  const why = (decision.reasons || []).map((r) => `${r.code}(${r.value}≥${r.threshold})`).join(',') || '-';
-  logLine(
-    `dispatch-policy ${String(decision.action).toUpperCase()} paneId=${paneId} kaynak=${source} ` +
-      `sebep=${decision.code} bağlam=${m.ctxTokens ?? '?'} boşta=${m.idleMinutes ?? '?'}dk ` +
-      `istek=${m.requests ?? '?'} ilişki=${m.related === null || m.related === undefined ? 'ölçülemedi' : m.related} ` +
-      `devir=${decision.handoff ? 'evet' : 'hayır'} gerekçe=${why}`,
-  );
+  return paneDispatchService.logDispatchDecision(paneId, decision, source);
 }
 
-function sendDispatchEvent(payload) {
-  if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('pty:dispatch-event', payload);
+function refreshPaneSession(paneId, opts) {
+  return paneDispatchService.refreshPaneSession(paneId, opts);
 }
 
-const dispatchSleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * ENT-F1 — ana sürecin teslim primitifi (pty defterine bağlı, tek örnek).
- * Yük vekili canlı pane sayısıdır: submit boşluğu yükle büyür (ADP-920).
- */
-const deliverToPane = createDeliverPrompt({
-  readPaneBuffer: (paneId) => {
-    const e = ptys.get(paneId);
-    return e ? e.buffer || '' : '';
-  },
-  writePane: (paneId, data) => {
-    const e = ptys.get(paneId);
-    if (!e) return false;
-    try { e.child.write(data); return true; } catch { return false; }
-  },
-  sleep: dispatchSleep,
-  now: () => Date.now(),
-  livePaneCount: () => ptys.size,
-  log: (line) => logLine(line),
-});
-
-/**
- * Pane'e prompt yaz VE TESLİMİ DOĞRULA (metin → yük-farkında boşluk → ENTER →
- * composer ölçümü → gerekirse artan gecikmeyle Enter tekrarı).
- *
- * ENT-F1 (P2) — eskiden `write(text)` → sabit 400 ms → `write('\r')` idi ve sonrası
- * ölçülmüyordu: yük altında o 400 ms yetmediğinde Enter TUI'nin render döngüsünde
- * yutuluyor, prompt composer'da `[Pasted text]` olarak asılı kalıyordu (ADP-920'nin
- * renderer'da çözdüğü arızanın ana süreçteki ikizi). Artık aynı çekirdek koşar.
- *
- * @param {string} paneId  pty defteri adresi (ENT-F1: primitif tamponu buradan okur —
- *   `ptys` girdisinin kendisinde paneId ALANI YOKTUR, adres anahtardır)
- * @returns {Promise<boolean>} teslim ÖLÇÜLEREK doğrulandı mı ('unknown' → false)
- */
-async function writePromptToPane(paneId, text) {
-  const res = await deliverToPane(paneId, text, {
-    submitGapMs: REFRESH_SUBMIT_GAP_MS,
-    label: 'devir-özeti',
-  });
-  return res.delivered;
+function sampleLeaderGate(paneId) {
+  return paneDispatchService.sampleLeaderGate(paneId);
 }
 
-/**
- * AXP-03 — AGENT X TESLİM YOLU. Renderer'ın `sendCommandToAgent`i "gönderim denendi"de
- * biterdi; bu yol ENT-F1 primitifini (`deliverToPane`) ve supervisor'ın hüküm merdivenini
- * (`deliveryVerdict` + `probeTranscriptVerdict`) kullanır, üstüne makbuz üretir ve
- * `agentx:receipt` ile ana pencere + Agent X pop-out'una yayınlar. Pane AÇMAZ (renderer'ın
- * işi): hedefin canlı pane'i yoksa ya da meşgulse makbuz `kuyrukta` olur ve pane boşa
- * düşünce kuyruk kendi dener.
- */
-/**
- * AXP-12 — PANE'İN EKRAN METNİ (ham akış DEĞİL). claude 2.1.27x alternatif ekranda
- * mutlak imleçle çizer ve `\n` basmaz: ham `e.buffer`, `composerScan` için TEK SATIRA
- * çöker ("⏸ manual mode on · ? for shortcuts") → boşta pane "menu", Enter sonrası
- * "unknown" okunuyordu (#DV48/#YHL8/#6QG5; eski logda 35/162 ENT-F1 teslimi). Her pane
- * zaten gerçek bir VT (paneScreen = xterm-headless, ADP-324) taşıyor; composer'ı
- * OKUNUR hâle getiren tek girdi onun görünür satırlarıdır. Ekran yoksa/bozuksa
- * (degrade) ham tampona düşülür — davranış eskisi gibi, asla daha kötü değil.
- * Kapsam: YALNIZ Agent X teslim yolu (kart kuralı: süpervizör davranışı değişmez).
- */
-function paneScreenText(entry) {
-  if (!entry) return '';
-  if (entry.screen && typeof entry.screen.liveLines === 'function') {
-    try {
-      const lines = entry.screen.liveLines();
-      if (Array.isArray(lines) && lines.length) return lines.join('\n');
-    } catch { /* degrade → ham tampon */ }
-  }
-  return entry.buffer || '';
-}
-
-/**
- * AXP-12 — Agent X'in ENT-F1 teslim primitifi: `deliverToPane` ile AYNI yazıcı/uyku/
- * yük vekili, tek fark okuyucu = VT ekran metni (yukarıdaki gerekçe). Süpervizör /
- * devir özeti / `/clear` yolları `deliverToPane`de kalır (bu dalgada dokunulmadı;
- * geçiş kararı AXP-12 raporu "Sonraki adım").
- */
-const deliverToPaneAgentx = createDeliverPrompt({
-  readPaneBuffer: (paneId) => paneScreenText(ptys.get(paneId)),
-  writePane: (paneId, data) => {
-    const e = ptys.get(paneId);
-    if (!e) return false;
-    try { e.child.write(data); return true; } catch { return false; }
-  },
-  sleep: dispatchSleep,
-  now: () => Date.now(),
-  livePaneCount: () => ptys.size,
-  log: (line) => logLine(line),
-});
-
-const agentxDeliverer = agentxDeliverMod.createAgentxDeliver({
-  listPanes: () => {
-    const out = [];
-    for (const [paneId, e] of ptys) {
-      // AXP-12 — `buffer` = EKRAN metni (paneStateOf → composerScan bunu okur).
-      out.push({ paneId, agentId: e.agentId || null, department: e.department || null, bytes: e.bytes || 0, buffer: paneScreenText(e) });
-    }
-    return out;
-  },
-  readPaneBuffer: (paneId) => paneScreenText(ptys.get(paneId)),
-  deliver: (paneId, text, opts) => deliverToPaneAgentx(paneId, text, opts),
-  transcriptHas: (paneId, needle) => probeTranscriptVerdict(paneId, needle),
-  // AX-06 — yetki kapısı EYLEM SINIRINDA: konuşan bir AJANSA (lider) `teamScope.authorize`
-  // (delegasyonla AYNI karar); konuşan kullanıcıysa (widget/pop-out) sahibidir → roster'ında
-  // olan her ajana verebilir (roster kapsamı `resolveTarget`in kendisinde: rosterde
-  // olmayan hedef zaten çözülmez).
-  authorize: ({ actor, target }) => {
-    const a = actor && typeof actor === 'object' ? actor : {};
-    if (a.kind === 'agent') {
-      return authorizeTeamScope({ action: 'delegate', leaderId: a.agentId || '', targetScope: target.teamId || '' });
-    }
-    return { ok: true, via: 'owner' };
-  },
-  emit: (receipt) => {
-    try {
-      if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('agentx:receipt', receipt);
-    } catch { /* ana pencere kapalı olabilir */ }
-    try {
-      const w = jarvisWidgetAlive();
-      if (w) w.webContents.send('agentx:receipt', receipt);
-    } catch { /* pop-out kapalı olabilir */ }
-  },
-  sleep: dispatchSleep,
-  now: () => Date.now(),
-  log: (line) => logLine(line),
-}, {
-  // e2e/ölçüm dikişleri (ms) — üretimde DEFAULTS.
-  ...(Number.isFinite(Number(process.env.CREWPANE_AGENTX_VERIFY_MS)) && process.env.CREWPANE_AGENTX_VERIFY_MS ? { verifyMs: Number(process.env.CREWPANE_AGENTX_VERIFY_MS) } : {}),
-  ...(Number.isFinite(Number(process.env.CREWPANE_AGENTX_QUEUE_TICK_MS)) && process.env.CREWPANE_AGENTX_QUEUE_TICK_MS ? { queueTickMs: Number(process.env.CREWPANE_AGENTX_QUEUE_TICK_MS) } : {}),
-});
-
-/**
- * TEK İSTEKLE DEVİR ÖZETİ — "özetle-ve-tazele" akışının ölçülen yarısı.
- * Özet TUI ekranından KAZINMAZ: motorun KENDİ defterinden (transcript) okunur —
- * ANSI/çizim gürültüsü yok, "ekranda ne göründü" tahmini yok.
- * @returns {{ok:boolean, text:string|null, reason:string}}
- */
-async function requestHandoffSummary(paneId, entry, decision) {
-  const read = () =>
-    transcriptProbe.lastAssistantMessage({ cwd: entry.cwd, sessionId: currentSessionId(paneId) });
-  const before = read();
-  const baseline = before.checked ? before.text : null;
-  const ctxText = decision && decision.measured ? `${decision.measured.ctxTokens} jeton` : 'ölçülen bağlam';
-  const prompt =
-    `[OTOMATİK DEVİR — bu oturum tazelenecek (${ctxText}); sıradaki iş TAZE bir oturumda başlayacak] ` +
-    'TEK mesajda devir özeti yaz: (1) nerede kaldın, (2) dokunduğun dosyalar (yol), ' +
-    '(3) açık/riskli nokta, (4) sıradaki adım. En fazla 15 satır. Araç çağırma, başka iş yapma.';
-  try {
-    await writePromptToPane(paneId, prompt);
-  } catch (err) {
-    return { ok: false, text: null, reason: `write-failed:${err.message}` };
-  }
-  const deadline = Date.now() + HANDOFF_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    await dispatchSleep(HANDOFF_POLL_MS);
-    if (!ptys.has(paneId)) return { ok: false, text: null, reason: 'pane-gone' };
-    const now = read();
-    if (now.checked && typeof now.text === 'string' && now.text.trim() && now.text !== baseline) {
-      // Gizli dizi maskesi: özet prompt'a taşınacak, maskeden GEÇMEDEN taşınmaz.
-      const clean = secretRedactor.redactDeep({ text: now.text.trim() }).text;
-      return { ok: true, text: clean.slice(0, HANDOFF_MAX_CHARS), reason: 'ok' };
-    }
-  }
-  // 🔴 Zaman aşımı: özet UYDURULMAZ. Tazeleme yine yapılır (kural tetiklendi),
-  // ama çağıran "devir yok" bilgisini alır ve log'a düşer.
-  return { ok: false, text: null, reason: 'timeout' };
-}
-
-/**
- * Pane'in OTURUMUNU tazele: (isteğe bağlı) devir özeti + ESC + `/clear` + ENTER.
- * Süreç, kimlik (argv `--append-system-prompt`), MCP bağlantıları YAŞAR; yalnız
- * KONUŞMA sıfırlanır — paneRecycler'ın (ADP-266) tam olarak aynı mekanizması.
- */
-function checkRefreshPreconditions(paneId) {
-  const entry = ptys.get(paneId);
-  if (!entry) return { ok: false, reason: 'no-pane', handoff: null };
-  const guard = enforcePaneBudget({ paneId, entry, origin: spendGuard.SYSTEM_ORIGIN, source: 'dispatch-refresh' });
-  if (!guard.allow) return { ok: false, reason: 'budget-paused', handoff: null, budget: guard.decision };
-  const resetCmd = entry.command === 'claude' ? '/clear' : entry.command === 'codex' ? '/new' : null;
-  if (!resetCmd) return { ok: false, reason: 'engine-not-resettable', handoff: null };
-  return { ok: true, entry, resetCmd };
-}
-
-async function deliverPaneReset(paneId, entry, resetCmd) {
-  try {
-    entry.child.write('\x1b'); // yarım kalmış girdi satırını at (ADP-270 dersi)
-    await dispatchSleep(REFRESH_ESC_GAP_MS);
-    entry.child.write(resetCmd);
-  } catch (err) {
-    return { ok: false, reason: `reset-write-failed:${err.message}` };
-  }
-  try {
-    const res = await deliverToPane(paneId, resetCmd, {
-      mode: 'submit-only',
-      submitGapMs: REFRESH_SUBMIT_GAP_MS,
-      label: `sıfırlama(${resetCmd})`,
-    });
-    const resetDelivered = res.delivered;
-    if (!resetDelivered) {
-      logLine(
-        `dispatch-policy SIFIRLAMA DOĞRULANAMADI paneId=${paneId} komut=${resetCmd} ` +
-          `hüküm=${res.outcome} enter=${res.enters} — ` +
-          `oturum SIFIRLANMAMIŞ olabilir (session-anchor bunu ayrıca ölçer)`,
-      );
-    }
-    return { ok: true, resetDelivered };
-  } catch (err) {
-    return { ok: false, reason: `reset-write-failed:${err.message}` };
-  }
-}
-
-function recordRefreshApplied(paneId, entry, { decision, source, handoffResult, resetDelivered }) {
-  sessionAnchor.markReset(paneId);
-  dispatchStore.clear(paneId);
-  const applied = {
-    atMs: Date.now(),
-    code: decision ? decision.code : null,
-    reasons: decision ? decision.reasons : [],
-    handoff: handoffResult.ok,
-    handoffReason: handoffResult.reason,
-    resetDelivered,
-    source: source || null,
-  };
-  dispatchApplied.set(paneId, applied);
-  const handoffStr = handoffResult.ok
-    ? `evet(${(handoffResult.text || '').length} karakter)`
-    : `hayır(${handoffResult.reason})`;
-  logLine(
-    `dispatch-policy TAZELENDİ paneId=${paneId} kaynak=${source} sebep=${applied.code} devir=${handoffStr}`,
-  );
-  sendDispatchEvent({
-    kind: 'refreshed',
-    paneId,
-    agentId: entry.agentId || null,
-    decision: decision || null,
-    applied,
-  });
-  return applied;
-}
-
-/**
- * Pane'in OTURUMUNU tazele: (isteğe bağlı) devir özeti + ESC + `/clear` + ENTER.
- * Süreç, kimlik (argv `--append-system-prompt`), MCP bağlantıları YAŞAR; yalnız
- * KONUŞMA sıfırlanır — paneRecycler'ın (ADP-266) tam olarak aynı mekanizması.
- */
-async function refreshPaneSession(paneId, { handoff, decision, source, requireHandoff }) {
-  const pre = checkRefreshPreconditions(paneId);
-  if (!pre.ok) return pre;
-  const { entry, resetCmd } = pre;
-
-  let handoffResult = { ok: false, text: null, reason: 'not-requested' };
-  if (handoff) handoffResult = await requestHandoffSummary(paneId, entry, decision);
-  if (!ptys.has(paneId)) return { ok: false, reason: 'pane-gone', handoff: handoffResult };
-
-  const resetGate = leaderRefreshPolicy.resetGate({
-    requireHandoff,
-    handoffRequested: handoff === true,
-    handoffOk: handoffResult.ok === true,
-  });
-  if (resetGate.block) {
-    logLine(
-      `dispatch-policy TAZELEME İPTAL paneId=${paneId} kaynak=${source} sebep=handoff-missing(${handoffResult.reason}) ` +
-        '— sıfırlama YAZILMADI, bağlam DURUYOR (LDR-F1 G3)',
-    );
-    sendDispatchEvent({
-      kind: 'refresh-blocked',
-      paneId,
-      agentId: entry.agentId || null,
-      decision: decision || null,
-      reason: 'handoff-missing',
-      handoffReason: handoffResult.reason,
-    });
-    return { ok: false, reason: 'handoff-missing', handoff: handoffResult };
-  }
-
-  const resetRes = await deliverPaneReset(paneId, entry, resetCmd);
-  if (!resetRes.ok) return { ok: false, reason: resetRes.reason, handoff: handoffResult };
-
-  await dispatchSleep(REFRESH_GRACE_MS);
-  const applied = recordRefreshApplied(paneId, entry, {
-    decision,
-    source,
-    handoffResult,
-    resetDelivered: resetRes.resetDelivered,
-  });
-  return { ok: true, reason: 'ok', handoff: handoffResult, applied };
-}
-
-/* ───────────────────────────────────────────────────────────────────────────
-   LDR-F1 — LİDER OTURUMUNUN OTOMATİK TAZELENMESİ (tetik yüzeyi)
-   ───────────────────────────────────────────────────────────────────────────
-   LDR-R1'in tek cümlesi: "otomatik tazeleme ÜRÜNDE VAR, doğru çalışıyor ve lider
-   için TAZELE diyor — ama o kararı KİMSE SORMUYOR." `dispatchPolicy` bir GELEN-İŞ
-   kapısıdır (yalnız delegasyon + board görevi yolunda koşar); liderin bağlamını
-   büyüten üç yol (kullanıcının kendi promptları · tur-başı brifing · supervisor
-   uyandırması) o kapıdan HİÇ geçmez. Ölçülen canlı kanıt: 42 `dispatch-policy`
-   satırının 42'si `kaynak=delegation`, lider kaynaklı SIFIR karar.
-
-   BURASI YENİ BİR KARAR ÜRETMEZ. `paneDispatchDecisionFor` neyi ölçüyorsa o,
-   `dispatchPolicy.decide` ne diyorsa o. Eklenen tek şey kararın SORULMASI ve
-   liderde daha sıkı bir güvenlik kapısı.
-
-   🔴 YENİ ÖLÇÜM TURU AÇILMADI (D-02 dersi: iki yüzey iki ana bakmasın). Tetik,
-   rozetin ZATEN koşan 90 sn'lik `pty:tokenUsage` turuna binerr; ayrı bir
-   setInterval yok, ayrı bir ölçüm yolu yok.
-
-   AKIŞ (LDR-R1 §5.2):
-     karar='refresh' + pane LİDER + kip='auto'
-       → (G2) güvenli an: injectionGate(ardışık iki tampon) + uçuşta delegasyon YOK
-       → (G3) devir özeti ZORUNLU: gelmezse `/clear` YAZILMAZ (requireHandoff)
-       → (G4) mevcut `refreshPaneSession` (ESC + /clear + çapa) — yeniden yazılmadı
-       → (G5) taze oturumun İLK mesajı: devir özeti + AÇIK alt-görevler + görev kodu
-   ─────────────────────────────────────────────────────────────────────────── */
-
-/** paneId → {attempts, lastAttemptAtMs, lastRefreshAtMs, running, reason, retryAtMs}. */
-const leaderRefreshState = new Map();
-
-/** İki tampon örneklemesi arasındaki GERÇEK gecikme (supervisor'ın deseni). */
-const LEADER_GATE_SAMPLE_MS = 400;
-
-function leaderRefreshEntry(paneId) {
-  let st = leaderRefreshState.get(paneId);
-  if (!st) {
-    st = {
-      attempts: 0,
-      lastAttemptAtMs: 0,
-      lastRefreshAtMs: 0,
-      running: false,
-      reason: null,
-      // 🔴 `reason` HER TURDA üzerine yazılır (erteleme gerekçesi de oraya düşer);
-      // BAŞARISIZLIK sebebi ayrı yaşamalı, yoksa "neden tazelenemedi" cevabı bir
-      // sonraki turun 'backoff'u ile SİLİNİR ve kullanıcı gerçek sebebi hiç görmez.
-      lastFailure: null,
-      retryAtMs: null,
-    };
-    leaderRefreshState.set(paneId, st);
-  }
-  return st;
-}
-
-/**
- * Bu pane LİDERİN KENDİ pane'i mi?
- * İKİ şart birden: (a) ham rol slug'ı bir lider rolü (TEK KAYNAK leaderRole.cjs),
- * (b) pane bir DELEGASYON EXECUTION pane'i DEĞİL (`disallowSubagent`). (b) olmadan
- * bir liderin worker olarak açılmış pane'i de "lider" sayılırdı — supervisor'ın
- * `findLeaderPane`i tam olarak aynı ikinci şartı uygular.
- * 🔴 Karar KİMLİĞE (ad) değil ROLE + DURUMA bakar.
- */
-function isLeaderPane(entry) {
-  if (!entry) return false;
-  return leaderRole.isLeaderRoleSlug(entry.role) && entry.disallowSubagent !== true;
-}
-
-/** Ayar: 'off' | 'warn' | 'auto' (varsayılan 'warn' — ürün lidere kendiliğinden yazmaz). */
-function leaderAutoRefreshMode() {
-  try {
-    return leaderRefreshPolicy.normalizeMode(agentSettings.readSettings().leaderAutoRefresh);
-  } catch {
-    return leaderRefreshPolicy.DEFAULT_MODE;
-  }
-}
-
-/** Zamanlama parametreleri CONFIG'ten (koda gömülü sayı yok). */
-function leaderAutoRefreshConfig() {
-  try {
-    return leaderRefreshPolicy.leaderConfigFrom(tokenCost.DEFAULT_PRICING);
-  } catch {
-    return leaderRefreshPolicy.leaderConfigFrom(null);
-  }
-}
-
-/** Bu liderin UÇUŞTAKİ (settle olmamış) delegasyon sayısı — defter main'de kalıcıdır. */
-function leaderInFlightCount(agentId) {
-  return delegationSupervisorService.leaderInFlightCount(agentId);
-}
-
-/** Bu liderin AÇIK alt-görevleri (G5 geri yüklemesinin ikinci yarısı). */
-function leaderOpenSubtasks(agentId) {
-  return delegationSupervisorService.leaderOpenSubtasks(agentId);
-}
-
-/**
- * G2 — GÜVENLİ AN. İki ARDIŞIK tampon örneklemesi arasında GERÇEK gecikme olmalı
- * (`leaderComposerIdle` iki okumayı karşılaştırır: tek okuma "stabil" hükmü veremez).
- * supervisor `wakeLeaders`in aynı deseni — yeni bir kapı İCAT EDİLMEDİ.
- */
-async function sampleLeaderGate(paneId) {
-  const before = ptys.get(paneId);
-  if (!before) return { safe: false, reason: 'no-pane' };
-  const prev = before.buffer || '';
-  await dispatchSleep(LEADER_GATE_SAMPLE_MS);
-  const after = ptys.get(paneId);
-  if (!after) return { safe: false, reason: 'no-pane' };
-  return leaderComposer.injectionGate(prev, after.buffer || '', {
-    lastInputAt: typeof after.lastInputAt === 'number' ? after.lastInputAt : null,
-    lastSubmitAt: typeof after.lastSubmitAt === 'number' ? after.lastSubmitAt : null,
-    now: Date.now(),
-  });
-}
-
-/**
- * ROZETİN VERİSİ — renderer bu hükmü ÜRETMEZ, yalnız basar (budget/dispatch ile
- * aynı disiplin: eşik aritmetiği iki yerde yaşarsa kartın yazdığı ile kapının
- * uyguladığı sessizce ayrışır).
- */
 function leaderRefreshViewFor(paneId, entry, decision) {
-  const leader = isLeaderPane(entry);
-  const mode = leaderAutoRefreshMode();
-  const cfg = leaderAutoRefreshConfig();
-  const badge = leaderRefreshPolicy.badgeState({ decision, mode, cfg });
-  const st = leaderRefreshState.get(paneId) || null;
-  return {
-    isLeader: leader,
-    mode,
-    state: badge.state,
-    pct: badge.pct,
-    ctxTokens: badge.ctxTokens,
-    threshold: badge.threshold,
-    code: badge.code,
-    warnPct: Math.round(cfg.warnRatio * 100),
-    // Son turun makine-okur gerekçesi (ipucunda "neden henüz tazelemedi" cevabı).
-    lastReason: st ? st.reason : null,
-    // Son BAŞARISIZ denemenin sebebi. `lastReason`dan AYRI olmak ZORUNDA: o her
-    // turda değişir ve bir sonraki turun 'backoff'u gerçek sebebi ('handoff-missing')
-    // sessizce silerdi — kullanıcı "neden tazelenemedi"yi bir daha hiç göremezdi.
-    lastFailure: st ? st.lastFailure : null,
-    attempts: st ? st.attempts : 0,
-    retryAtMs: st ? st.retryAtMs : null,
-    lastRefreshAtMs: st ? st.lastRefreshAtMs : 0,
-    running: !!(st && st.running),
-  };
+  return paneDispatchService.leaderRefreshViewFor(paneId, entry, decision);
 }
 
-/**
- * G5 — TAZE OTURUMUN İLK MESAJI. Yazım `injectionGate`ten TEKRAR geçer: `/clear`
- * sonrası motor hâlâ temizliyor olabilir ve kullanıcı o boşlukta yazmaya başlamış
- * olabilir (ADP-667'nin yarım-prompt clobber'ı burada da gerçektir).
- */
-async function restoreLeaderContext(paneId, entry, handoffText) {
-  const text = leaderRefreshPolicy.composeLeaderRestorePrompt({
-    handoffText,
-    openSubtasks: leaderOpenSubtasks(entry.agentId),
-    taskCode: entry.taskId || labelTaskCodeOf(entry.label) || null,
-  });
-  if (!text) return { ok: false, reason: 'nothing-to-restore', chars: 0 };
-  const gate = await sampleLeaderGate(paneId);
-  if (!gate.safe) {
-    logLine(`lider-tazeleme GERİ YÜKLEME ERTELENDİ paneId=${paneId} sebep=enjeksiyon-iptal(${gate.reason})`);
-    return { ok: false, reason: `unsafe:${gate.reason}`, chars: text.length };
-  }
-  const delivered = await writePromptToPane(paneId, text);
-  logLine(
-    `lider-tazeleme GERİ YÜKLENDİ paneId=${paneId} karakter=${text.length} teslim=${delivered ? 'ölçüldü' : 'ölçülemedi'}`,
-  );
-  return { ok: true, reason: delivered ? 'delivered' : 'unverified', chars: text.length };
-}
-
-/**
- * TETİK — rozetin 90 sn'lik turundan çağrılır (fire-and-forget; ölçüm yolunu ASLA
- * bekletmez). `auto` DIŞINDAKİ her kipte tek bayt yazmadan döner.
- */
 function leaderRefreshTick(paneId, entry, decision) {
-  const st = leaderRefreshEntry(paneId);
-  if (st.running) return;
-  const mode = leaderAutoRefreshMode();
-  const cfg = leaderAutoRefreshConfig();
-  const leader = isLeaderPane(entry);
-  // UCUZ ÖN-ELEME: `auto` değilse ya da lider değilse tampon bile örneklemeyiz
-  // (90 sn'de bir HER pane için 400 ms uyumak, ölçmediğimiz bir şey için harcamadır).
-  const pre = leaderRefreshPolicy.refreshGate({
-    decision,
-    mode,
-    isLeader: leader,
-    nowMs: Date.now(),
-    attempts: st.attempts,
-    lastAttemptAtMs: st.lastAttemptAtMs,
-    lastRefreshAtMs: st.lastRefreshAtMs,
-    inFlight: 0,
-    gate: { safe: true, reason: 'not-sampled' },
-    cfg,
-  });
-  /* 🔴 ÖN-ELEME "ok" DEDİYSE BU BİR HÜKÜM DEĞİLDİR — yalnız "örneklemeye devam".
-     Eskiden burası `st.reason`u koşulsuz yazıyordu ve e2e bunu KIRMIZIYA düşürdü:
-     tetik ölçüm turunun İÇİNDE koşar, rozetin verisi ise AYNI turda kurulur →
-     kullanıcı gerçek gerekçe ('unsafe:draft') yerine bir sonraki 400 ms'de
-     silinecek bir 'ok' görüyordu. Sonuç: "neden tazelemiyor?" sorusunun cevabı
-     ekranda titriyordu. Gerekçe ancak SONUÇLANDIĞINDA yazılır. */
-  if (!pre.go) {
-    st.reason = pre.reason;
-    st.retryAtMs = pre.retryAtMs;
-    return;
-  }
-
-  st.running = true;
-  void (async () => {
-    try {
-      const inFlight = leaderInFlightCount(entry.agentId);
-      const gate = inFlight > 0 ? { safe: false, reason: 'delegation-in-flight' } : await sampleLeaderGate(paneId);
-      const verdict = leaderRefreshPolicy.refreshGate({
-        decision,
-        mode,
-        isLeader: leader,
-        nowMs: Date.now(),
-        attempts: st.attempts,
-        lastAttemptAtMs: st.lastAttemptAtMs,
-        lastRefreshAtMs: st.lastRefreshAtMs,
-        inFlight,
-        gate,
-        cfg,
-      });
-      st.reason = verdict.reason;
-      st.retryAtMs = verdict.retryAtMs;
-      if (!verdict.go) {
-        // 🔴 ERTELEME DENEME DEĞİLDİR (ADP-672): sayaç ARTMAZ, backoff büyümez.
-        logLine(`lider-tazeleme ERTELENDİ paneId=${paneId} sebep=${verdict.reason} bağlam=${(decision.measured || {}).ctxTokens ?? '?'}`);
-        return;
-      }
-      // Karar log'a TEK biçimde düşer — `kaynak=leader-auto` (LDR-R1 §2.4: bugüne
-      // dek bu satırın 42/42'si `kaynak=delegation`'dı, lider kaynaklı SIFIR karar).
-      logDispatchDecision(paneId, decision, 'leader-auto');
-      const res = await refreshPaneSession(paneId, {
-        handoff: decision.handoff,
-        requireHandoff: true, // G3 — liderde devir özeti ZORUNLU
-        decision,
-        source: 'leader-auto',
-      });
-      if (!res.ok) {
-        st.attempts += 1;
-        st.lastAttemptAtMs = Date.now();
-        st.reason = res.reason;
-        st.lastFailure = res.reason;
-        st.retryAtMs = leaderRefreshPolicy.nextRetryAtMs(st.attempts, st.lastAttemptAtMs, cfg);
-        logLine(
-          `lider-tazeleme BAŞARISIZ paneId=${paneId} sebep=${res.reason} deneme=${st.attempts}/${cfg.maxAttempts} ` +
-            `sonraki=${new Date(st.retryAtMs).toISOString()}`,
-        );
-        return;
-      }
-      st.attempts = 0;
-      st.lastAttemptAtMs = Date.now();
-      st.lastRefreshAtMs = Date.now();
-      st.retryAtMs = null;
-      st.reason = 'refreshed';
-      st.lastFailure = null;
-      const live = ptys.get(paneId);
-      if (live) await restoreLeaderContext(paneId, live, res.handoff && res.handoff.text);
-    } catch (err) {
-      st.reason = `error:${err.message}`;
-      logLine(`lider-tazeleme patladı paneId=${paneId}: ${err.message}`);
-    } finally {
-      st.running = false;
-    }
-  })();
+  return paneDispatchService.leaderRefreshTick(paneId, entry, decision);
 }
 
 // PANE-CAP-01 — ADP-264'ün SABİT canlı-pane tavanı (MAX_LIVE_PANES = 24) KALDIRILDI.
