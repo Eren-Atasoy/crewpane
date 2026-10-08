@@ -8,7 +8,28 @@ const officePkg = require('../../agents/officePackageManager.cjs');
  * Assembles and structures domain dependencies for Services, Agents, and System IPC wiring.
  */
 
+function _buildWindowOps(wm, ctx) {
+  const ops = {
+    createAppWindow: (url) => (wm ? wm.createAppWindow(url) : null),
+    openPopoutWindow: (opts) => (wm ? wm.openPopoutWindow(opts) : null),
+    closePopoutWindow: (paneId) => (wm ? wm.closePopoutWindow(paneId) : null),
+    listPopoutPanes: () => (wm ? wm.listPopoutPanes() : []),
+    popoutWindowFor: (paneId) => (wm ? wm.popoutWindowFor(paneId) : null),
+    openDesignWindow: () => (wm ? wm.openDesignWindow() : null),
+    closeDesignWindow: () => (wm ? wm.closeDesignWindow() : null),
+    designWindowAlive: () => (wm ? wm.designWindowAlive() : false),
+    popoutPaneIdForWindow: (win) => (wm ? wm.popoutPaneIdForWindow(win) : null),
+  };
+  const keys = Object.keys(ops);
+  for (let i = 0; i < keys.length; i++) {
+    const k = keys[i];
+    if (typeof ctx[k] === 'function') ops[k] = ctx[k];
+  }
+  return ops;
+}
+
 function buildPlatformAndWindowDeps(ctx) {
+  const wm = ctx.windowManager;
   return {
     ipcMain: ctx.ipcMain,
     app: ctx.app,
@@ -24,15 +45,7 @@ function buildPlatformAndWindowDeps(ctx) {
     logLine: ctx.logLine,
     getAppWindow: ctx.getAppWindow || (() => ctx.appWindow),
     getAppBaseUrl: ctx.getAppBaseUrl || (() => ctx.appBaseUrl),
-    createAppWindow: ctx.createAppWindow,
-    openPopoutWindow: ctx.openPopoutWindow,
-    closePopoutWindow: ctx.closePopoutWindow,
-    listPopoutPanes: ctx.listPopoutPanes,
-    popoutWindowFor: ctx.popoutWindowFor,
-    openDesignWindow: ctx.openDesignWindow,
-    closeDesignWindow: ctx.closeDesignWindow,
-    designWindowAlive: ctx.designWindowAlive,
-    popoutPaneIdForWindow: ctx.popoutPaneIdForWindow,
+    ..._buildWindowOps(wm, ctx),
     windowManager: ctx.windowManager,
     getWindowManager: ctx.getWindowManager || (() => ctx.windowManager),
     keepPanesAliveOnWindowClose: ctx.keepPanesAliveOnWindowClose,
@@ -128,12 +141,13 @@ function buildMediaAndMemoryDeps(ctx) {
     paneContextScope: ctx.paneContextScope,
     engineMemoryScope: ctx.engineMemoryScope,
     searchIndexer: ctx.searchIndexer || (() => (ctx.memoryService ? ctx.memoryService.searchIndexer() : null)),
-    broadcastClipChanged: ctx.broadcastClipChanged,
+    broadcastClipChanged: ctx.broadcastClipChanged || (() => (ctx.windowManager ? ctx.windowManager.broadcastClipChanged() : null)),
     clipboardHistoryCore: ctx.clipboardHistoryCore,
   };
 }
 
 function buildTerminalAndExecutionDeps(ctx) {
+  const wm = ctx.windowManager;
   return {
     listPanes: ctx.listPanes,
     resourceGovernor: ctx.resourceGovernor,
@@ -170,9 +184,9 @@ function buildTerminalAndExecutionDeps(ctx) {
     acceptRecoverablePanes: ctx.acceptRecoverablePanes,
     tmuxWindows: ctx.tmuxWindows,
     paneViewState: ctx.paneViewState,
-    broadcastPaneView: ctx.broadcastPaneView,
+    broadcastPaneView: ctx.broadcastPaneView || ((paneId, r) => (wm ? wm.broadcastPaneView(paneId, r) : null)),
     paneDraft: ctx.paneDraft,
-    broadcastPaneDraft: ctx.broadcastPaneDraft,
+    broadcastPaneDraft: ctx.broadcastPaneDraft || ((paneId, t) => (wm ? wm.broadcastPaneDraft(paneId, t) : null)),
     getPaneAskRuntime: ctx.getPaneAskRuntime || (() => ctx.paneAskRuntime),
     getPtys: ctx.getPtys || (() => ctx.ptys),
     deliverToPane: ctx.deliverToPane,
@@ -262,8 +276,25 @@ function _resolveBrowserDeps(ctx) {
   };
 }
 
+function _resolveWidgetDeps(ctx) {
+  const wm = ctx.windowManager;
+  if (!wm) return {};
+  return {
+    openJarvisWidgetWindow: () => wm.openJarvisWidgetWindow(),
+    closeJarvisWidgetWindow: (why) => wm.closeJarvisWidgetWindow(why),
+    jarvisWidgetAlive: () => wm.jarvisWidgetAlive(),
+    jarvisWidget: () => wm.getJarvisWidgetWindow(),
+    broadcastJarvisWidget: () => wm.broadcastJarvisWidget(),
+    jarvisWidgetPayload: () => wm.jarvisWidgetPayload(),
+    moveJarvisWidget: (payload) => wm.moveJarvisWidget(payload),
+    showAppFromJarvisWidget: () => wm.showAppFromJarvisWidget(),
+    broadcastAgentxDraft: (s) => wm.broadcastAgentxDraft(s),
+    broadcastAgentxDraftConfirmed: (c) => wm.broadcastAgentxDraftConfirmed(c),
+  };
+}
+
 function _buildSkillAndSupervisorDeps(ctx) {
-  const out = Object.assign(_resolveBrowserDeps(ctx), {
+  const out = Object.assign(_resolveBrowserDeps(ctx), _resolveWidgetDeps(ctx), {
     setAppWindowGuest: ctx.setAppWindowGuest,
     getAppWindowGuest: ctx.getAppWindowGuest,
     integrations: ctx.integrations,
@@ -278,7 +309,7 @@ function _buildSkillAndSupervisorDeps(ctx) {
     appI18n: ctx.appI18n,
     notifyGate: ctx.notifyGate,
   });
-  const browserKeys = [
+  const overrideKeys = [
     'runBrowserAction',
     'browserGate',
     'browserGuests',
@@ -286,20 +317,23 @@ function _buildSkillAndSupervisorDeps(ctx) {
     'guestOwners',
     'agentGuests',
     'lastUnownedGuest',
+    'openJarvisWidgetWindow',
+    'closeJarvisWidgetWindow',
+    'jarvisWidgetAlive',
+    'jarvisWidget',
+    'broadcastJarvisWidget',
+    'jarvisWidgetPayload',
+    'moveJarvisWidget',
+    'showAppFromJarvisWidget',
+    'broadcastAgentxDraft',
+    'broadcastAgentxDraftConfirmed',
   ];
-  for (const k of browserKeys) {
+  for (let i = 0; i < overrideKeys.length; i++) {
+    const k = overrideKeys[i];
     if (ctx[k] !== undefined) out[k] = ctx[k];
   }
   Object.assign(out, {
     requireSeatOrThrow: ctx.requireSeatOrThrow,
-    openJarvisWidgetWindow: ctx.openJarvisWidgetWindow,
-    closeJarvisWidgetWindow: ctx.closeJarvisWidgetWindow,
-    jarvisWidgetAlive: ctx.jarvisWidgetAlive,
-    jarvisWidget: ctx.jarvisWidget,
-    broadcastJarvisWidget: ctx.broadcastJarvisWidget,
-    jarvisWidgetPayload: ctx.jarvisWidgetPayload,
-    moveJarvisWidget: ctx.moveJarvisWidget,
-    showAppFromJarvisWidget: ctx.showAppFromJarvisWidget,
     jarvisVoice: ctx.jarvisVoice,
     grokVoice: ctx.grokVoice,
     inputSim: ctx.inputSim,
@@ -309,8 +343,6 @@ function _buildSkillAndSupervisorDeps(ctx) {
     agentxDeliverer: ctx.agentxDeliverer,
     agentxBeamMod: ctx.agentxBeamMod,
     agentxDraft: ctx.agentxDraft,
-    broadcastAgentxDraft: ctx.broadcastAgentxDraft,
-    broadcastAgentxDraftConfirmed: ctx.broadcastAgentxDraftConfirmed,
     skillCenter: ctx.skillCenter,
     skillEngineSync: ctx.skillEngineSync,
     skillApprove: ctx.skillApprove,

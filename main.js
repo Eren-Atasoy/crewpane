@@ -850,7 +850,7 @@ const ptySpawnService = createPtySpawnService({
   reportModuleFault: (fault) => reportModuleFault(fault),
   settleMemoryUsage: (opts) => settleMemoryUsage(opts),
   scheduleSupervisorSweep: (delayMs) => scheduleSupervisorSweep(delayMs),
-  sendPaneEvent: (win, paneId, channel, payload) => sendPaneEvent(win, paneId, channel, payload),
+  sendPaneEvent: (win, paneId, channel, payload) => (windowManager ? windowManager.sendPaneEvent(win, paneId, channel, payload) : null),
   sessionAnchor: { forget: (id) => sessionAnchor.forget(id) },
   dispatchStore: { clear: (id) => dispatchStore.clear(id) },
   dispatchApplied: { delete: (id) => dispatchApplied.delete(id) },
@@ -1090,7 +1090,7 @@ const paneDispatchService = createPaneDispatchService({
   createDeliverPrompt,
   agentxDeliverMod,
   authorizeTeamScope: (opts) => authorizeTeamScope(opts),
-  jarvisWidgetAlive: () => jarvisWidgetAlive(),
+  jarvisWidgetAlive: () => (windowManager ? windowManager.jarvisWidgetAlive() : false),
   labelTaskCodeOf: (label) => labelTaskCodeOf(label),
   sessionAnchor,
 });
@@ -1512,7 +1512,7 @@ const authService = createAuthService({
     crewpaneHome: () => crewpaneHome(),
     killPane: (id, e, aid, r) => killPane(id, e, aid, r),
     mobilePlanDenial: (opts) => mobilePlanDenial(opts),
-    designPlanDenial: (opts) => designPlanDenial(opts),
+    designPlanDenial: ({ notify = true } = {}) => planDenial('designMode', 0, { notify }),
     BrowserWindow,
     getRestoreSkippedByPlan: () => paneRestoreService.getRestoreSkippedByPlan(),
     getSupervisorAdvanceBlocked: () => delegationSupervisorService.getSupervisorAdvanceBlocked(),
@@ -1833,15 +1833,6 @@ function _buildWindowAndWorkspaceDeps() {
     logLine,
     appWindow,
     appBaseUrl,
-    createAppWindow,
-    openPopoutWindow,
-    closePopoutWindow,
-    listPopoutPanes,
-    popoutWindowFor,
-    openDesignWindow,
-    closeDesignWindow,
-    designWindowAlive,
-    popoutPaneIdForWindow,
     windowManager,
     keepPanesAliveOnWindowClose,
     crashWatchdog,
@@ -1894,7 +1885,6 @@ function _buildWindowAndWorkspaceDeps() {
     currentSessionId,
     paneContextScope,
     engineMemoryScope,
-    broadcastClipChanged,
     clipboardHistoryCore,
   };
 }
@@ -1936,9 +1926,7 @@ function _buildTerminalAndExecutionIpcDeps() {
     acceptRecoverablePanes,
     tmuxWindows,
     paneViewState,
-    broadcastPaneView,
     paneDraft,
-    broadcastPaneDraft,
     deliverToPane,
     dispatchSleep,
     authorizeTeamScopeInteractive,
@@ -2003,14 +1991,7 @@ function _buildMobileAndVoiceIpcDeps() {
     mobileKillSwitch,
     mobileProbe,
     requireSeatOrThrow,
-    openJarvisWidgetWindow,
-    closeJarvisWidgetWindow,
-    jarvisWidgetAlive,
     jarvisWidget,
-    broadcastJarvisWidget,
-    jarvisWidgetPayload,
-    moveJarvisWidget,
-    showAppFromJarvisWidget,
     jarvisVoice,
     grokVoice,
     inputSim,
@@ -2020,8 +2001,6 @@ function _buildMobileAndVoiceIpcDeps() {
     agentxDeliverer,
     agentxBeamMod,
     agentxDraft,
-    broadcastAgentxDraft,
-    broadcastAgentxDraftConfirmed,
     skillCenter,
     skillEngineSync,
     skillApprove,
@@ -2218,129 +2197,6 @@ windowManager = createWindowManager({
 
 
 function createAppWindow(url) { return windowManager.createAppWindow(url); }
-
-// ---------------------------------------------------------------------------
-// ADP-593 — pane POP-OUT (terminal pane'i ayrı bir macOS penceresine çıkar)
-// ---------------------------------------------------------------------------
-// EN KRİTİK KISIT: OTURUM ÖLMEZ. pty MAIN'de yaşar (`ptys`) ve sahibi ANA
-// penceredir (entry.win). Pop-out yalnız GÖRÜNTÜYÜ taşır: yeni pencere aynı
-// paneId'ye `pty:attach` ile bağlanır (ADP-028 replay buffer + seq dedupe) ve
-// `pty:data` bu pencereye de yayınlanır. Pop-out penceresi HİÇBİR pty'nin sahibi
-// değildir → kapanışında `killPtysForWindow` eşleşmesi olamaz, pty'ye dokunulmaz;
-// koşan ajan kesintisiz çalışmaya devam eder. (Popout renderer'ı `attachOnly`
-// kipinde çalışır: pane gitmişse taze spawn ETMEZ — sahipsiz pty imkânsız.)
-//
-// Pencere kapanınca (⌘W / kırmızı düğme / "Geri koy") ana pencereye
-// `popout:closed` gider ve pane TAM ESKİ HÜCRESİNE geri döner (hücre hiç
-// silinmedi: dışarıdayken yerinde "dışarıda" göstergesi duruyordu).
-const popoutWindows = windowManager.popoutWindows;
-function popoutWindowFor(paneId) { return windowManager.popoutWindowFor(paneId); }
-function sendPaneEvent(win, paneId, channel, payload) { return windowManager.sendPaneEvent(win, paneId, channel, payload); }
-function popoutPaneIdForWindow(win) { return windowManager.popoutPaneIdForWindow(win); }
-function broadcastPaneView(paneId, readable) { return windowManager.broadcastPaneView(paneId, readable); }
-function broadcastPaneDraft(paneId, text) { return windowManager.broadcastPaneDraft(paneId, text); }
-/**
- * AXP-02 — Agent X iş taslağı değişti: ana pencere, widget pop-out'u ve pane
- * pop-out'ları AYNI fotoğrafı görür (taslak main'de tek gerçek; hiçbir yüzey
- * kendi kopyasını tutmaz). Yayın yalnız `changed:true` dönüşlerde (paneDraft deseni).
- */
-function agentxDraftTargets() {
-  const out = [];
-  if (appWindow && !appWindow.isDestroyed()) out.push(appWindow);
-  const jw = jarvisWidgetAlive();
-  if (jw) out.push(jw);
-  for (const w of popoutWindows.values()) if (w && !w.isDestroyed()) out.push(w);
-  return out;
-}
-function broadcastAgentxDraft(snapshot) {
-  for (const w of agentxDraftTargets()) w.webContents.send('agentxDraft:changed', snapshot);
-}
-/** AXP-02 → AXP-03 sözleşmesi: { id, revision, digest, target, text, unitCount, at }. Teslim ilkeli bunu tüketir. */
-function broadcastAgentxDraftConfirmed(confirmed) {
-  for (const w of agentxDraftTargets()) w.webContents.send('agentxDraft:confirmed', confirmed);
-}
-/**
- * ADP-935 — pano geçmişi değişti: rozetin sayısı ve açık panel HER yüzeyde
- * tazelensin (ana pencere + pop-out'lar). İçerik TAŞINMAZ, yalnız "değişti"
- * sinyali gider; liste `clip:list` ile ayrıca çekilir (ADP-712 deseni).
- */
-function broadcastClipChanged() { return windowManager.broadcastClipChanged(); }
-function openPopoutWindow(options) { return windowManager.openPopoutWindow(options); }
-function closePopoutWindow(paneId) { return windowManager.closePopoutWindow(paneId); }
-function listPopoutPanes() { return windowManager.listPopoutPanes(); }
-
-// ---------------------------------------------------------------------------
-// AUID-KABLO (SPRINT-AUID-01) — TASARIM TURUNUN AYRI PENCERESİ (`/design`)
-// ---------------------------------------------------------------------------
-// AUID-M2 §4'te ÖLÇÜLEN engel: `/design` yüzeyi hazırdı ama uygulama İÇİNDEN
-// açılamıyordu — `setWindowOpenHandler` her `window.open`'ı DENY ediyor (renderer
-// kendi başına pencere doğuramaz, bilinçli bir güvenlik kararı) ve var olan tek
-// pencere-açma yolu `popout:open` CANLI BİR pty'ye bağlı (`ptys.get(paneId)`
-// yoksa reddeder) + rotası `/popout`a sabit. Tasarım penceresinin pty'si YOKTUR.
-//
-// Bu yüzden kendi küçük kapısı: pop-out ve ses widget'ıyla AYNI kalıp
-// (BrowserWindow + sharedWebPreferences + dış link → OS tarayıcısı + konum
-// defteri), ama pane/pty zincirine HİÇ dokunmadan.
-//
-// TEKİLLİK sözleşmesi: ikinci çağrı YENİ pencere doğurmaz — var olanı öne getirir
-// (`reused:true` döner). Tasarım turu tek bir tuvaldir; iki kopyası aynı
-// `docs/design/<görev>/` klasörüne yazsaydı sürüm numaraları yarışırdı.
-//
-// M1 REGRESYONSUZ: iç tarayıcı pane'inin tasarım modu (D2=a) olduğu gibi durur;
-// bu kapı yalnız EK bir yol açar (D2=c). Konum defteri yeniden icat edilmedi —
-// ADP-593'ün popoutBounds deposu kendi anahtarıyla (`label:design-window`).
-function designWindowAlive() { return windowManager.designWindowAlive(); }
-function designPlanDenial({ notify = true } = {}) {
-  return planDenial('designMode', 0, { notify });
-}
-function openDesignWindow() { return windowManager.openDesignWindow(); }
-function closeDesignWindow() { return windowManager.closeDesignWindow(); }
-
-// ---------------------------------------------------------------------------
-// ADP-816 (SPRINT-AGENTX-VOICE · Faz 4) — TAŞINABİLİR SES WIDGET'I
-// ---------------------------------------------------------------------------
-// ADP-804 §8.2'nin kararı: ses widget'ı ana pencerenin İÇİNDE yaşadığı sürece
-// "her zaman üstte" imkânsızdır; Eren başka uygulamalarda çalışırken de
-// konuşacak. Çözüm, pop-out kalıbının (yukarısı) küçük bir uyarlaması:
-//
-//   • AYRI BrowserWindow (frameless + transparan + always-on-top + panel tipi)
-//   • ODAK ÇALMAZ: `focusable:false` + `type:'panel'` (macOS'ta nonactivating
-//     NSPanel) + `showInactive()`. Ana pencere hiçbir zaman öne getirilmez.
-//     ADP-265'te ölçülen "onay kartı odak çalar" sınıfı burada tekrarlanamaz.
-//   • TAM EKRAN ÜSTÜNDE KALIR: setVisibleOnAllWorkspaces(visibleOnFullScreen)
-//     + always-on-top seviyesi — başka bir uygulama tam ekrandayken widget
-//     onun Space'inde de görünür.
-//   • Klavye YOK (focusable:false → tuş gitmez): widget bir BAKIŞ penceresidir,
-//     komut yüzeyi değil. Sürükleme JS ile yapılır (`jarvisWidget:move`), böylece
-//     hem gerçek kullanıcı faresiyle hem de e2e ile ÖLÇÜLEBİLİR.
-//   • Ana pencere kapansa da YAŞAR: kendi penceresi, kendi süreç-dışı durumu.
-//     Durum fotoğrafı MAIN'de tutulduğu için yayıncı ölse bile son bilinen
-//     hâli ekranda kalır ve `live:false` ile DÜRÜSTÇE işaretlenir.
-//
-// Konum defteri yeniden icat EDİLMEDİ: ADP-593'ün popoutBounds deposu, kendi
-// anahtarıyla (`label:jarvis-widget`) kullanılır.
-function jarvisWidgetAlive() { return windowManager.jarvisWidgetAlive(); }
-function jarvisWidgetPayload() { return windowManager.jarvisWidgetPayload(); }
-function broadcastJarvisWidget() { return windowManager.broadcastJarvisWidget(); }
-function openJarvisWidgetWindow() { return windowManager.openJarvisWidgetWindow(); }
-function closeJarvisWidgetWindow() { return windowManager.closeJarvisWidgetWindow(); }
-function moveJarvisWidget(payload) { return windowManager.moveJarvisWidget(payload); }
-
-/**
- * Widget'tan "uygulamayı göster": ana pencere kapalıyken TEK geri dönüş yolu.
- * Odak çalmama sözleşmesinin BİLİNÇLİ istisnası — kullanıcının kendi tıklaması.
- */
-function showAppFromJarvisWidget() {
-  if (appWindow && !appWindow.isDestroyed()) {
-    if (appWindow.isMinimized()) appWindow.restore();
-    appWindow.show();
-    appWindow.focus();
-    return { ok: true, created: false };
-  }
-  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
-  createAppWindow(appBaseUrl);
-  return { ok: true, created: true };
-}
 
 // ---------------------------------------------------------------------------
 // HAND-A1 — "EL KONTROLÜ" EKRAN ÜSTÜ GÖRSELLEŞTİRME KATMANI
@@ -2655,7 +2511,7 @@ const syncService = createSyncService({
   logLine,
   broadcastLocale,
   getAppWindow: () => appWindow,
-  getPopoutWindows: () => popoutWindows,
+  getPopoutWindows: () => (windowManager ? windowManager.popoutWindows : new Map()),
   prefsProjectorFactory,
   syncBoot,
   syncSurface,

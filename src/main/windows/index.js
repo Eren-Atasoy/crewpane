@@ -68,6 +68,40 @@ const {
   scheduleHandControlWarmup,
 } = require('./handDetectWindow');
 
+function agentxDraftTargets(deps) {
+  const out = [];
+  const appWindow = typeof deps.getAppWindow === 'function' ? deps.getAppWindow() : null;
+  if (appWindow && !appWindow.isDestroyed()) out.push(appWindow);
+  const jw = jarvisWidgetAlive();
+  if (jw) out.push(jw);
+  for (const w of popoutWindows.values()) {
+    if (w && !w.isDestroyed()) out.push(w);
+  }
+  return out;
+}
+
+function broadcastAgentxDraft(snapshot, deps) {
+  for (const w of agentxDraftTargets(deps)) w.webContents.send('agentxDraft:changed', snapshot);
+}
+
+function broadcastAgentxDraftConfirmed(confirmed, deps) {
+  for (const w of agentxDraftTargets(deps)) w.webContents.send('agentxDraft:confirmed', confirmed);
+}
+
+function showAppFromJarvisWidget(deps) {
+  const appWindow = typeof deps.getAppWindow === 'function' ? deps.getAppWindow() : null;
+  if (appWindow && !appWindow.isDestroyed()) {
+    if (appWindow.isMinimized()) appWindow.restore();
+    appWindow.show();
+    appWindow.focus();
+    return { ok: true, created: false };
+  }
+  const appBaseUrl = typeof deps.getAppBaseUrl === 'function' ? deps.getAppBaseUrl() : null;
+  if (!appBaseUrl) return { ok: false, error: 'uygulama adresi yok' };
+  createAppWindow(appBaseUrl, deps);
+  return { ok: true, created: true };
+}
+
 function createWindowManager(deps) {
   const sharedWebPreferences = () => createSharedWebPreferences(deps);
   const enrichedDeps = { ...deps, sharedWebPreferences };
@@ -91,6 +125,10 @@ function createWindowManager(deps) {
     broadcastPaneView: (paneId, readable) => broadcastPaneView(paneId, readable, enrichedDeps),
     broadcastPaneDraft: (paneId, text) => broadcastPaneDraft(paneId, text, enrichedDeps),
     broadcastClipChanged: () => broadcastClipChanged(enrichedDeps),
+    agentxDraftTargets: () => agentxDraftTargets(enrichedDeps),
+    broadcastAgentxDraft: (snapshot) => broadcastAgentxDraft(snapshot, enrichedDeps),
+    broadcastAgentxDraftConfirmed: (confirmed) => broadcastAgentxDraftConfirmed(confirmed, enrichedDeps),
+    showAppFromJarvisWidget: () => showAppFromJarvisWidget(enrichedDeps),
     DESIGN_WINDOW_KEY,
     DESIGN_WINDOW_MIN,
     designWindowAlive,
@@ -195,4 +233,8 @@ module.exports = {
   handDetectAlive,
   openHandDetectWindow,
   scheduleHandControlWarmup,
+  agentxDraftTargets,
+  broadcastAgentxDraft,
+  broadcastAgentxDraftConfirmed,
+  showAppFromJarvisWidget,
 };
