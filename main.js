@@ -47,7 +47,7 @@ const { runBootstrap } = require('./src/main/bootstrap/index.js');
 const { registerPrefsIpc, createSyncService } = require('./src/features/sync');
 const { createMemoryService } = require('./src/features/memory');
 const { createMobileService } = require('./src/features/mobile');
-const { wireIpc: wireAppIpc } = require('./src/main/ipc');
+const { wireIpc: wireAppIpc, assembleIpcDeps } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
@@ -1786,73 +1786,6 @@ const workspaceFileService = createWorkspaceFileService({
   renameWithRetry: renameWithRetrySync,
 });
 
-function withinActiveRoots(abs) {
-  return workspaceFileService.withinActiveRoots(abs);
-}
-
-function resolveInRoots(p) {
-  return workspaceFileService.resolveInRoots(p);
-}
-
-function readGitBranch(startDir) {
-  return workspaceFileService.readGitBranch(startDir);
-}
-
-function resolveSearchRoot(p) {
-  return workspaceFileService.resolveSearchRoot(p);
-}
-
-function displayPath(abs) {
-  return workspaceFileService.displayPath(abs);
-}
-
-function readWorkspaceFile(p) {
-  return workspaceFileService.readWorkspaceFile(p);
-}
-
-function writeWorkspaceFile(payload) {
-  return workspaceFileService.writeWorkspaceFile(payload);
-}
-
-function listWorkspaceDir(dir) {
-  return workspaceFileService.listWorkspaceDir(dir);
-}
-
-function openFolderDialog(win) {
-  return workspaceFileService.openFolderDialog(win);
-}
-
-function allowPaneRoot(paneId) {
-  return workspaceFileService.allowPaneRoot(paneId);
-}
-
-function rehydrateGrantedRoots() {
-  return workspaceFileService.rehydrateGrantedRoots();
-}
-
-function readEditorState() {
-  return workspaceFileService.readEditorState();
-}
-
-function writeEditorState(state) {
-  return workspaceFileService.writeEditorState(state);
-}
-
-function readOfficeState() {
-  return workspaceFileService.readOfficeState();
-}
-
-function writeOfficeState(state) {
-  return workspaceFileService.writeOfficeState(state);
-}
-
-function readFeedbackSeen() {
-  return workspaceFileService.readFeedbackSeen();
-}
-
-function writeFeedbackSeen(state) {
-  return workspaceFileService.writeFeedbackSeen(state);
-}
 
 // ADP-487 — tek-aktif-pane-per-agent: bir agentId'nin CANLI (exit olmamış) pane'i
 // varsa döndür, yoksa null. `restoreLivePanes`'in kendi "double-spawn guard"ı
@@ -1912,24 +1845,9 @@ const apiKeyService = createApiKeyService({
   logLine: (line) => logLine(line),
 });
 
-function engineModelCatalogPayload() {
-  return apiKeyService.engineModelCatalogPayload();
-}
-
-function aiProvidersPayload(settings) {
-  return apiKeyService.aiProvidersPayload(settings);
-}
-
-function appApiKeysPayload() {
-  return apiKeyService.appApiKeysPayload();
-}
-
-function verifyAppApiKey(service) {
-  return apiKeyService.verifyAppApiKey(service);
-}
-
-
-function buildPlatformAndWindowDeps() {
+// ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcDepsBuilder.js - Faz 3.6.45)
+// ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcDepsBuilder.js - Faz 3.6.45)
+function _buildWindowAndWorkspaceDeps() {
   return {
     ipcMain,
     app,
@@ -1943,8 +1861,8 @@ function buildPlatformAndWindowDeps() {
     agentSettings,
     crewpaneHome,
     logLine,
-    getAppWindow: () => appWindow,
-    getAppBaseUrl: () => appBaseUrl,
+    appWindow,
+    appBaseUrl,
     createAppWindow,
     openPopoutWindow,
     closePopoutWindow,
@@ -1955,44 +1873,24 @@ function buildPlatformAndWindowDeps() {
     designWindowAlive,
     popoutPaneIdForWindow,
     windowManager,
-    getWindowManager: () => windowManager,
     keepPanesAliveOnWindowClose,
     crashWatchdog,
-    getAppUrlScheme: () => APP_URL_SCHEME,
-    getAppUrlPrefix: () => APP_URL_PREFIX,
-    mode: MODE,
+    APP_URL_SCHEME,
+    APP_URL_PREFIX,
+    MODE,
     relaunchApp,
     rebuildAndRelaunch,
-  };
-}
-
-function buildWorkspaceAndStorageDeps() {
-  return {
-    resolveInRoots,
-    withinActiveRoots,
-    displayPath,
-    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-    getWorkspaceRoot: () => agentWorkspaceRoot,
+    workspaceFileService,
+    workspaceRootService,
+    agentWorkspaceRoot,
     supervisorFor,
     feedbackBridge,
-    readFeedbackSeen,
-    writeFeedbackSeen,
-    readWorkspaceFile,
-    writeWorkspaceFile,
-    listWorkspaceDir,
-    openFolderDialog,
-    allowPaneRoot,
-    readEditorState,
-    writeEditorState,
-    readOfficeState,
-    writeOfficeState,
     workspacePlanDenial,
     workspaceOnboarding,
     rememberWorkspaceRoot,
-    switchWorkspaceRoot: (root) => switchWorkspaceRoot(root),
+    switchWorkspaceRoot,
     worktreeStore,
     projectRepos,
-    agentWorkspaceRoot,
     mergeService,
     worktreeService,
     activeWorktreePaths,
@@ -2000,8 +1898,6 @@ function buildWorkspaceAndStorageDeps() {
     codeIntel,
     gitBranchCache,
     GIT_BRANCH_TTL_MS,
-    readGitBranch,
-    resolveSearchRoot,
     branchName,
     codeIndexStore,
     codeIndexHealth,
@@ -2009,22 +1905,16 @@ function buildWorkspaceAndStorageDeps() {
     codeIndexFreshness,
     codeIndexJobs,
     invalidateGitBranchCache,
-  };
-}
-
-function buildMediaAndMemoryDeps() {
-  return {
     clipboardImageRoute,
     saveTempImage,
     localSprites,
-    pkgMgr: require('./src/agents/avatarPackageManager.cjs'),
-    officePkg: require('./src/agents/officePackageManager.cjs'),
-    imageStore: mediaService.imageStore,
+    mediaService,
     ingestTaskAttachment,
     attachmentStore,
     memoryGraph,
     memoryIndexer,
     memorySearcher,
+    searchIndexer,
     memoryEmbedder,
     memoryEmbedInstall,
     memoryEmbedInstaller,
@@ -2034,13 +1924,12 @@ function buildMediaAndMemoryDeps() {
     currentSessionId,
     paneContextScope,
     engineMemoryScope,
-    searchIndexer: () => searchIndexer(),
     broadcastClipChanged,
     clipboardHistoryCore,
   };
 }
 
-function buildTerminalAndExecutionDeps() {
+function _buildTerminalAndExecutionIpcDeps() {
   return {
     listPanes,
     resourceGovernor,
@@ -2080,8 +1969,6 @@ function buildTerminalAndExecutionDeps() {
     broadcastPaneView,
     paneDraft,
     broadcastPaneDraft,
-    getPaneAskRuntime: () => paneAskRuntime,
-    getPtys: () => ptys,
     deliverToPane,
     dispatchSleep,
     authorizeTeamScopeInteractive,
@@ -2095,21 +1982,16 @@ function buildTerminalAndExecutionDeps() {
   };
 }
 
-function buildMobileAndSkillDeps() {
+function _buildMobileAndVoiceIpcDeps() {
   return {
+    updateService,
+    announceService,
+    changelogService,
+    resetBootService,
+    apiKeyService,
+    mobileService,
+    syncService,
     announcements,
-    announceStateForRenderer: () => announceService.announceStateForRenderer(),
-    runAnnounceCheck: (trigger) => announceService.runAnnounceCheck(trigger),
-    pushAnnounceState: () => announceService.pushAnnounceState(),
-    announceHiddenThisSession: announceService.announceHiddenThisSession,
-    getAnnounceState: () => announceService.getAnnounceState(),
-    updateStateForRenderer: () => updateService.updateStateForRenderer(),
-    runUpdateCheck: (trigger) => updateService.runUpdateCheck(trigger),
-    updateLicenseGateNow: () => updateService.updateLicenseGateNow(),
-    getAutoUpdaterRef: () => updateService.getAutoUpdaterRef(),
-    getUpdateState: () => updateService.getUpdateState(),
-    setUpdateState: (s) => updateService.setUpdateState(s),
-    pushUpdateState: () => updateService.pushUpdateState(),
     updateCheck,
     noteQuit,
     runBrowserAction,
@@ -2132,36 +2014,29 @@ function buildMobileAndSkillDeps() {
     spawn,
     appI18n,
     notifyGate,
-    getHandOverlayWindows: () => (windowManager ? windowManager.handOverlayWindows : new Map()),
-    getHandOverlayPrefs: () => (windowManager ? windowManager.handOverlayPrefs() : { overlay: {} }),
-    handOverlayAnyAlive: () => handOverlayAnyAlive(),
-    closeHandOverlayWindows: (why) => closeHandOverlayWindows(why),
-    feedHandOverlay: (raw) => feedHandOverlay(raw),
-    getHandControl: () => handControl,
-    startHandControl: () => startHandControl(),
-    stopHandControl: (why) => stopHandControl(why),
-    handControlStatus: () => handControlStatus(),
-    handControlLive: () => handControlLive(),
-    finishPoseSampler: () => finishPoseSampler(),
-    selectHandCamera: (sel) => selectHandCamera(sel),
+    handOverlayAnyAlive,
+    closeHandOverlayWindows,
+    handControl,
+    startHandControl,
+    stopHandControl,
+    handControlStatus,
+    handControlLive,
+    finishPoseSampler,
+    selectHandCamera,
     onHandDetectFrame,
     handDetectAlive,
     broadcastHandControlStatus,
     handCameraPolicy,
     handHardwareCameras,
     handCameraPreference,
-    getSyncRuntime: () => syncRuntime,
-    getSyncIpcSurface: () => syncIpcSurface,
+    syncRuntime,
+    syncIpcSurface,
     mobilePending,
     mobileCommandPending,
-    emitMobileEvent: (e) => emitMobileEvent(e),
-    getMobileGateway: () => (mobileService ? mobileService.getMobileGateway() : null),
     mobileDeviceStore,
     mobilePlanDenial: (opts) => mobilePlanDenial(opts),
-    startMobile: () => startMobile(),
-    getMobileGatewayLastFailure: () => (mobileService ? mobileService.getMobileGatewayLastFailure() : null),
-    mobileStartFailure: (ctx) => mobileStartFailure(ctx),
-    mobileKillSwitch: () => mobileKillSwitch(),
+    mobileStartFailure,
+    mobileKillSwitch,
     mobileProbe,
     requireSeatOrThrow,
     openJarvisWidgetWindow,
@@ -2177,7 +2052,7 @@ function buildMobileAndSkillDeps() {
     inputSim,
     screenCaptureMod,
     instancePaths,
-    getJarvisConv: () => jarvisConv,
+    jarvisConv,
     agentxDeliverer,
     agentxBeamMod,
     agentxDraft,
@@ -2192,7 +2067,7 @@ function buildMobileAndSkillDeps() {
     builtinSkills,
     skillGuard,
     skillEngineView,
-    getBoundAccount: () => boundAccount,
+    boundAccount,
     syncSkillEngineViews,
     delegationQueueStore,
     delegationSupervisorStore,
@@ -2204,7 +2079,7 @@ function buildMobileAndSkillDeps() {
     supervisorFingerprint,
     ensureComposeLedger,
     teamComposeCore,
-    getComposeTransport: () => composeTransport,
+    composeTransport,
     teamComposeRequest,
     composeFail,
     composeAutonomy,
@@ -2212,11 +2087,11 @@ function buildMobileAndSkillDeps() {
   };
 }
 
-function buildSystemAuthAndEngineDeps() {
+function _buildSystemAndEngineIpcDeps() {
   return {
-    getModuleFaults: () => moduleFaults,
+    moduleFaults,
     reportModuleFault,
-    getLogPath: () => LOG_PATH,
+    LOG_PATH,
     analyticsNow,
     analyticsSchema,
     analyticsFirstTime,
@@ -2227,33 +2102,25 @@ function buildSystemAuthAndEngineDeps() {
     telemetryMod,
     provisionStoreMod,
     telemetryChannelMod,
-    getSeatGate: () => seatGate,
+    seatGate,
     gateOverrides,
     signOutConfirmCopy,
     accountScope,
     relaunchForAccountChange,
     schemeOwnership,
-    getSchemeVerdict: () => schemeVerdict,
-    setSchemeVerdict: (v) => { schemeVerdict = v; },
-    isAutomatedSession: IS_AUTOMATED_SESSION,
-    automatedSessionReason: AUTOMATED_SESSION_REASON,
+    schemeVerdict,
+    IS_AUTOMATED_SESSION,
+    AUTOMATED_SESSION_REASON,
     secretBackendState,
     handleAuthUrl,
     crewpaneIdConfig,
-    verifyAppApiKey,
     planLimits,
     appDbTokenFor,
-    resetContext: (log) => resetBootService.resetContext(log),
     installReset,
     resetGate,
-    sendResetTelemetry: (o) => resetBootService.sendResetTelemetry(o),
     leaderRefreshPolicy,
     handOverlayContract,
     updateChannel,
-    currentUpdateChannel: () => updateService.currentUpdateChannel(),
-    aiProvidersPayload,
-    engineModelCatalogPayload,
-    appApiKeysPayload,
     engineCatalog,
     teamScope,
     browserTrustMod,
@@ -2271,29 +2138,23 @@ function buildSystemAuthAndEngineDeps() {
     engineProfiles,
     engineSwitch,
     limitDetect,
-    getResetBootNotice: () => resetBootService.getResetBootNotice(),
     demoSitePath,
     runDoctorNow,
     firstRunDoctor,
     hookScanHome,
-    changelogStateForRenderer: () => changelogService.changelogStateForRenderer(),
-    runChangelogCheck: (trigger) => changelogService.runChangelogCheck(trigger),
-    getChangelogState: () => changelogService.getChangelogState(),
-    engineKeyStore: () => engineKeyStore(),
+    engineKeyStore,
     engineLoginLedger,
     planCatalog,
   };
 }
 
 function wireIpc() {
-  wireAppIpc({
-    ...buildPlatformAndWindowDeps(),
-    ...buildWorkspaceAndStorageDeps(),
-    ...buildMediaAndMemoryDeps(),
-    ...buildTerminalAndExecutionDeps(),
-    ...buildMobileAndSkillDeps(),
-    ...buildSystemAuthAndEngineDeps(),
-  });
+  wireAppIpc(assembleIpcDeps({
+    ..._buildWindowAndWorkspaceDeps(),
+    ..._buildTerminalAndExecutionIpcDeps(),
+    ..._buildMobileAndVoiceIpcDeps(),
+    ..._buildSystemAndEngineIpcDeps(),
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -2681,7 +2542,7 @@ app.whenReady().then(async () => {
     scanE2EResidueAtStartup,
     startupSweepService,
     ensureSpawnHelperExecutable,
-    rehydrateGrantedRoots,
+    rehydrateGrantedRoots: () => workspaceFileService.rehydrateGrantedRoots(),
     crewpaneHome,
     repoRoot: REPO_ROOT,
     standaloneDir,
