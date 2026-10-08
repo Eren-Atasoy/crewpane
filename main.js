@@ -68,6 +68,12 @@ const {
   registerEngineAuthIpc,
   registerEngineProfilesIpc,
 } = require('./src/features/auth');
+const {
+  registerSkillsIpc,
+  registerAgentxIpc,
+  registerAgentxDraftIpc,
+  registerDelegationIpc,
+} = require('./src/features/agents');
 let windowManager = null;
 
 const bootstrapCtx = {
@@ -7470,61 +7476,17 @@ function wireIpc() {
       return { ok: false, error: String(err.message || err) };
     }
   });
-  // ── AXP-03 — Agent X teslim + makbuz IPC'leri ───────────────────────────────
-  // `agentx:deliver` AXP-02'nin `draft:confirmed` olayını tüketir: {from, target, text,
-  // digest?, revision?, ctx:{aliases, departments, activeDepartment}}. Roster renderer'ın
-  // gerçeğidir (jarvis:think ile aynı `context` şekli); pane listesi main'in.
-  ipcMain.handle('agentx:deliver', async (_event, req) => {
-    try {
-      return await agentxDeliverer.deliverConfirmed(req);
-    } catch (err) {
-      logLine(`agentx:deliver error: ${err && err.message}`);
-      return { ok: false, kind: 'error', reason: String((err && err.message) || err) };
-    }
-  });
-  /** HEDEF SORUSU için teslimsiz çözüm (AXP-02 widget'ı "Kime göndereyim?" öncesi sorar). */
-  ipcMain.handle('agentx:resolve', (_event, req) => {
-    const r = req && typeof req === 'object' ? req : {};
-    return agentxDeliverer.resolve(r.target || {}, r.ctx || {});
-  });
-  /** AXP-14 — ışık kapısı: uçuştan ÖNCE hedef yoklanır (tek bayt yazılmaz, makbuz üretilmez). */
-  ipcMain.handle('agentx:probe', async (_event, req) => {
-    const r = req && typeof req === 'object' ? req : {};
-    try {
-      return await agentxDeliverer.probe(r.target || {}, r.ctx || {});
-    } catch (err) {
-      logLine(`agentx:probe error: ${err && err.message}`);
-      return { resolved: { kind: 'unknown', reason: 'no-target', said: null, suggestions: [] }, pane: null, state: 'none' };
-    }
-  });
-  /** "Son işlemler" — oturum içi makbuz defteri (en yeni önde). */
-  ipcMain.handle('agentx:receipts', () => agentxDeliverer.list());
-  ipcMain.handle('agentx:retry', (_event, id) => agentxDeliverer.retry(String(id || '')));
-  ipcMain.handle('agentx:cancel', (_event, id) => agentxDeliverer.cancel(String(id || '')));
-
-  // ── AXP-04 — IŞIK: kaynak ölçümü (pop-out kipleri) + masaüstü katmanı ──────────
-  // Renderer overlay'i ana pencere CSS px'inde çizer; Agent X pop-out'taysa kaynak o
-  // pencerenin GERÇEK ekran konumudur (`agentxBeam.source` → `beamSource` dört kip).
-  // Pop-out renderer'ı gösterge dikdörtgenini `agentx:beam:measured` ile geri verir.
-  const beamMeasureWaiters = new Map();
-  ipcMain.on('agentx:beam:measured', (_event, p) => {
-    const w = p && beamMeasureWaiters.get(p.measurementId);
-    if (w) { beamMeasureWaiters.delete(p.measurementId); w(p.rect || null); }
-  });
-  const agentxBeam = agentxBeamMod.createAgentxBeam({
+  // ── Agent X IPC Yüzeyi (Faz 3.5 — Sıra 8) ──────────────────────────────────
+  registerAgentxIpc({
+    ipcMain,
     BrowserWindow,
     screen,
-    getHost: () => (appWindow && !appWindow.isDestroyed() ? appWindow : null),
-    getPopout: () => jarvisWidgetAlive(),
-    measurePopout: (win, measurementId) => new Promise((resolve) => {
-      beamMeasureWaiters.set(measurementId, resolve);
-      try { win.webContents.send('agentx:beam:measure', { measurementId }); } catch { beamMeasureWaiters.delete(measurementId); resolve(null); }
-    }),
-    log: logLine,
+    agentxDeliverer,
+    agentxBeamMod,
+    getAppWindow: () => appWindow,
+    jarvisWidgetAlive,
+    logLine,
   });
-  ipcMain.handle('agentx:beam:source', (_event, p) => agentxBeam.source(p && typeof p === 'object' ? p : {}));
-  ipcMain.handle('agentx:beam:show', (_event, seg) => agentxBeam.show(seg));
-  ipcMain.handle('agentx:beam:clear', () => { agentxBeam.clear(); return { ok: true }; });
 
   /** e2e/ölçüm yüzeyi: pencerenin GERÇEK bayrakları (iddia değil, ölçüm). */
   ipcMain.handle('jarvisWidget:debug', () => {
@@ -7563,36 +7525,13 @@ function wireIpc() {
     return res;
   });
 
-  // ── AXP-02 — AGENT X İŞ TASLAĞI (durum makinesi main'de, paneDraft deseni) ──
-  // Widget (ana pencere) ses/klavye girdisini buraya YAZAR; ana pencere + pop-out
-  // ayna + pane pop-out'ları `agentxDraft:changed` ile AYNI fotoğrafı okur. Karar
-  // (ekle / duraksa / teyit / gönder) defterde verilir; renderer yalnız konuşur ve
-  // çizer. "evet" → `agentxDraft:confirmed` (AXP-03 teslimi bunu tüketir).
-  ipcMain.handle('agentxDraft:get', () => agentxDraft.getDraft());
-  const draftOp = (fn) => (_event, payload) => {
-    const p = payload && typeof payload === 'object' ? payload : {};
-    let res;
-    try {
-      res = fn(p);
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e), snapshot: agentxDraft.getDraft() };
-    }
-    if (res && res.changed) broadcastAgentxDraft(res.snapshot);
-    if (res && res.outcome && res.outcome.kind === 'confirmed') broadcastAgentxDraftConfirmed(res.outcome.confirmed);
-    return res;
-  };
-  ipcMain.handle('agentxDraft:open', draftOp((p) => agentxDraft.openDraft(p.route, { at: p.at })));
-  ipcMain.handle('agentxDraft:hear', draftOp((p) => agentxDraft.hear(p.text, { at: p.at, startedAt: p.startedAt, control: p.control, addressTokens: p.addressTokens })));
-  ipcMain.handle('agentxDraft:edit', draftOp((p) => agentxDraft.editText(p.text)));
-  ipcMain.handle('agentxDraft:setTarget', draftOp((p) => agentxDraft.setTarget(p.target)));
-  ipcMain.handle('agentxDraft:pause', draftOp((p) => agentxDraft.pause(p.at)));
-  ipcMain.handle('agentxDraft:noSpeech', draftOp((p) => agentxDraft.noSpeech(p.at)));
-  ipcMain.handle('agentxDraft:finish', draftOp((p) => agentxDraft.finish(p.at)));
-  ipcMain.handle('agentxDraft:spoken', draftOp((p) => agentxDraft.markSpoken(p.id, p.at)));
-  ipcMain.handle('agentxDraft:resolve', draftOp((p) => agentxDraft.resolve(p.id, p.choice, p.at)));
-  ipcMain.handle('agentxDraft:cancel', draftOp((p) => agentxDraft.cancel(p.at)));
-  ipcMain.handle('agentxDraft:undo', draftOp((p) => agentxDraft.undoCancel(p.at)));
-  ipcMain.handle('agentxDraft:tick', draftOp((p) => agentxDraft.tick(p.at)));
+  // ── Agent X Draft IPC Yüzeyi (Faz 3.5 — Sıra 8) ────────────────────────────
+  registerAgentxDraftIpc({
+    ipcMain,
+    agentxDraft,
+    broadcastAgentxDraft,
+    broadcastAgentxDraftConfirmed,
+  });
 
   // ADP-035 — multimodal prompt image attach. The renderer (sandboxed, no fs)
   // sends an image blob's bytes; main writes it to a temp file and returns the
@@ -7622,239 +7561,23 @@ function wireIpc() {
   // İki adım bilerek ayrı: "karttan kaldır" ile "diskten de sil" farklı kararlardır.
   ipcMain.handle('attachment:removeBytes', (_event, relPath) => attachmentStore().removeBytes(relPath));
 
-  // SK-03 (ADR-SKILL-CENTER §8) — SKİLL MERKEZİ'nin okuma ucu. `memory:graph`in
-  // kardeşi: dosya-tabanlı skill deposunu (yayın + taslak) tarar ve her skillin
-  // BUGÜN hangi motor tarafından görüldüğünü de söyler. SALT OKUNUR — bu uç
-  // hiçbir bağ kurmaz/silmez (`reconcileEngineViews` bilerek çağrılmaz: paneli
-  // açmak bir mutasyon olamaz). Hata → boş liste değil, `ok:false` + gerekçe.
-  ipcMain.handle('skills:list', () => {
-    try {
-      return skillCenter.listSkillCenter({ workspaceRoot: agentWorkspaceRoot });
-    } catch (err) {
-      logLine(`skills:list failed: ${err.message}`);
-      return { ok: false, reason: err.message, enabled: true, workspaceRoot: agentWorkspaceRoot, roots: null, engines: [], counts: { published: 0, draft: 0, invalid: 0 }, skills: [] };
-    }
-  });
-
-  // SKL-B0 — MOTOR GÖRÜNÜMLERİ (salt okunur): hangi motorun dizini var/yok, yayındaki
-  // skiller bağlı mı, hangi yabancı girdi yolu tutuyor, defterde `partial` uyarısı var mı.
-  // `skills:list`in kardeşi ama AYRI bir uç: liste SKİLL başına, bu MOTOR başına konuşur.
-  ipcMain.handle('skills:engineViews', () => {
-    try {
-      return skillEngineSync.engineViewSummary({ workspaceRoot: agentWorkspaceRoot });
-    } catch (err) {
-      logLine(`skills:engineViews failed: ${err.message}`);
-      return { enabled: true, workspaceRoot: agentWorkspaceRoot, canonicalRoot: null, published: [], engines: [], reason: err.message };
-    }
-  });
-
-  // SKL-B0 — [Şimdi eşitle]: kullanıcının ELİYLE tetiklediği reconcile. Açılış
-  // tetiği zaten var; bu düğme "az önce yayınladım/bir şey bozuldu, ŞİMDİ düzelt"
-  // içindir ve sonucu ANINDA taze özetle döner (UI ikinci çağrı yapmasın).
-  // Yayın kapısına DOKUNMAZ: taslak yayınlamaz, yalnız YAYINDAKİLERİ bağlar.
-  ipcMain.handle('skills:syncEngines', () => {
-    try {
-      const r = skillEngineSync.syncEngineViews({
-        workspaceRoot: agentWorkspaceRoot,
-        appVersion: app.getVersion(),
-        reason: 'manual',
-        log: (line) => logLine(line),
-      });
-      return { ok: r.ran, reason: r.reason, summary: r.summary, report: r.report };
-    } catch (err) {
-      logLine(`skills:syncEngines failed: ${err.message}`);
-      return { ok: false, reason: err.message, summary: null, report: null };
-    }
-  });
-
-  // SK-03 — TEK skillin tam kaydı (SKILL.md gövdesi dahil). Liste ucuz kalsın diye
-  // gövde ayrı çağrıda gelir (`memory:fact` emsali). Yok/geçersiz → null.
-  ipcMain.handle('skills:read', (_event, name, scope) => {
-    try {
-      return skillCenter.readSkillCenter({ workspaceRoot: agentWorkspaceRoot, name, scope });
-    } catch (err) {
-      logLine(`skills:read failed: ${err.message}`);
-      return null;
-    }
-  });
-
-  // SK-04 (ADR-SKILL-CENTER Karar 2) — TASLAK → YAYIN. Uygulamadaki TEK terfi
-  // noktası; yalnız kullanıcının onay kartındaki tıklamasıyla çağrılır (otomatik
-  // yayın YOK). İşin kendisi SK-02'nin fiillerinde (skillApprove yalnız sırayı
-  // kurar: publishDraft → reconcileEngineViews).
-  //
-  // ONAYLAYAN damgası BURADA ölçülür: renderer'ın gönderdiği bir isim kabul
-  // edilmez, `boundAccount` (bu süreçte bağlı hesap) yazılır — damga bir kanıt
-  // olacaksa uydurulabilir olmamalıdır.
-  ipcMain.handle('skills:publish', (_event, name, opts) => {
-    try {
-      const reviewedBy = (boundAccount && (boundAccount.email || boundAccount.userId)) || os.userInfo().username || 'human';
-      return skillApprove.approveDraft({
-        workspaceRoot: agentWorkspaceRoot,
-        name,
-        reviewedBy,
-        reviewedAt: new Date().toISOString(),
-        overwrite: !!(opts && opts.overwrite),
-      });
-    } catch (err) {
-      logLine(`skills:publish failed: ${err.message}`);
-      return { ok: false, errors: [{ code: 'publish-failed', message: err.message }], warnings: [] };
-    }
-  });
-
-  // SK-05 (ADR-SKILL-CENTER Karar 2) — KULLANICININ YAZMA UCU: "Yeni Skill" formu ve
-  // "Düzenle". Bu uç YAYIN dizinine ASLA yazmaz: her iki kip de `skill-drafts/`e iner
-  // (yayındaki bir skill düzenlenirse taslağa ÇATALLANIR, canlı dosyaya dokunulmaz) —
-  // yayın hâlâ tek bir yerden, SK-04'ün onay kartından geçer.
-  //
-  // YAZAN damgası BURADA ölçülür (`skills:publish` emsali): renderer'dan gelen bir
-  // isim kabul edilmez; provenans uydurulabilir olmamalı.
-  ipcMain.handle('skills:saveDraft', (_event, input) => {
-    try {
-      const author = (boundAccount && (boundAccount.email || boundAccount.userId)) || os.userInfo().username || 'human';
-      return skillAuthor.saveDraft({
-        workspaceRoot: agentWorkspaceRoot,
-        name: input && input.name,
-        description: input && input.description,
-        body: input && input.body,
-        mode: input && input.mode === 'update' ? 'update' : 'create',
-        author,
-      });
-    } catch (err) {
-      logLine(`skills:saveDraft failed: ${err.message}`);
-      return { ok: false, errors: [{ code: 'save-failed', message: err.message }], warnings: [] };
-    }
-  });
-
-  // ── SK-08 — YAYIN GEÇMİŞİ / GERİ ALMA / PAYLAŞIM / DENETİM ─────────────────
-
-  // SK-08 (2) — bir skillin yayın geçmişi (kim/ne zaman/ne değişti). SALT OKUNUR.
-  ipcMain.handle('skills:history', (_event, name) => {
-    try {
-      return skillVersions.listVersions(agentWorkspaceRoot, name);
-    } catch (err) {
-      logLine(`skills:history failed: ${err.message}`);
-      return { name, versions: [], count: 0 };
-    }
-  });
-
-  // SK-08 (2) — GERİ ALMA. `skills:publish` emsali: geri alanın damgası BURADA
-  // ölçülür (renderer'ın gönderdiği isim kabul edilmez). Hedef metin, geçmişte
-  // insan onayıyla yayınlanmış bir sürümdür → onay değişmezi korunur.
-  ipcMain.handle('skills:rollback', (_event, name, version) => {
-    try {
-      const restoredBy = (boundAccount && (boundAccount.email || boundAccount.userId)) || os.userInfo().username || 'human';
-      return skillApprove.rollbackToVersion({
-        workspaceRoot: agentWorkspaceRoot,
-        name,
-        version,
-        restoredBy,
-        at: new Date().toISOString(),
-      });
-    } catch (err) {
-      logLine(`skills:rollback failed: ${err.message}`);
-      return { ok: false, errors: [{ code: 'rollback-failed', message: err.message }] };
-    }
-  });
-
-  // SK-08 (4) — DIŞA AKTARIM: paylaşılabilir SKILL.md metni (sır taramasından geçer).
-  ipcMain.handle('skills:export', (_event, name, scope) => {
-    try {
-      return skillShare.exportSkill({ workspaceRoot: agentWorkspaceRoot, name, scope: scope === 'draft' ? 'draft' : 'published' });
-    } catch (err) {
-      logLine(`skills:export failed: ${err.message}`);
-      return { ok: false, errors: [{ code: 'export-failed', message: err.message }] };
-    }
-  });
-
-  // SK-08 (4) — İÇE AKTARIM. 🔴 Sonuç HER ZAMAN taslaktır; bu ucun yayın yapan bir
-  // yolu YOKTUR (skillShare yalnız yazma boğazını çağırır). Alan kim olduğu burada
-  // ölçülür — provenans uydurulabilir olmamalı.
-  ipcMain.handle('skills:import', (_event, payload) => {
-    try {
-      const importedBy = (boundAccount && (boundAccount.email || boundAccount.userId)) || os.userInfo().username || 'human';
-      const p = payload || {};
-      if (p.filePath) {
-        return skillShare.importSkillFile({ workspaceRoot: agentWorkspaceRoot, filePath: p.filePath, name: p.name, importedBy, overwriteDraft: !!p.overwriteDraft });
-      }
-      return skillShare.importSkillText({ workspaceRoot: agentWorkspaceRoot, text: p.text, name: p.name, source: p.source, importedBy, overwriteDraft: !!p.overwriteDraft });
-    } catch (err) {
-      logLine(`skills:import failed: ${err.message}`);
-      return { ok: false, errors: [{ code: 'import-failed', message: err.message }] };
-    }
-  });
-
-  // SKL-B6 — DAHİLİ KATALOG (salt okunur): paketle gelen skill'ler + her birinin bu
-  // çalışma alanındaki GERÇEK durumu (kurulu · güncelleme var · çatal · çakışma).
-  ipcMain.handle('skills:builtinList', () => {
-    try {
-      return builtinSkills.listCatalog({ workspaceRoot: agentWorkspaceRoot });
-    } catch (err) {
-      logLine(`skills:builtinList failed: ${err.message}`);
-      return { ok: false, reason: err.message, catalogVersion: null, dir: null, skills: [] };
-    }
-  });
-
-  // SKL-B6 — KUR / GÜNCELLE. Kurulum bir YAYIN fiilidir (kullanıcının tıklaması ADR'nin
-  // istediği insan onayıdır), bu yüzden bağların kurulması için reconcile HEMEN tetiklenir.
-  // ONAYLAYAN damgası `skills:publish` emsaliyle BURADA yazılır: renderer'ın gönderdiği
-  // bir isim kabul edilmez.
-  ipcMain.handle('skills:builtinInstall', (_event, name, opts) => {
-    try {
-      const reviewedBy = (boundAccount && (boundAccount.email || boundAccount.userId)) || os.userInfo().username || 'human';
-      const res = builtinSkills.install({
-        workspaceRoot: agentWorkspaceRoot,
-        name,
-        installAs: (opts && opts.installAs) || null,
-        force: !!(opts && opts.force),
-        reviewedBy,
-      });
-      if (res.ok && res.changed) syncSkillEngineViews('builtin-install');
-      return res;
-    } catch (err) {
-      logLine(`skills:builtinInstall failed: ${err.message}`);
-      return { ok: false, changed: false, action: 'none', errors: [{ code: 'exception', message: err.message }] };
-    }
-  });
-
-  // SKL-B6 — KALDIR: kurulu kopya silinir, tercih kaydedilir (açılış geri kurmaz) ve
-  // reconcile bayat motor bağını temizler ("bayat bağ 0" kart md.5).
-  ipcMain.handle('skills:builtinUninstall', (_event, name) => {
-    try {
-      const res = builtinSkills.uninstall({ workspaceRoot: agentWorkspaceRoot, name });
-      if (res.ok && res.changed) syncSkillEngineViews('builtin-uninstall');
-      return res;
-    } catch (err) {
-      logLine(`skills:builtinUninstall failed: ${err.message}`);
-      return { ok: false, changed: false, action: 'none', errors: [{ code: 'exception', message: err.message }] };
-    }
-  });
-
-  // SK-08 (1)/T6 — ONAY KAPISI DENETİMİ: yayındaki her skill kapıdan mı geçti, motor
-  // dizinlerinde kaçak giriş var mı? Merkez bunu bir uyarı şeridi olarak gösterir →
-  // atlatma SESSİZ kalmaz (kapının "UI ayağı").
-  ipcMain.handle('skills:audit', () => {
-    try {
-      // İki AYRI soru, iki AYRI nöbetçi (ikisi de var olanı çağırır, yenisini yazmaz):
-      //   • damga  → skillGuard.auditPublished      ("yayındaki dosya kapıdan mı geçti")
-      //   • motor  → skillEngineView.auditEngineViews (SK-03/R8: taslak sızmış mı, kaçak dizin var mı)
-      //   • dahili → builtinSkills.auditBuiltin        (SKL-B6: `builtin-tampered` · `builtin-orphan`)
-      const published = skillGuard.auditPublished(agentWorkspaceRoot);
-      const engines = skillEngineView.auditEngineViews({ workspaceRoot: agentWorkspaceRoot });
-      const builtin = builtinSkills.auditBuiltin({ workspaceRoot: agentWorkspaceRoot });
-      const findings = [
-        ...published.findings,
-        ...(engines.violations || []).map((v) => ({ kind: v.code, name: v.name, file: v.path, engine: v.engine, message: v.message })),
-        ...(builtin.violations || []).map((v) => ({ kind: v.code, name: v.name, file: v.path, where: v.where, message: v.message })),
-      ];
-      // `builtin-forked` (kullanıcının düzenlediği dahili kopya) BULGU DEĞİL: §2.5 onu
-      // açıkça korur. Ayrı bir alanda taşınır ki Merkez "güncelleme var ama senin
-      // düzenlemen duruyor" diyebilsin — uyarı şeridini kırmızıya boyamadan.
-      return { ok: findings.length === 0, checked: published.checked, findings, info: builtin.info || [], engineDirs: engines.checked || [] };
-    } catch (err) {
-      logLine(`skills:audit failed: ${err.message}`);
-      return { ok: true, checked: 0, findings: [], reason: err.message };
-    }
+  // ── Skills IPC Yüzeyi (Faz 3.5 — Sıra 8) ───────────────────────────────────
+  registerSkillsIpc({
+    ipcMain,
+    app,
+    skillCenter,
+    skillEngineSync,
+    skillApprove,
+    skillAuthor,
+    skillVersions,
+    skillShare,
+    builtinSkills,
+    skillGuard,
+    skillEngineView,
+    getWorkspaceRoot: () => agentWorkspaceRoot,
+    getBoundAccount: () => boundAccount,
+    syncSkillEngineViews,
+    logLine,
   });
 
   // ── SEARCH-2 — GENEL ARAMA (rapor gövdesi · hafıza · görev · ajan oturumları) ──
@@ -7988,153 +7711,26 @@ function wireIpc() {
     return { ...r, hits };
   });
 
-  // QUEUE-PERSIST — meşgul-kuyruğu + paused-delegasyon kalıcılığı (sprintStore
-  // deseninin tek-dosya hali; path'i HEP main kurar, renderer yalnız durum objesi geçirir).
-  ipcMain.handle('dlgqueue:save', (_event, state) => {
-    try {
-      return { ok: true, file: delegationQueueStore.saveQueueState(state) };
-    } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) };
-    }
-  });
-  ipcMain.handle('dlgqueue:load', () =>
-    supervisorFor('queue-store').run('load', () => ({ ok: true, state: delegationQueueStore.loadQueueState() }), { ok: false, reason: 'degraded' }));
-
-  // ── SUP-UI-01 — KUYRUK PANELİNİN VERİSİ (salt-okur) ──────────────────────
-  // Eren'in şikâyeti: "bi iş başlıyo komut veriyo, ne nerden geldi niye geldi
-  // anlaşılmıyor". Kuyruğun üç defteri diskte ZATEN duruyordu, hiçbir yüzeyde
-  // görünmüyordu. Bu handler onları okur ve saf çekirdeğe (queueBoard.cjs) verir.
-  //
-  // Neden MAIN okuyor: (a) renderer fs'e inemez, (b) uçuş defteri (supervisor) ve
-  // limit kuyruğu zaten main'in state'i, (c) TIKANMA ancak pane'in `lastDataAt`
-  // damgasıyla görülür — o damga yalnız burada var. Panel EYLEMLERİ renderer'da
-  // kalır (kuyruğun canlı sahibi delegationRunner'dır); bu kanal salt-okurdur.
-  ipcMain.handle('queueboard:get', () =>
-    supervisorFor('queue-board').run(
-      'get',
-      () => {
-        const panes = [];
-        for (const [paneId, entry] of ptys) {
-          panes.push({
-            paneId,
-            agentId: entry.agentId || null,
-            command: entry.command || null,
-            // Tıkanma sondasının TEK sinyali: bu pane en son ne zaman BAYT üretti.
-            lastDataAt: typeof entry.lastDataAt === 'number' ? entry.lastDataAt : 0,
-            disallowSubagent: entry.disallowSubagent === true,
-          });
-        }
-        // e2e dikişi: "pane boşta" eşiği üründe 2 dakikadır; test o kadar bekleyemez.
-        // (Aynı desen supervisor'ın CREWPANE_SUPERVISOR_* dikişlerinde kullanılıyor.)
-        const idleEnv = Number(process.env.CREWPANE_QUEUEBOARD_IDLE_MS);
-        const board = queueBoard.buildQueueBoard({
-          now: Date.now(),
-          ...(Number.isFinite(idleEnv) && idleEnv > 0 ? { idleMs: idleEnv } : {}),
-          supervisor: delegationSupervisorStore.loadState(crewpaneHome()),
-          queueState: delegationQueueStore.loadQueueState(crewpaneHome()),
-          resumeQueue: resumeQueueStore.loadQueue(crewpaneHome()),
-          panes,
-        });
-        return {
-          ok: true,
-          board,
-          // Defterlerin YOLLARI panelde görünür: "hangi dosyaya bakıyorum?" sorusu
-          // ekrandan cevaplanabilsin (yeni defter icat edilmediğinin kanıtı da bu).
-          sources: {
-            queue: delegationQueueStore.queuePath(crewpaneHome()),
-            supervisor: delegationSupervisorStore.supervisorPath(crewpaneHome()),
-            resume: resumeQueueStore.queuePath(crewpaneHome()),
-          },
-        };
-      },
-      { ok: false, reason: 'degraded' },
-    ));
-
-  // ── ADP-659 — DELEGASYON SUPERVISOR köprüsü (renderer → main defteri) ──────
-  // Renderer her dispatch'i BURAYA kaydeder. Bundan sonra takip renderer'a bağlı
-  // DEĞİLDİR: renderer reload olsa/ölse de main defteri diskte durur ve gözcü
-  // tamamlanmayı kendi ölçer. Kanıt yolu MAIN'de mutlaklaştırılır (pane cwd'si
-  // main'in defterinde — ADP-502) ve baseline de MAIN'in hash'iyle alınır, böylece
-  // karşılaştırma hep aynı algoritmayla yapılır.
-  ipcMain.handle('dlgsup:record', (_event, input) =>
-    supervisorFor('delegation-supervisor').run(
-      'record',
-      () => {
-        const sup = ensureDelegationSupervisor();
-        const input0 = input || {};
-        const entry = input0.paneId ? ptys.get(input0.paneId) : null;
-        // ADP-735 — kanıt yolu TEK köke çözülüyordu (`cwd || pane.cwd || workspaceRoot`).
-        // Kurulu makinede bu köklerin hepsi workspace PARENT'ı ("CrewPane Apps") ama
-        // worker raporunu ALT-PROJEYE yazar → `<ws>/docs/agent-results/…` diye var
-        // OLMAYAN bir yol kaydediliyor, kanıt kapısı asla ateşlenemiyordu (2026-07-29:
-        // 9 kaydın 9'u "beklenen çıktı yok" ile BAŞARISIZ). Artık aday listesi üretilir
-        // ve her adayın baseline'ı ayrı alınır — supervisor hepsini yoklar.
-        // B-01 (F-7) — izole koşan görev raporunu KENDİ worktree'sine yazar. Pane'in
-        // worktree'si biliniyorsa (kayıttan) o ağaç aday tabanı olur; bilinmiyorsa
-        // aktif ağaçların hepsi yoklanır. Bu satır olmadan izolasyon açıldığı anda
-        // HER görev "beklenen çıktı yok" ile SAHTE-FAIL alırdı (R-3).
-        const paneWt = entry && typeof entry.worktreePath === 'string' ? entry.worktreePath : null;
-        const rec = evidencePathMod.shapeEvidenceRecord(input0, {
-          cwd: entry && entry.cwd,
-          workspaceRoot: agentWorkspaceRoot,
-          department: input0.department || (entry && entry.department),
-          mapping: agentSettings.readSettings().departmentDirs,
-          repoRoot: REPO_ROOT,
-          worktreePaths: paneWt ? [paneWt] : activeWorktreePaths(),
-          fingerprint: supervisorFingerprint,
-        });
-        if (rec.evidencePath && rec.evidencePath !== input0.evidencePath) {
-          logLine(
-            `supervisor: kanıt yolu çözüldü ${input0.evidencePath} → ${rec.evidencePath}` +
-              (rec.evidenceAlt && rec.evidenceAlt.length ? ` (+${rec.evidenceAlt.length} alternatif kök)` : ''),
-          );
-        }
-        return { ok: !!sup.record(rec) };
-      },
-      { ok: false },
-    ));
-
-  // Motor NORMAL yolda settle etti → defteri hizala (supervisor çift-iş yapmaz).
-  ipcMain.handle('dlgsup:settle', (_event, p) =>
-    supervisorFor('delegation-supervisor').run(
-      'settle',
-      () => {
-        const sup = ensureDelegationSupervisor();
-        const ok = sup.settle((p && p.delegationId) || '', (p && p.subtaskId) || '', p || {});
-        // ADP-667 — lider-pane uyandırmasının sahibi supervisor: toplama penceresi
-        // dolar dolmaz süpür (normal 15sn tick'i bekleyip bildirimi geciktirme).
-        if (ok) {
-          const cfg = sup.config ? sup.config() : {};
-          scheduleSupervisorSweep((cfg.wakeCoalesceMs || 10_000) + 800);
-        }
-        return { ok };
-      },
-      { ok: false },
-    ));
-
-  // Lider gerçekten baktı (MCP `crewpane_delegation_status`) → uyandırma durur.
-  ipcMain.handle('dlgsup:ack', (_event, leaderId) =>
-    supervisorFor('delegation-supervisor').run(
-      'ack',
-      () => ({ ok: true, cleared: ensureDelegationSupervisor().ack(String(leaderId || '')) }),
-      { ok: false },
-    ));
-
-  // e2e/teşhis: defteri oku + tick'i elle sür (zamanlayıcıyı beklemeden).
-  ipcMain.handle('dlgsup:debug', async (_event, action) => {
-    const sup = ensureDelegationSupervisor();
-    if (action === 'sweep') await sup.sweep();
-    if (action === 'repair') sup.repairAfterRestart();
-    return { ok: true, state: sup.snapshot(), config: sup.config() };
-  });
-
-  // Renderer'ın kuyruk-ilerletme cevabı (supervisorAskRenderer'ın diğer ucu).
-  ipcMain.on('dlgsup:advance:result', (_event, msg) => {
-    const pending = msg && supervisorPending.get(msg.requestId);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    supervisorPending.delete(msg.requestId);
-    pending.resolve(msg.ok !== false);
+  // ── Delegation Queue & Supervisor IPC Yüzeyi (Faz 3.5 — Sıra 8) ────────────
+  registerDelegationIpc({
+    ipcMain,
+    delegationQueueStore,
+    delegationSupervisorStore,
+    resumeQueueStore,
+    queueBoard,
+    evidencePathMod,
+    supervisorFor,
+    ensureDelegationSupervisor,
+    scheduleSupervisorSweep,
+    supervisorPending,
+    supervisorFingerprint,
+    ptys,
+    crewpaneHome,
+    getWorkspaceRoot: () => agentWorkspaceRoot,
+    agentSettings,
+    REPO_ROOT,
+    activeWorktreePaths,
+    logLine,
   });
 
   // ADP-121 (ADR-009 Faz 120a) — Jarvis voice core: STT (Whisper) + brain
