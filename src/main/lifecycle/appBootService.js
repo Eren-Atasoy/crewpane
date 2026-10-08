@@ -105,9 +105,41 @@ function injectSyntheticFault(faultInject, supervisorFor, logLine) {
   }
 }
 
+function _normalizeUpdateRoutines(d) {
+  const { updateService, announceService, changelogService } = d;
+  if (updateService && !d.scheduleUpdateChecks) d.scheduleUpdateChecks = () => updateService.scheduleUpdateChecks();
+  if (announceService && !d.scheduleAnnounceChecks) d.scheduleAnnounceChecks = () => announceService.scheduleAnnounceChecks();
+  if (changelogService && !d.scheduleChangelogChecks) d.scheduleChangelogChecks = () => changelogService.scheduleChangelogChecks();
+}
+
+function _normalizeMemoryAndStorageRoutines(d) {
+  const { startupSweepService, memoryService, workspaceFileService } = d;
+  if (startupSweepService && !d.scheduleAutoMemoryIndex) d.scheduleAutoMemoryIndex = () => startupSweepService.scheduleAutoMemoryIndex();
+  if (startupSweepService && !d.scanE2EResidueAtStartup) d.scanE2EResidueAtStartup = () => startupSweepService.scanE2EResidueAtStartup();
+  if (memoryService && !d.memoryIndexerSingleton) d.memoryIndexerSingleton = memoryService.memoryIndexerSingleton;
+  if (memoryService && !d.searchIndexSingleton) d.searchIndexSingleton = memoryService.searchIndexSingleton;
+  if (workspaceFileService && !d.rehydrateGrantedRoots) d.rehydrateGrantedRoots = () => workspaceFileService.rehydrateGrantedRoots();
+}
+
+function _normalizeWindowRoutines(d) {
+  const { windowManager, handService } = d;
+  if (windowManager && !d.createSpikeWindow) d.createSpikeWindow = () => windowManager.createSpikeWindow();
+  if (windowManager && !d.createAppWindow) d.createAppWindow = (url) => windowManager.createAppWindow(url);
+  if (windowManager && !d.scheduleHandControlWarmup) d.scheduleHandControlWarmup = (att) => windowManager.scheduleHandControlWarmup(att);
+  if (handService && !d.stopHandControl) d.stopHandControl = (why) => handService.stopHandControl(why);
+}
+
+function _normalizeBootDeps(deps) {
+  const d = Object.assign({}, deps);
+  _normalizeUpdateRoutines(d);
+  _normalizeMemoryAndStorageRoutines(d);
+  _normalizeWindowRoutines(d);
+  return d;
+}
+
 class AppBootService {
   constructor(deps = {}) {
-    this.deps = Object.assign({}, deps);
+    this.deps = _normalizeBootDeps(deps);
   }
 
   setupEarlyObservers() {

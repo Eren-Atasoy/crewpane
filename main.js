@@ -2162,127 +2162,6 @@ windowManager = createWindowManager({
 
 function createAppWindow(url) { return windowManager.createAppWindow(url); }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ADP-533 + ADP-553 — güncelleme akışı, TEK durum makinesi iki modla:
-//
-//   mode:'updater' (Faz 2, ADP-553) — imzalı+notarize edilmiş PAKETLİ build:
-//     electron-updater latest-mac.yml'i okur (publish: github, prod-builder.cjs) →
-//     rozet "İndir" = uygulama İÇİNDE indirme (progress) → "Yeniden başlat ve
-//     güncelle" = kullanıcı ONAYIYLA quitAndInstall. Sessiz zorlama YOK
-//     (autoDownload=false; indirme ve kurulum yalnız kullanıcı tıklamasıyla).
-//   mode:'notify'  (Faz 1, ADP-533) — dev/unsigned fallback: GitHub Releases API
-//     sürüm karşılaştırır, "İndir" SABİT DMG URL'ini tarayıcıda açar.
-//
-// Her iki modda: açılışta + ~6 saatte bir kontrol; ağ/limit hatası SESSİZ geçilir
-// (bildirim yok, çökme yok); ✕ = sürüm-bazlı kalıcı dismiss. `update:*` IPC yüzeyi
-// iki modda AYNI — renderer mode+phase'e göre buton etiketini seçer.
-
-function scheduleUpdateChecks() {
-  updateService.scheduleUpdateChecks();
-}
-
-function scheduleAnnounceChecks() {
-  announceService.scheduleAnnounceChecks();
-}
-
-function scheduleChangelogChecks() {
-  changelogService.scheduleChangelogChecks();
-}
-
-function scheduleAutoMemoryIndex() {
-  return startupSweepService.scheduleAutoMemoryIndex();
-}
-
-function scanE2EResidueAtStartup() {
-  return startupSweepService.scanE2EResidueAtStartup();
-}
-
-app.whenReady().then(async () => {
-  const gate = await startupGate.runStartupGate(process.argv);
-  if (!gate.proceed) return;
-
-  const appBootService = createAppBootService({
-    engineCoerce,
-    livePaneRegistry,
-    offerRecoverablePanes,
-    getAppWindow: () => appWindow,
-    logLine,
-    startCrashWatchdog,
-    app,
-    scanE2EResidueAtStartup,
-    startupSweepService,
-    rehydrateGrantedRoots: () => workspaceFileService.rehydrateGrantedRoots(),
-    crewpaneHome,
-    repoRoot: REPO_ROOT,
-    standaloneDir,
-    isPackaged: app.isPackaged,
-    resourcesPath: process.resourcesPath,
-    schemeOwnership,
-    appUrlScheme: APP_URL_SCHEME,
-    isAutomatedSession: IS_AUTOMATED_SESSION,
-    automatedSessionReason: AUTOMATED_SESSION_REASON,
-    setSchemeVerdict: (v) => { schemeVerdict = v; },
-    safeStorageIdentity,
-    safeStorageScope: SAFE_STORAGE_SCOPE,
-    secretBackendState,
-    instanceHome: instancePaths.instanceHome(),
-    initSeatGate,
-    bindAccountRoot,
-    reresolveWorkspaceRootAfterAccountBind,
-    syncRuntime,
-    prefsApplySoon,
-    prefsProjectNow,
-    seedBuiltinSkills,
-    syncSkillEngineViews,
-    consumeArgvDeepLink,
-    drainPendingAuthUrls,
-    wireIpc,
-    startResourceGovernorSampling,
-    createSpikeWindow: () => windowManager.createSpikeWindow(),
-    BrowserWindow,
-    autotest: AUTOTEST,
-    noteQuit,
-    groqShim,
-    providers,
-    adapter,
-    registerJarvisShortcut,
-    scheduleHandControlWarmup: (attempt) => windowManager.scheduleHandControlWarmup(attempt),
-    stopHandControl: (why) => handService.stopHandControl(why),
-    scheduleUpdateChecks,
-    startHeartbeat,
-    scheduleAnnounceChecks,
-    scheduleChangelogChecks,
-    scheduleAutoMemoryIndex,
-    memoryIndexerSingleton: memoryService.memoryIndexerSingleton,
-    searchIndexSingleton: memoryService.searchIndexSingleton,
-    jarvisVoice,
-    notifyScreenshotsMovedOnce,
-    runDoctorNow,
-    doctorService,
-    telemetryMod,
-    agentSettings,
-    telemetryProvisioning,
-    obsReporterNow,
-    telemetryChannelMod,
-    analyticsNow,
-    analyticsFirstTime,
-    tamperSignals,
-    faultInject: FAULT_INJECT,
-    supervisorFor,
-    externalUrl: process.env.CREWPANE_EXTERNAL_URL,
-    mode: MODE,
-    createAppWindow,
-    startBridge,
-    startMobile,
-    startNextServer,
-  });
-
-  await appBootService.boot();
-});
 // ADP-303 / ADP-717 / ADP-737 — Lider pane kontrolü ve worker pane geri dönüşümü
 // src/features/terminal/paneControlService.js içine taşındı (bkz: paneControlService).
 
@@ -2657,6 +2536,87 @@ function notifyGate() {
 function startPtyResumeDaemonOnce() {
   return ptyResumeService.startPtyResumeDaemonOnce();
 }
+
+// ---------------------------------------------------------------------------
+// App Boot & Lifecycle
+// ---------------------------------------------------------------------------
+app.whenReady().then(async () => {
+  const gate = await startupGate.runStartupGate(process.argv);
+  if (!gate.proceed) return;
+
+  const appBootService = createAppBootService({
+    engineCoerce,
+    livePaneRegistry,
+    offerRecoverablePanes,
+    getAppWindow: () => appWindow,
+    logLine,
+    startCrashWatchdog,
+    app,
+    startupSweepService,
+    workspaceFileService,
+    crewpaneHome,
+    repoRoot: REPO_ROOT,
+    standaloneDir,
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    schemeOwnership,
+    appUrlScheme: APP_URL_SCHEME,
+    isAutomatedSession: IS_AUTOMATED_SESSION,
+    automatedSessionReason: AUTOMATED_SESSION_REASON,
+    setSchemeVerdict: (v) => { schemeVerdict = v; },
+    safeStorageIdentity,
+    safeStorageScope: SAFE_STORAGE_SCOPE,
+    secretBackendState,
+    instanceHome: instancePaths.instanceHome(),
+    initSeatGate,
+    bindAccountRoot,
+    reresolveWorkspaceRootAfterAccountBind,
+    syncRuntime,
+    prefsApplySoon,
+    prefsProjectNow,
+    seedBuiltinSkills,
+    syncSkillEngineViews,
+    consumeArgvDeepLink,
+    drainPendingAuthUrls,
+    wireIpc,
+    startResourceGovernorSampling,
+    windowManager,
+    BrowserWindow,
+    autotest: AUTOTEST,
+    noteQuit,
+    groqShim,
+    providers,
+    adapter,
+    registerJarvisShortcut,
+    handService,
+    updateService,
+    startHeartbeat,
+    announceService,
+    changelogService,
+    memoryService,
+    jarvisVoice,
+    notifyScreenshotsMovedOnce,
+    runDoctorNow,
+    doctorService,
+    telemetryMod,
+    agentSettings,
+    telemetryProvisioning,
+    obsReporterNow,
+    telemetryChannelMod,
+    analyticsNow,
+    analyticsFirstTime,
+    tamperSignals,
+    faultInject: FAULT_INJECT,
+    supervisorFor,
+    externalUrl: process.env.CREWPANE_EXTERNAL_URL,
+    mode: MODE,
+    startBridge,
+    startMobile,
+    startNextServer,
+  });
+
+  await appBootService.boot();
+});
 
 // ── SEC-02/HATA-14/ADP-905 — YAŞAM DÖNGÜSÜ & TEMİZ ÇIKIŞ YÖNETİCİSİ (src/main/lifecycle - Faz 3.6.19)
 const lifecycleManager = createLifecycleManager({
