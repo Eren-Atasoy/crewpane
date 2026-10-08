@@ -45,51 +45,9 @@ const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 
 // ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
-const {
-  registerSystemIpc,
-  registerDiagnosticsIpc,
-  registerTelemetryIpc,
-  registerMediaIpc,
-  registerSettingsIpc,
-  registerAppIpc,
-} = require('./src/features/system');
-const { registerPopoutIpc } = require('./src/features/popout');
-const { registerDesignIpc } = require('./src/features/design');
-const { registerSpritesIpc } = require('./src/features/sprites');
-const { registerOfficeIpc } = require('./src/features/office');
-const { registerResourceIpc } = require('./src/features/resource');
-const { registerUpdateIpc } = require('./src/features/update');
-const {
-  registerWorktreeIpc,
-  registerBrowserIpc,
-  registerIntegIpc,
-  registerSprintIpc,
-  registerGitIpc,
-  registerTaskIpc,
-  registerCodeIntelIpc,
-  registerWorkspaceIpc,
-} = require('./src/features/services');
-const { registerMemoryIpc } = require('./src/features/memory');
-const { registerHandIpc } = require('./src/features/hand');
-const { registerSyncIpc, registerPrefsIpc, createSyncService } = require('./src/features/sync');
-const { registerMobileIpc, createMobileService } = require('./src/features/mobile');
-const {
-  registerEngineIpc,
-  registerEngineAuthIpc,
-  registerEngineProfilesIpc,
-  registerAccountIpc,
-  registerPlanIpc,
-} = require('./src/features/auth');
-const {
-  registerSkillsIpc,
-  registerAgentxIpc,
-  registerAgentxDraftIpc,
-  registerDelegationIpc,
-  registerTeamComposeIpc,
-  registerTeamScopeIpc,
-} = require('./src/features/agents');
-const { registerPtyIpc, registerPanesIpc } = require('./src/features/terminal');
-const { registerVoiceIpc } = require('./src/features/voice');
+const { registerPrefsIpc, createSyncService } = require('./src/features/sync');
+const { createMobileService } = require('./src/features/mobile');
+const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 let windowManager = null;
 let mobileService = null;
@@ -6240,12 +6198,25 @@ async function verifyAppApiKey(service) {
 }
 
 function wireIpc() {
-  // ── Sistem IPC Yüzeyi (Faz 3.5 — Sıra 1): clip, file, feedback, announce ────────
-  registerSystemIpc({
+  wireAppIpc({
     ipcMain,
+    app,
     shell,
     clipboard,
     nativeImage,
+    dialog,
+    screen,
+    BrowserWindow,
+    ptys,
+    agentSettings,
+    crewpaneHome,
+    logLine,
+    resolveInRoots,
+    withinActiveRoots,
+    displayPath,
+    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+    getWorkspaceRoot: () => agentWorkspaceRoot,
+    supervisorFor,
     feedbackBridge,
     readFeedbackSeen,
     writeFeedbackSeen,
@@ -6256,51 +6227,24 @@ function wireIpc() {
     allowPaneRoot,
     readEditorState,
     writeEditorState,
-    clipHistory,
-    ptys,
     clipboardImageRoute,
     saveTempImage,
     announcements,
-    agentSettings,
     announceStateForRenderer,
     runAnnounceCheck,
     pushAnnounceState,
     announceHiddenThisSession,
     getAnnounceState: () => announceState,
-    logLine,
-  });
-
-  // ── Popout & Design IPC Yüzeyi (Faz 3.5 — Sıra 2) ───────────────────────────
-  registerPopoutIpc({
-    ipcMain,
     openPopoutWindow,
     closePopoutWindow,
     listPopoutPanes,
     popoutWindowFor,
-    logLine,
-  });
-
-  registerDesignIpc({
-    ipcMain,
     openDesignWindow,
     closeDesignWindow,
     designWindowAlive,
     listPanes,
-    resolveInRoots,
-    withinActiveRoots,
-    displayPath,
-    logLine,
-  });
-
-  registerSpritesIpc({
-    ipcMain,
     localSprites,
     pkgMgr: require('./src/agents/avatarPackageManager.cjs'),
-    logLine,
-  });
-
-  registerOfficeIpc({
-    ipcMain,
     officePkg: require('./src/agents/officePackageManager.cjs'),
     readOfficeState,
     writeOfficeState,
@@ -6308,24 +6252,11 @@ function wireIpc() {
     crashWatchdog,
     getAppWindow: () => appWindow,
     getAppBaseUrl: () => appBaseUrl,
-    ptys,
     createAppWindow,
-    logLine,
-  });
-
-  registerResourceIpc({
-    ipcMain,
     resourceGovernor,
-    agentSettings,
-    ptys,
     agentRunner,
     resourceGovernorModule,
     killPaneExplicitAndCleanup,
-    logLine,
-  });
-
-  registerUpdateIpc({
-    ipcMain,
     updateStateForRenderer,
     runUpdateCheck,
     updateLicenseGateNow,
@@ -6334,29 +6265,13 @@ function wireIpc() {
     setUpdateState: (s) => { updateState = s; },
     pushUpdateState,
     updateCheck,
-    shell,
     noteQuit,
-    agentSettings,
-    logLine,
-  });
-
-  // ── Services IPC Yüzeyi (Faz 3.5 — Sıra 3) ──────────────────────────────────
-  registerWorktreeIpc({
-    ipcMain,
-    ptys,
     worktreeStore,
-    crewpaneHome,
     projectRepos,
     agentWorkspaceRoot,
-    agentSettings,
     mergeService,
     worktreeService,
     invalidateGitBranchCache,
-    logLine,
-  });
-
-  registerBrowserIpc({
-    ipcMain,
     runBrowserAction,
     browserGate,
     browserGuests,
@@ -6366,117 +6281,50 @@ function wireIpc() {
     getAppWindowGuest: () => appWindowGuest,
     agentGuests,
     lastUnownedGuest,
-    logLine,
-  });
-
-  registerIntegIpc({
-    ipcMain,
-    supervisorFor,
     integrations,
     planDenial,
-    ptys,
     mcpProcess,
-    crewpaneHome,
     integrationAutostart,
     telemetryProvisioning,
-    logLine,
-  });
-
-  registerSprintIpc({
-    ipcMain,
     sprintStore,
-    supervisorFor,
     resultRootMod,
-    agentWorkspaceRoot,
-    agentSettings,
-    worktreeStore,
-    crewpaneHome,
     activeWorktreePaths,
-    ptys,
     evidencePathMod,
     REPO_ROOT,
-    logLine,
-  });
-
-  registerGitIpc({
-    ipcMain,
-    resolveInRoots,
-    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
     codeIntel,
     gitBranchCache,
     GIT_BRANCH_TTL_MS,
     readGitBranch,
     resolveSearchRoot,
-    withinActiveRoots,
-    displayPath,
-  });
-
-  registerTaskIpc({
-    ipcMain,
-  });
-
-  registerCodeIntelIpc({
-    ipcMain,
-    agentSettings,
-    worktreeStore,
-    crewpaneHome,
-    projectRepos,
-    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
     branchName,
     codeIndexStore,
     codeIndexHealth,
     codeIndexRepoPath,
     codeIndexFreshness,
     codeIndexJobs,
-    getAppWindow: () => appWindow,
     spawn,
-    logLine,
-  });
-
-  registerWorkspaceIpc({
-    ipcMain,
-    app,
-    BrowserWindow,
-    dialog,
     appI18n,
-    supervisorFor,
     notifyGate,
     workspacePlanDenial,
     workspaceOnboarding,
     rememberWorkspaceRoot,
     switchWorkspaceRoot,
-    logLine,
-  });
-
-  // ── Memory IPC Yüzeyi (Faz 3.5 — Sıra 4) ───────────────────────────────────
-  registerMemoryIpc({
-    ipcMain,
+    imageStore,
+    ingestTaskAttachment,
+    attachmentStore,
     memoryGraph,
-    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
     memoryIndexer,
     memorySearcher,
-    agentSettings,
     memoryEmbedder,
-    REPO_ROOT,
     memoryEmbedInstall,
     memoryEmbedInstaller,
     memoryRecall,
     secretRedactor,
-    ptys,
-    agentRunner,
     memoryTaskBlock,
     currentSessionId,
     paneContextScope,
     engineMemoryScope,
     searchIndexer: () => searchIndexer(),
-    logLine,
-  });
-
-  // ── Hand IPC Yüzeyi (Faz 3.5 — Sıra 5) ─────────────────────────────────────
-  registerHandIpc({
-    ipcMain,
-    screen,
-    BrowserWindow,
     getHandOverlayWindows: () => (windowManager ? windowManager.handOverlayWindows : new Map()),
     getHandOverlayPrefs: () => (windowManager ? windowManager.handOverlayPrefs() : { overlay: {} }),
     handOverlayAnyAlive: () => handOverlayAnyAlive(),
@@ -6496,19 +6344,8 @@ function wireIpc() {
     handCameraPolicy,
     handHardwareCameras,
     handCameraPreference,
-    logLine,
-  });
-
-  // ── Sync IPC Yüzeyi (Faz 3.5 — Sıra 6) ─────────────────────────────────────
-  registerSyncIpc({
-    ipcMain,
     getSyncRuntime: () => syncRuntime,
     getSyncIpcSurface: () => syncIpcSurface,
-  });
-
-  // ── Mobile IPC Yüzeyi (Faz 3.5 — Sıra 6) ───────────────────────────────────
-  registerMobileIpc({
-    ipcMain,
     mobilePending,
     mobileCommandPending,
     emitMobileEvent: (e) => emitMobileEvent(e),
@@ -6520,37 +6357,22 @@ function wireIpc() {
     mobileStartFailure: (ctx) => mobileStartFailure(ctx),
     mobileKillSwitch: () => mobileKillSwitch(),
     mobileProbe,
-  });
-
-
-
-  // ── PTY Terminal IPC Yüzeyi (Faz 3.5 — Sıra 9) ─────────────────────────────
-  registerPtyIpc({
-    ipcMain,
-    BrowserWindow,
     requireSeatOrThrow,
     dedupeSpawnForAgent,
-    planDenial,
-    ptys,
-    resourceGovernor,
     engineDelegation,
     prepareTaskIsolation,
     preflightModelGate,
     spawnPty,
     analyticsEngineOf,
     telemetryBump,
-    workspaceOnboarding,
     enforcePaneBudget,
     spendGuard,
     leaderComposer,
     probeTranscriptContains,
     transcriptProbe,
-    currentSessionId,
-    secretRedactor,
     mobileTranscript,
     tokenUsage,
     paneTokenBudget,
-    getWorkspaceRoot: () => agentWorkspaceRoot,
     paneBudgetStore,
     paneDispatchDecisionFor,
     leaderRefreshTick,
@@ -6558,23 +6380,12 @@ function wireIpc() {
     logDispatchDecision,
     refreshPaneSession,
     dispatchStore,
-    getAppWindow: () => appWindow,
     popoutPaneIdForWindow,
-    listPanes,
-    agentRunner,
     modelDetect,
     paneAskRuntime,
     paneSessionAnchor,
     sessionAnchor,
     ptyResizeGate,
-    killPaneExplicitAndCleanup,
-    logLine,
-  });
-
-  // ── Panes & Pane Management IPC Yüzeyi (Faz 3.5 — Sıra 11) ─────────────────
-  registerPanesIpc({
-    ipcMain,
-    BrowserWindow,
     acceptRecoverablePanes,
     tmuxWindows,
     paneViewState,
@@ -6582,15 +6393,6 @@ function wireIpc() {
     paneDraft,
     broadcastPaneDraft,
     getPaneAskRuntime: () => paneAskRuntime,
-    logLine,
-  });
-
-  // ── Voice & Jarvis IPC Yüzeyi (Faz 3.5 — Sıra 10) ─────────────────────────
-  registerVoiceIpc({
-    ipcMain,
-    app,
-    BrowserWindow,
-    getAppWindow: () => appWindow,
     openJarvisWidgetWindow,
     closeJarvisWidgetWindow,
     jarvisWidgetAlive,
@@ -6600,62 +6402,17 @@ function wireIpc() {
     jarvisWidgetPayload,
     moveJarvisWidget,
     showAppFromJarvisWidget,
-    agentSettings,
     jarvisVoice,
-    REPO_ROOT,
-    appI18n,
     grokVoice,
     inputSim,
     screenCaptureMod,
     instancePaths,
     getJarvisConv: () => jarvisConv,
-    logLine,
-  });
-
-
-
-
-
-  // ── Agent X IPC Yüzeyi (Faz 3.5 — Sıra 8) ──────────────────────────────────
-  registerAgentxIpc({
-    ipcMain,
-    BrowserWindow,
-    screen,
     agentxDeliverer,
     agentxBeamMod,
-    getAppWindow: () => appWindow,
-    jarvisWidgetAlive,
-    logLine,
-  });
-
-
-
-
-  // ── Agent X Draft IPC Yüzeyi (Faz 3.5 — Sıra 8) ────────────────────────────
-  registerAgentxDraftIpc({
-    ipcMain,
     agentxDraft,
     broadcastAgentxDraft,
     broadcastAgentxDraftConfirmed,
-  });
-
-  // ADP-035, BOARD-IMG-3, ADP-694, ADP-894 — MEDIA & CLIPBOARD IPC (Faz 3.5 — Sıra 11)
-  registerMediaIpc({
-    ipcMain,
-    saveTempImage,
-    imageStore,
-    ingestTaskAttachment,
-    attachmentStore,
-    clipboard,
-    ptys,
-    clipboardImageRoute,
-    logLine,
-  });
-
-  // ── Skills IPC Yüzeyi (Faz 3.5 — Sıra 8) ───────────────────────────────────
-  registerSkillsIpc({
-    ipcMain,
-    app,
     skillCenter,
     skillEngineSync,
     skillApprove,
@@ -6665,113 +6422,48 @@ function wireIpc() {
     builtinSkills,
     skillGuard,
     skillEngineView,
-    getWorkspaceRoot: () => agentWorkspaceRoot,
     getBoundAccount: () => boundAccount,
     syncSkillEngineViews,
-    logLine,
-  });
-
-  // ── SEARCH-2 — GENEL ARAMA (rapor gövdesi · hafıza · görev · ajan oturumları) ──
-
-
-  // (ADP-440 — screenshot:* ve tray:* IPC yüzeyleri kaldırıldı; AgentShot ayrı ürün.)
-
-  // ADP-082 (ADR-006) — workspace file bridge for the embedded code editor.
-  // Root-guarded + size-capped; the sandboxed renderer reads/writes/lists ONLY
-  // inside the workspace root (path-traversal/symlink escapes rejected above).
-
-
-  // ── Delegation Queue & Supervisor IPC Yüzeyi (Faz 3.5 — Sıra 8) ────────────
-  registerDelegationIpc({
-    ipcMain,
     delegationQueueStore,
     delegationSupervisorStore,
     resumeQueueStore,
     queueBoard,
-    evidencePathMod,
-    supervisorFor,
     ensureDelegationSupervisor,
     scheduleSupervisorSweep,
     supervisorPending,
     supervisorFingerprint,
-    ptys,
-    crewpaneHome,
-    getWorkspaceRoot: () => agentWorkspaceRoot,
-    agentSettings,
-    REPO_ROOT,
-    activeWorktreePaths,
-    logLine,
-  });
-
-
-  // ADP-203 — user Settings (~/.crewpane/settings.json). The renderer Settings panel
-  // reads/writes the workspace root, OpenAI key, push-to-talk key, wake-model path.
-  // SECURITY: `settings:get` NEVER returns secret values — only a `hasOpenAiKey` flag —
-  // so a compromised renderer cannot exfiltrate the key (same discipline as jarvis:config).
-  // ADP-844 — ofis bildirimlerinin ekran-dışı TEK yüzeyi mobil uygulamadır
-  // (mobileGateway + /m/stream); main hiçbir dış mesajlaşma servisine bağlanmaz.
-
-  // ADP-335, ADP-901, OBS-02, HATA-16 — DIAGNOSTICS IPC (Faz 3.5 — Sıra 11)
-  registerDiagnosticsIpc({
-    ipcMain,
+    ensureComposeLedger,
+    teamComposeCore,
+    getComposeTransport: () => composeTransport,
+    teamComposeRequest,
+    composeFail,
+    composeAutonomy,
+    sampleLeaderGate,
+    deliverToPane,
+    dispatchSleep,
+    authorizeTeamScopeInteractive,
     getModuleFaults: () => moduleFaults,
     reportModuleFault,
     getLogPath: () => LOG_PATH,
-    shell,
-  });
-
-  // OBS-01, HATA-06, TOUR-02, INT-OBS-01 — TELEMETRY & ANALYTICS IPC (Faz 3.5 — Sıra 11)
-  registerTelemetryIpc({
-    ipcMain,
     analyticsNow,
     analyticsSchema,
     analyticsFirstTime,
-    supervisorFor,
-    logLine,
     telemetryTokenFor,
     credentialGate,
-    telemetryProvisioning,
     stampIntegrationVerified,
     vendorSurface,
     telemetryMod,
     provisionStoreMod,
     telemetryChannelMod,
-  });
-
-
-  // ─── ADP-390 (G9) — CrewPane hesabı yüzeyi (Ayarlar → Hesap) ────────────────
-  // Renderer'a SIR GİTMEZ: yalnız durum (e-posta, lisans, seat, ürünler). Access
-  // token / refresh token / lisans jetonu MAIN'de kalır (OpenAI key deseni).
-  // ADP-520 — seatGate henüz yoksa bile requireLogin config'ten DOĞRU döner:
-  // login duvarı fail-CLOSED kalır (gate'i "not_ready" yüzünden atlamak açık kapı olurdu).
-  // ADP-614: gate henüz kurulmadıysa da renderer AYNI sözleşmeyi görsün (katman
-  // alanları eksik kalmasın); etiketler tek kaynaktan (planCatalog).
-  const accountState = () => (seatGate ? seatGate.evaluate() : {
-    requireSeat: false, requireLogin: crewpaneIdConfig(process.env).requireLogin,
-    signedIn: false, email: null, userId: null,
-    licenseStatus: 'none', seat: false,
-    tier: null, tierLabel: null, tierRank: 0, caps: null, accessProducts: [],
-    products: [], productLabels: planCatalog.productLabels(),
-    graceRemainingSeconds: 0,
-  });
-  // ADP-390, ADP-703, ADP-719, SEC-01 — ACCOUNT & CREWPANE IPC (Faz 3.5 — Sıra 11)
-  registerAccountIpc({
-    ipcMain,
-    app,
-    shell,
     getSeatGate: () => seatGate,
-    getAccountState: () => accountState(),
     getAppUrlScheme: () => APP_URL_SCHEME,
     getAppUrlPrefix: () => APP_URL_PREFIX,
     gateOverrides,
-    logLine,
     runningPaneSummary,
     signOutConfirmCopy,
     closePanesForSignOut,
     accountScope,
-    getBoundAccount: () => boundAccount,
     relaunchForAccountChange,
-    instancePaths,
     schemeOwnership,
     getSchemeVerdict: () => schemeVerdict,
     setSchemeVerdict: (v) => { schemeVerdict = v; },
@@ -6780,87 +6472,15 @@ function wireIpc() {
     secretBackendState,
     handleAuthUrl,
     crewpaneIdConfig,
-  });
-
-
-
-
-
-
-  // ADP-660, BL-03, ADP-622, SKL-B3 — PLAN & APPDB IPC (Faz 3.5 — Sıra 11)
-  registerPlanIpc({
-    ipcMain,
     verifyAppApiKey,
     planLimits,
-    getSeatGate: () => seatGate,
     getPtys: () => ptys,
-    workspaceOnboarding,
-    crewpaneIdConfig,
-    logLine,
     appDbTokenFor,
-  });
-  // TC-01, TC-FIX-01, TC-02 — TEAM COMPOSE IPC (Faz 3.5 — Sıra 11)
-  registerTeamComposeIpc({
-    ipcMain,
-    ensureComposeLedger,
-    teamComposeCore,
-    getComposeTransport: () => composeTransport,
-    teamComposeRequest,
-    composeFail,
-    composeAutonomy,
-    ptys,
-    sampleLeaderGate,
-    deliverToPane,
-    dispatchSleep,
-    logLine,
-  });
-
-
-  // ═══════════════════════════════════════════════════════════════════════
-  // B-01 (Faz D) — İNCELEME → MERGE YÜZEYİ (B-02/B-03 kart UI'sı bunu tüketir)
-  // ═══════════════════════════════════════════════════════════════════════
-  //
-  // Durum makinesi ve merge YÜRÜTMESİ MAIN'de kalır (§2.1 ilke 2). Renderer yalnız
-  // İSTER: hangi görev, onay verdi mi. Branch adı, worktree yolu ve hedef dal
-  // renderer'dan ASLA alınmaz — hepsi görev kaydından + yerel defterden türer (G-1).
-  //
-  // `worktree:review` HİÇBİR ŞEYİ DEĞİŞTİRMEZ: ölçüm + saf karar döner (kartın verisi).
-  // `worktree:merge` kapıların HEPSİNİ TEKRAR koşar — "kart yeşildi" bir yetki belgesi
-  // değildir (kart ile tıklama arasında ajan yeni commit atmış olabilir).
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // GIT-BB-CLOUD-01 — PROJE AYARI KÖPRÜSÜ (Ayarlar → Projeler)
-  // ═══════════════════════════════════════════════════════════════════════════
-  // İzolasyon kararı iki yerde yaşar ve bu BİLİNÇLİDİR:
-  //   • BULUT (`projects.isolation|default_branch|merge_approval`) — takımın gördüğü
-  //     ayar; board ve MCP oradan okur, cihazdan cihaza taşınır.
-  //   • YEREL (`settings.projectIsolation` + `worktrees.json`) — spawn anında main'in
-  //     BAKTIĞI yer (projectIsolationMode / worktreeStore.getProject). Worktree bu
-  //     makinede açılır; kararı ağ çağrısına bağlamak spawn'ı ağa bağımlı kılardı.
-  // Ayar ekranı ikisini birlikte yazar; bu köprü YEREL yarısıdır. Renderer bir YOL
-  // dayatamaz (G-1): repoPath'i main kendisi çözer.
-
-
-  // ── ONBOARDING, RESET, SETTINGS & PRESETS IPC (Faz 3.5 — Sıra 11) ──────────
-  registerSettingsIpc({
-    ipcMain,
     onboardingStore,
     resetContext,
     installReset,
-    runningPaneSummary,
     resetGate,
-    appI18n,
-    signOutConfirmCopy,
-    getSeatGate: () => seatGate,
-    closePanesForSignOut,
-    accountScope,
     sendResetTelemetry,
-    relaunchForAccountChange,
-    agentSettings,
-    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-    repoRoot: REPO_ROOT,
-    workspaceOnboarding,
-    app,
     leaderRefreshPolicy,
     handOverlayContract,
     updateChannel,
@@ -6868,229 +6488,29 @@ function wireIpc() {
     aiProvidersPayload,
     engineModelCatalogPayload,
     appApiKeysPayload,
-    jarvisVoice,
-    grokVoice,
     engineCatalog,
     teamScope,
     browserTrustMod,
-    logLine,
     broadcastLocale,
-    getSyncRuntime: () => syncRuntime,
     prefsProjectNow,
     applyHandOverlaySettings,
     presetAdvisor,
-    agentRunner,
-  });
-  // ADP-737 — TAKIM KAPSAMI KAPISI (Faz 3.5 — Sıra 11)
-  registerTeamScopeIpc({
-    ipcMain,
-    authorizeTeamScopeInteractive,
-    logLine,
-  });
-  // ADP-232-C — ilk-açılış "çalışma alanı seç" aksiyonları. Yol renderer'dan ASLA
-  // gelmez (ADP-103 capability modeli): 'create' sabit önerilen varsayılanı
-  // (~/CrewPane) oluşturur, 'pick' yolu OS dialog'undan alır. Her iki yol da
-  // commitWorkspaceRoot'tan geçer → bundle-içi kök NET hatayla reddedilir
-  // (inside-app-bundle) ve settings.workspaceRoot yazımı restartRequired döner
-  // (ADP-232 Faz A tek-tık relaunch'ı renderer tetikler).
-
-
-
-
-
-
-
-  // ADP-463-B — setup sihirbazı motor/CLI kontrolü (uyarı-only, ASLA bloklamaz).
-  // → { engines:[{id,name,found,path,installUrl}], anyFound }. Probe hata verirse
-  // (shell yok/timeout) her motor "found:false" döner — adım yine de açılır.
-  // ADP-694 — PANOYA YAZ (main tarafı). GERÇEK e2e'de ölçüldü: renderer'daki
-  // `navigator.clipboard.writeText` Electron penceresi odakta değilken REDDEDİLİYOR
-  // (kaplamadaki "Kopyala" hiçbir şey kopyalamıyordu, ekran görüntüsüyle kanıtlı).
-  // Masaüstü uygulamasında doğru yol Electron'un kendi panosudur: izin/odak
-  // gerektirmez. Renderer önce bunu dener, köprü yoksa navigator'a düşer.
-  // GÜVENLİK: tek yön + yalnız düz metin + boy sınırı; pano OKUMA ucu YOK
-  // (renderer'ın kullanıcının panosunu okumasına gerek yok, açmıyoruz).
-  // ADP-894 — TAVAN 4096'DAN 1 MB'A. Bu uç artık TERMİNAL SEÇİMİNİ de kopyalıyor
-  // (Terminal.tsx geri düşüşü); bir ekran dolusu çıktı 4096'ı rahat aşar ve eski
-  // hâl `slice` edip yine `ok:true` dönüyordu — yani SESSİZ VERİ KAYBI. Artık
-  // kırpma olursa çağırana `truncated` ile SÖYLENİR.
-
-
-  // ── ADP-935 — PANO GEÇMİŞİ ────────────────────────────────────────────────
-  // Eren: "bir ekrandan 3-5 şey kopyalıyorum, beşinciyi kopyalayınca ilk dördü
-  // gitmiş oluyor." Yakalama MAIN'de olmak ZORUNDA: sistem panosunu yalnız main
-  // okuyabilir (renderer'da pano OKUMA ucu bilerek yoktur — yukarıdaki duruş).
-  //
-  // Karar mantığı burada DEĞİL, `clipboardHistory.cjs`te (saf + DI + birim testli):
-  // gizlilik kapısı, içerik farkı, döngü kırıcı, tavanlar. Burası yalnız KABLO.
-  //
-  // 🔒 Geçmiş YALNIZ BELLEKTE — diske yazılmaz, uygulama kapanınca gider.
-  const clipHistory = clipboardHistoryCore.createClipboardHistory({
-    clipboard,
-    onChange: () => broadcastClipChanged(),
-    log: (line) => logLine(line),
-  });
-  // Poll aralığı: ADP-933 ölçümüne göre boş panoda bir tik ~4 µs (availableFormats
-  // + readText) ⇒ 700 ms'de CPU payı ~%0.0006. Görüntü okuması çekirdekte ayrıca
-  // throttle'lı. `unref` YOK: bu zamanlayıcı uygulama yaşadığı sürece koşmalı
-  // (kopyalama başka bir uygulamadayken olur — CrewPane arka planda).
-  const clipTimer = setInterval(() => {
-    try {
-      clipHistory.tick();
-    } catch (err) {
-      logLine(`[clip] tick hatası: ${err && err.message}`);
-    }
-  }, 700);
-  app.once('before-quit', () => clearInterval(clipTimer));
-
-  // WIN-IMG-01 — görsel deposunun ömür kancaları. TTL kaldırıldığı için temizlik
-  // ARTIK BURADA: (1) açılışta ÖNCEKİ çalışmalardan kalan yetim klasörler (çöken
-  // oturumlar diskte iz bırakmasın), (2) kapanışta bu çalışmanın kendi klasörü.
-  // İkisi de best-effort — temizlik başarısız olursa uygulama akışı ETKİLENMEZ.
-  try {
-    const swept = imageStore.sweepOrphans();
-    if (swept) logLine(`[win-img-01] ${swept} yetim geçici görsel klasörü temizlendi`);
-  } catch (err) { logLine(`[win-img-01] yetim süpürme hatası: ${err && err.message}`); }
-  app.once('before-quit', () => {
-    try { imageStore.dispose(); } catch { /* çıkışı geciktirme */ }
-  });
-
-
-
-  // ── ADP-597 — ABONELİKLE GİRİŞ (Ayarlar → AI Motorları → "Hesap ile giriş") ──
-  //
-  // Kullanıcı terminale HİÇ dokunmadan `claude` / `codex` oturumunu açar. Akış
-  // main'de yönetilir; renderer yalnız anlık-görüntü görür ve iki şey gönderir:
-  // "başlat" ve (claude'da) tarayıcının verdiği KOD. Child handle, ham CLI çıktısı
-  // ve kod ASLA renderer'a geçmez.
-  //
-  // Aynı anda TEK oturum: ikinci bir "Giriş yap" isteği öncekini iptal eder —
-  // yoksa iki child aynı callback portu/stdin'i için yarışırdı.
-  let activeLogin = null;
-
-  const pushAuthEvent = (payload) => {
-    // Ayarlar hangi pencerede açıksa oraya — tek yüzey (sendPaneEvent'in muadili).
-    if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('engineAuth:changed', payload);
-  };
-
-  // ── ADP-936 — HESAP PROFİLİ boğazı (ADR-MULTI-ACCOUNT-SWITCH) ─────────────
-  //
-  // Motorun durumu HANGİ HESAP için okunuyorsa, ajanlar da onunla koşmalı. İkisi
-  // AYNI çözücüden (engineProfiles) beslendiği için "rozet A'yı gösterirken pane
-  // B'yi yakıyor" ayrışması yapısal olarak imkânsız. Varsayılan profilde env
-  // katkısı BOŞ → bugünkü tek-hesap kullanıcı için davranış bit-bit aynı.
-  const profilesHome = () => instancePaths.crewpaneHome();
-  const profileEnvFor = (engine, profileId) =>
-    engineProfiles.applyProfileEnv(process.env, profilesHome(), engine, profileId);
-  const activeProfileOf = (engine) => engineProfiles.activeProfileId(profilesHome(), engine);
-
-  // ── ENG-08 — API ANAHTARI YEDEĞİ (abonelik birinci sınıf, anahtar YEDEK) ───
-  // Anahtar ADP-584 vault'unda (entegrasyon anahtarlarıyla AYNI kasa, aynı kapı);
-  // buradan yalnız bir DEPO GÖRÜNÜMÜ geçer, sır renderer'a ASLA çıkmaz. Vault
-  // tembel kurulur (`integrations()`) — anahtar yolu olmayan kullanıcıda hiç
-  // dokunulmaz; hata durumunda `null` → engineAuth dürüstçe 'vault-unavailable' der.
-  /** engineAuth çağrılarının ORTAK bağlamı: profil env'i + anahtar deposu. */
-  const authDeps = (engine, profileId) => ({
-    env: profileEnvFor(engine, profileId),
-    apiKeyStore: engineKeyStore(),
-    // ENG-HONEST-CARD-01 — satıcı kapısı POLİTİKASI kartta gerçek ayarı göstersin:
-    // spawn kapısı (`vendorGateVerdict`) ayarı okuyordu, rozet okumuyordu → kullanıcı
-    // "block" yazsa kart hâlâ "allow" derdi. İki yüzey aynı ayardan okur.
-    settings: agentSettings.readSettings(),
-    log: (m) => logLine(engineAuth.maskSecrets(m)),
-    // ENG-F4-01 — motor+profile BAĞLI defter dikişi. `apiKeyStore` ile aynı desen:
-    // engineAuth'a yol/`fs` sızmaz, yalnız "var mı / yaz / sil" geçer. Defter
-    // HANGİ HESABA girildiğini de ayırır — profil A'da yapılan giriş, profil B'nin
-    // rozetini yeşiltemez (`engineProfiles` boğazıyla aynı iki-eksen kuralı).
-    loginLedger: engineLoginLedger.bindLedger(profilesHome(), engine, profileId),
-  });
-  /** Bir profilin oturum durumu — HER ZAMAN motorun kendi komutundan (ADP-597 kuralı). */
-  const readProfileStatus = (engine, profileId) =>
-    engineAuth.readStatus(engine, authDeps(engine, profileId)).catch(() => null);
-  /**
-   * ACCT-FIX-01 — durum çıktısından kimlik damgası yazar (giriş bitince / geriye
-   * doldurma). Girişsiz/boş durum damga ÜRETMEZ. Log'a yalnız maskeli e-posta girer.
-   */
-  const stampProfileIdentity = (engine, profileId, status, source) => {
-    const identity = engineProfiles.identityFromStatus(status, { source });
-    if (!identity) return false;
-    const r = engineProfiles.setProfileIdentity(profilesHome(), engine, profileId, identity);
-    if (r.ok) {
-      logLine(`engine account identity stamped engine=${engine} profile=${profileId} source=${source} account=${engineProfiles.maskAccount(identity.email || '')}`);
-    }
-    return r.ok;
-  };
-  /** Bu kurulumda auth yönetilebilen motorlar (defter + e2e dikişi). */
-  const authEngineIds = () => engineAuth.authEngines({ env: process.env });
-  const pushProfilesEvent = () => {
-    if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('engineProfiles:changed', { at: Date.now() });
-  };
-
-  // ── Engine, Engine Auth, and Multi-Account Profiles IPC (Faz 3.5 — Sıra 7) ─
-  registerEngineIpc({
-    ipcMain,
     engineCheck,
     capabilityRegistry,
     paneCapabilityMatrix,
     engineOffering,
-    engineDelegation,
     engineLeadership,
     enginePlanned,
-    authEngineIds,
-    readProfileStatus,
-    activeProfileOf,
-    authDeps,
-    engineAuth,
-    logLine,
-  });
-
-  registerEngineAuthIpc({
-    ipcMain,
-    shell,
     engineAuth,
     engineProfiles,
-    authEngineIds,
-    activeProfileOf,
-    authDeps,
-    pushAuthEvent,
-    pushProfilesEvent,
-    stampProfileIdentity,
-    profilesHome,
-    getActiveLogin: () => activeLogin,
-    setActiveLogin: (val) => { activeLogin = val; },
-    logLine,
-  });
-
-  registerEngineProfilesIpc({
-    ipcMain,
-    engineProfiles,
-    engineAuth,
     engineSwitch,
     limitDetect,
     resumePtyDaemon,
     livePaneRegistry,
-    crewpaneHome,
-    profilesHome,
-    authEngineIds,
-    readProfileStatus,
-    stampProfileIdentity,
-    pushProfilesEvent,
-    ptys,
-    getAppWindow: () => appWindow,
-    spawnPty,
     killPane,
     respawnOptsFromEntry,
     agentEngineMirror,
-    logLine,
-  });
-
-  // ── ADP-139, ADP-232, DEMO-04, ADP-625, A-10 — APP, DOCTOR & CHANGELOG IPC ─
-  registerAppIpc({
-    ipcMain,
-    app,
-    shell,
     mode: MODE,
-    instancePaths,
     shellCommit: SHELL_COMMIT,
     getResetBootNotice: () => resetBootNotice,
     rebuildAndRelaunch,
@@ -7098,14 +6518,15 @@ function wireIpc() {
     runDoctorNow,
     firstRunDoctor,
     hookScanHome,
-    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-    logLine,
     relaunchApp,
     changelogStateForRenderer,
     runChangelogCheck,
     getChangelogState: () => changelogState,
-    getLogPath: () => LOG_PATH,
-    noteQuit,
+    broadcastClipChanged,
+    clipboardHistoryCore,
+    engineKeyStore: () => engineKeyStore(),
+    engineLoginLedger,
+    planCatalog,
   });
 }
 
