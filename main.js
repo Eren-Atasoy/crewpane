@@ -2233,34 +2233,6 @@ async function startBridge() {
 // ---------------------------------------------------------------------------
 // KILL-GUARD-01 (madde 5) — DIŞARIDAN KAPATILDIK: uçuştaki işi DAMGALA.
 // ---------------------------------------------------------------------------
-// 08.09 gecesi uygulama `killall` ile iki kez kapandı. Kayıtlar çökme DEĞİL düzenli
-// kapanış gösteriyordu — yani `before-quit` KOŞTU — ama hiçbir yerde "bu quit'i biz
-// istemedik" bilgisi yoktu: kesilen üç worker'ın hangi kartlar olduğu ancak süpervizör
-// defteri elle okunarak çıkarılabildi.
-//
-// Sinyal DİNLEYİCİSİ bu ayrımı kurar: `Cmd+Q` sinyal göndermez, `killall`/`pkill`/
-// installer SIGTERM gönderir. Dinleyici KURULDUĞU AN Node'un varsayılan "anında öl"
-// davranışını devralır → `app.quit()` çağırmak ZORUNLU (yoksa uygulama sinyale
-// tepkisiz kalırdı, ki bu daha kötü bir arıza olurdu).
-let externalShutdownSignal = null;
-for (const sig of ['SIGTERM', 'SIGHUP', 'SIGINT']) {
-  process.on(sig, () => {
-    if (externalShutdownSignal) return; // ikinci sinyal: zaten çıkıyoruz
-    externalShutdownSignal = sig;
-    try { logLine(`⚠️ DIŞ KAPANIŞ: ${sig} alındı — uygulama kapanıyor (bu quit'i biz istemedik)`); } catch { /* log çıkışı tutmaz */ }
-    try {
-      const hits = delegationSupervisorService.markExternalShutdown(sig);
-      if (hits && hits.length) {
-        const note = delegationSupervisorService.externalShutdownNote(hits);
-        if (note) logLine(note);
-      }
-    } catch { /* damga çıkışı ASLA geciktirmez */ }
-    noteQuit('signal', sig);
-    try { app.quit(); } catch { process.exit(143); }
-  });
-}
-
-// ---------------------------------------------------------------------------
 // App Boot & Lifecycle
 // ---------------------------------------------------------------------------
 app.whenReady().then(async () => {
@@ -2341,6 +2313,8 @@ app.whenReady().then(async () => {
 // ── SEC-02/HATA-14/ADP-905 — YAŞAM DÖNGÜSÜ & TEMİZ ÇIKIŞ YÖNETİCİSİ (src/main/lifecycle - Faz 3.6.19)
 const lifecycleManager = createLifecycleManager({
   app,
+  process,
+  globalShortcut,
   quitFunnel,
   crashJournal,
   instancePaths,
@@ -2349,7 +2323,7 @@ const lifecycleManager = createLifecycleManager({
   crewpaneHome: () => crewpaneHome(),
   armQuitBrake: (label) => armQuitBrake(label),
   stopCrashWatchdog: () => stopCrashWatchdog(),
-  killAllPtys: () => paneQueryService.killAllPtys(),
+  paneQueryService,
   stopNextServer: () => stopNextServer(),
   noteQuit: (reason, signal) => noteQuit(reason, signal),
   getLivePaneCount: () => ptys.size,
@@ -2357,42 +2331,13 @@ const lifecycleManager = createLifecycleManager({
   getQuitSignal: () => quitSignal,
   appStartedAt: APP_STARTED_AT,
   logLine,
-  getTeardownSteps: () => [
-    // ADP-386 — ekran kuyruğu snapshot'tan ÖNCE yazılır ki write-ahead kopya da taşısın.
-    { name: 'persist-screen-tails', run: () => paneQueryService.persistScreenTails() },
-    // TASK-MRDXOGZJDQLJG — write-ahead: copy the live-pane registry BEFORE any
-    // teardown touches a pty. Whatever empties live-panes.json during this quit
-    // (a kill race, a crash mid-teardown), the next launch can still restore from
-    // the snapshot (restoreLivePanes fallback).
-    {
-      name: 'quit-snapshot',
-      run: () => {
-        const n = livePaneRegistry.writeQuitSnapshot(crewpaneHome());
-        if (n) logLine(`quit: live-pane registry snapshot written (${n} pane(s))`);
-      },
-    },
-    { name: 'global-shortcuts', run: () => globalShortcut.unregisterAll() },
-    // ADP-limit — clear the pty resume timers before the ptys are torn down.
-    {
-      name: 'pty-resume-daemon',
-      run: () => ptyResumeService.stop(),
-    },
-    // ADP-594 — stop the Responses→ChatCompletions adapter cleanly.
-    { name: 'adapter', run: () => { if (adapter.isRunning()) adapter.stopAdapter(); } },
-    // ADP-813 — yerel whisper sunucusu main'in ÇOCUĞU: kapanışta öldürülmezse yetim kalır
-    { name: 'whisper-local', run: () => jarvisVoice.whisperLocal.stopServer() },
-    // ADP-815 — kalıcı `claude` beyni de main'in ÇOCUĞU
-    { name: 'jarvis-brain', run: () => jarvisVoice.stopBrain() },
-    { name: 'next-server', run: () => stopNextServer() },
-    { name: 'ptys', run: () => paneQueryService.killAllPtys() },
-    {
-      name: 'delegation-bridge',
-      run: () => {
-        delegationBridge = null;
-        delegationBridgeService.stopBridge();
-      },
-    },
-  ],
+  livePaneRegistry,
+  ptyResumeService,
+  adapter,
+  jarvisVoice,
+  delegationBridgeService,
+  delegationSupervisorService,
+  resetDelegationBridge: () => { delegationBridge = null; },
 });
 lifecycleManager.register();
 
