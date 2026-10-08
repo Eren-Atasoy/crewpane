@@ -1,5 +1,30 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+
+function ensureSpawnHelperExecutableDefault({ app, logLine = () => {}, repoRoot = __dirname, resourcesPath = process.resourcesPath } = {}) {
+  if (process.platform === 'win32') return;
+  const rel = path.join('node-pty', 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper');
+  const appPath = app && typeof app.getAppPath === 'function' ? app.getAppPath() : repoRoot;
+  const candidates = [
+    path.join(repoRoot, 'node_modules', rel),
+    path.join(appPath + '.unpacked', 'node_modules', rel),
+    path.join(resourcesPath || '', 'app.asar.unpacked', 'node_modules', rel),
+  ];
+  for (const helper of candidates) {
+    try {
+      const mode = fs.statSync(helper).mode;
+      if (!(mode & 0o111)) {
+        fs.chmodSync(helper, 0o755);
+        logLine(`fixed spawn-helper exec bit: ${helper}`);
+      }
+    } catch {
+      /* not present at this candidate path — try the next */
+    }
+  }
+}
+
 function initSyncState(syncRuntime, prefsApplySoon, prefsProjectNow, logLine) {
   try {
     if (syncRuntime && typeof syncRuntime.refresh === 'function') {
@@ -142,7 +167,16 @@ class AppBootService {
         });
       }
     }
-    if (typeof ensureSpawnHelperExecutable === 'function') ensureSpawnHelperExecutable();
+    if (typeof ensureSpawnHelperExecutable === 'function') {
+      ensureSpawnHelperExecutable();
+    } else {
+      ensureSpawnHelperExecutableDefault({
+        app: this.deps.app,
+        logLine: this.deps.logLine,
+        repoRoot: this.deps.repoRoot,
+        resourcesPath: this.deps.resourcesPath,
+      });
+    }
     if (typeof rehydrateGrantedRoots === 'function') rehydrateGrantedRoots();
   }
 

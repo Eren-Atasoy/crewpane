@@ -10,6 +10,7 @@ const engineRegistry = require('../../agents/engineRegistry.cjs');
 const agentRunner = require('../../agents/agentRunner.js');
 const engineInstall = require('../../agents/engineInstall.cjs');
 const instancePaths = require('../../config/instancePaths.cjs');
+const resultRootMod = require('../../services/resultRoot.cjs');
 
 const defaultDeps = {
   ptys: new Map(),
@@ -265,6 +266,25 @@ class PtyIsolationService {
         + '(would have opened a duplicate; caller did not set forceFresh)',
     );
     return buildReusePayload(existing.paneId, existing.entry);
+  }
+
+  mappedProjectRootsForReports(agentWorkspaceRoot) {
+    const wsRoot = agentWorkspaceRoot || (typeof this.deps.getWorkspaceRoot === 'function' ? this.deps.getWorkspaceRoot() : null);
+    try {
+      const resultRoot = this.deps.resultRootMod || resultRootMod;
+      const store = this.deps.worktreeStore || worktreeStore;
+      return resultRoot.mappedProjectRoots(wsRoot, {
+        settings: typeof this.deps.readSettings === 'function' ? this.deps.readSettings() : {},
+        store,
+        homedir: typeof this.deps.crewpaneHome === 'function' ? this.deps.crewpaneHome() : this.deps.crewpaneHome,
+        log: this.deps.logLine || (() => {}),
+      });
+    } catch (err) {
+      if (this.deps.logLine) {
+        this.deps.logLine(`reports: eşlenmiş repo kökleri çözülemedi (${err && err.message ? err.message : err})`);
+      }
+      return [];
+    }
   }
 }
 

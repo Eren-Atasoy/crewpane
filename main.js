@@ -1255,34 +1255,7 @@ function stopCrashWatchdog() {
 }
 
 
-/**
- * node-pty ships a `spawn-helper` binary in its prebuild. On macOS/Linux the pty
- * fork posix_spawn's it — but an npm extract (or asar pack) can drop the +x bit,
- * surfacing only as a cryptic "posix_spawnp failed". Make it self-healing across
- * both the dev tree and a packaged app.asar.unpacked location.
- */
-function ensureSpawnHelperExecutable() {
-  if (process.platform === 'win32') return;
-  const rel = path.join('node-pty', 'prebuilds', `${process.platform}-${process.arch}`, 'spawn-helper');
-  const candidates = [
-    path.join(__dirname, 'node_modules', rel),
-    // Packaged: node-pty is unpacked out of the asar (see electron-builder.json
-    // asarUnpack). app.getAppPath() → …/Resources/app.asar.
-    path.join(app.getAppPath() + '.unpacked', 'node_modules', rel),
-    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'node_modules', rel),
-  ];
-  for (const helper of candidates) {
-    try {
-      const mode = fs.statSync(helper).mode;
-      if (!(mode & 0o111)) {
-        fs.chmodSync(helper, 0o755);
-        logLine(`fixed spawn-helper exec bit: ${helper}`);
-      }
-    } catch {
-      /* not present at this candidate path — try the next */
-    }
-  }
-}
+
 
 
 /**
@@ -1306,17 +1279,7 @@ function ensureSpawnHelperExecutable() {
  * kuralıyla çözülür (tek kaynak: resultRoot.cjs). Asla throw etmez.
  */
 function mappedProjectRootsForReports() {
-  try {
-    return resultRootMod.mappedProjectRoots(agentWorkspaceRoot, {
-      settings: agentSettings.readSettings(),
-      store: worktreeStore,
-      homedir: crewpaneHome(),
-      log: logLine,
-    });
-  } catch (err) {
-    logLine(`reports: eşlenmiş repo kökleri çözülemedi (${err && err.message ? err.message : err})`);
-    return [];
-  }
+  return ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot);
 }
 
 function activeWorktreePaths() {
@@ -1966,21 +1929,7 @@ function _buildMobileAndVoiceIpcDeps() {
     spawn,
     appI18n,
     notifyGate,
-    handOverlayAnyAlive,
-    closeHandOverlayWindows,
-    handControl,
-    startHandControl,
-    stopHandControl,
-    handControlStatus,
-    handControlLive,
-    finishPoseSampler,
-    selectHandCamera,
-    onHandDetectFrame,
-    handDetectAlive,
-    broadcastHandControlStatus,
-    handCameraPolicy,
-    handHardwareCameras,
-    handCameraPreference,
+    handService,
     syncRuntime,
     syncIpcSurface,
     mobilePending,
@@ -2069,7 +2018,6 @@ function _buildSystemAndEngineIpcDeps() {
     browserTrustMod,
     broadcastLocale,
     prefsProjectNow,
-    applyHandOverlaySettings,
     presetAdvisor,
     engineCheck,
     capabilityRegistry,
@@ -2140,6 +2088,24 @@ function rebuildAndRelaunch(event) { return rebuildService.rebuildAndRelaunch(ev
 
 
 
+// ── HAND-A2 — "EL KONTROLÜ" Servisi (src/features/hand/service.js - Faz 3.6.6) ──
+const { createHandService } = require('./src/features/hand');
+
+const handService = createHandService({
+  BrowserWindow,
+  screen,
+  systemPreferences: require('electron').systemPreferences,
+  globalShortcut,
+  getAppWindow: () => appWindow,
+  openHandDetectWindow: () => windowManager.openHandDetectWindow(),
+  handDetectAlive: () => windowManager.handDetectAlive(),
+  feedHandOverlay: (raw) => windowManager.feedHandOverlay(raw),
+  handOverlayPrefs: () => windowManager.handOverlayPrefs(),
+  handTuningConfig: (prefs) => windowManager.handTuningConfig(prefs),
+  agentSettings,
+  logLine,
+});
+
 // ── Pencere Yönetimi (Faz 3.3): BrowserWindow yönetimi src/main/windows altında ──
 windowManager = createWindowManager({
   BrowserWindow,
@@ -2189,91 +2155,12 @@ windowManager = createWindowManager({
   getAppWindowGuest: () => appWindowGuest,
   setAppWindowGuest: (g) => { appWindowGuest = g; },
   lastUnownedGuest: () => browserService.lastUnownedGuest(),
-  getHandControl: () => handControl,
-  stopHandControl,
-  broadcastHandControlStatus,
+  getHandControl: () => handService.handControl,
+  stopHandControl: (why) => handService.stopHandControl(why),
+  broadcastHandControlStatus: () => handService.broadcastHandControlStatus(),
 });
-
-
 
 function createAppWindow(url) { return windowManager.createAppWindow(url); }
-
-// ---------------------------------------------------------------------------
-// HAND-A1 — "EL KONTROLÜ" EKRAN ÜSTÜ GÖRSELLEŞTİRME KATMANI
-// ---------------------------------------------------------------------------
-// Tüm pencerelerin üstünde, TIKLAMA-GEÇİRGEN, tam-ekran çizim katmanı: imleç
-// izi · tık · sürükleme · scroll · jest durumu (kamera görüntüsü ASLA burada
-// çizilmez — yalnız telemetri sayıları taşınır, OTOPILOT §5).
-//
-// Pencere kalıbı = ADP-816 (yukarısı) + üç ek: (1) tıklama-geçirgenlik
-// `setIgnoreMouseEvents(true,{forward:true})`; (2) tam-ekran bounds — ekran
-// başına BİR pencere (HAND-R1 §5.2 kararı; display-added/removed'da yeniden
-// kurulur); (3) hasShadow:false (transparan tam-ekran pencerenin gölgesi
-// altta kalan her şeyi flulaştırır).
-//
-// KARE KAYNAĞI bu katman DEĞİL: D mimarisinin tespit döngüsü (gizli
-// BrowserWindow — HAND-A2/D kartları) olayları `handOverlay:feed` ile buraya
-// iter; katman kaynaktan bağımsızdır (dev besleyici de aynı uçtan konuşur).
-// Akış koparsa bekçi katmanı KENDİ KENDİNE kapatır (feedVerdict) — imleci biz
-// tutmadığımız için OS imleci zaten normaldir; kaynak geri gelince katman
-// yeniden doğar.
-function handTuningConfig(prefs) { return windowManager.handTuningConfig(prefs); }
-function handOverlayPrefs() { return windowManager.handOverlayPrefs(); }
-function handOverlayAnyAlive() { return windowManager.handOverlayAnyAlive(); }
-function closeHandOverlayWindows(reason) { return windowManager.closeHandOverlayWindows(reason); }
-function feedHandOverlay(rawEvents) { return windowManager.feedHandOverlay(rawEvents); }
-function applyHandOverlaySettings() { return windowManager.applyHandOverlaySettings(); }
-
-// ---------------------------------------------------------------------------
-// HAND-A2 — "EL KONTROLÜ" D MİMARİSİ: yaşam döngüsü + izin akışı + acil durdurma
-// ---------------------------------------------------------------------------
-// Ayrı süreç YOK (Python zinciri emekli — Eren 31.08): el tespiti GİZLİ
-// BrowserWindow'da MediaPipe-WASM (yerel paket, /hand/* — CDN yok), landmark
-// SAYILARI IPC ile buraya gelir; ekrana eşleme + 1€/balistik + tıklama FSM'i
-// main'de (handControlCore, jarvis paritesi fikstürle kilitli), OS imleci
-// koffi/CGEvent ile (handCursor). Kamera KARESİ hiçbir zaman main'e/diske/ağa
-// gitmez — sayfada bile <video> görünmez (R1 §5.4).
-//
-// Isınma: pencere açılışta kamerasız yüklenir; sayfa boş kanvasla GPU shader'ı
-// derler (ölçülen ilk-çıkarım 0.2–6.2 sn — R3 riski #1). "Açık" rozeti ısınma
-// bitmeden yeşile dönmez; kamera ışığı ısınmada YANMAZ (getUserMedia yok).
-// ---------------------------------------------------------------------------
-// HAND-A2 — "EL KONTROLÜ" Servisi (src/features/hand/service.js - Faz 3.6.6)
-// ---------------------------------------------------------------------------
-const { createHandService } = require('./src/features/hand');
-
-const handService = createHandService({
-  BrowserWindow,
-  screen,
-  systemPreferences: require('electron').systemPreferences,
-  globalShortcut,
-  getAppWindow: () => appWindow,
-  openHandDetectWindow: () => windowManager.openHandDetectWindow(),
-  handDetectAlive: () => windowManager.handDetectAlive(),
-  feedHandOverlay: (raw) => feedHandOverlay(raw),
-  handOverlayPrefs: () => handOverlayPrefs(),
-  handTuningConfig: (prefs) => handTuningConfig(prefs),
-  agentSettings,
-  logLine,
-});
-
-const handControl = handService.handControl;
-function startHandControl(opts) { return handService.startHandControl(opts); }
-function stopHandControl(why) { return handService.stopHandControl(why); }
-function handControlStatus() { return handService.handControlStatus(); }
-function handControlLive() { return handService.handControlLive(); }
-function finishPoseSampler() { return handService.finishPoseSampler(); }
-function selectHandCamera(sel) { return handService.selectHandCamera(sel); }
-function onHandDetectFrame(ev, p) { return handService.onHandDetectFrame(ev, p); }
-function broadcastHandControlStatus() { return handService.broadcastHandControlStatus(); }
-const handCameraPolicy = handService.handCameraPolicy;
-function handHardwareCameras() { return handService.handHardwareCameras(); }
-function handCameraPreference() { return handService.handCameraPreference(); }
-function handDetectAlive() { return windowManager.handDetectAlive(); }
-function scheduleHandControlWarmup(attempt = 0) { return windowManager.scheduleHandControlWarmup(attempt); }
-
-
-function createSpikeWindow() { return windowManager.createSpikeWindow(); }
 
 // ---------------------------------------------------------------------------
 // Lifecycle
@@ -2328,7 +2215,6 @@ app.whenReady().then(async () => {
     app,
     scanE2EResidueAtStartup,
     startupSweepService,
-    ensureSpawnHelperExecutable,
     rehydrateGrantedRoots: () => workspaceFileService.rehydrateGrantedRoots(),
     crewpaneHome,
     repoRoot: REPO_ROOT,
@@ -2356,7 +2242,7 @@ app.whenReady().then(async () => {
     drainPendingAuthUrls,
     wireIpc,
     startResourceGovernorSampling,
-    createSpikeWindow,
+    createSpikeWindow: () => windowManager.createSpikeWindow(),
     BrowserWindow,
     autotest: AUTOTEST,
     noteQuit,
@@ -2364,8 +2250,8 @@ app.whenReady().then(async () => {
     providers,
     adapter,
     registerJarvisShortcut,
-    scheduleHandControlWarmup,
-    stopHandControl,
+    scheduleHandControlWarmup: (attempt) => windowManager.scheduleHandControlWarmup(attempt),
+    stopHandControl: (why) => handService.stopHandControl(why),
     scheduleUpdateChecks,
     startHeartbeat,
     scheduleAnnounceChecks,

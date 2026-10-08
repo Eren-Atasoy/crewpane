@@ -224,28 +224,35 @@ function _buildUpdateAndAnnounceDeps(ctx) {
   };
 }
 
-function _buildHandAndMobileDeps(ctx) {
+function _resolveHandOps(ctx) {
   const wm = ctx.windowManager;
-  const mob = ctx.mobileService;
+  const hs = ctx.handService;
   return {
     getHandOverlayWindows: () => (wm ? wm.handOverlayWindows : new Map()),
     getHandOverlayPrefs: () => (wm ? wm.handOverlayPrefs() : { overlay: {} }),
-    handOverlayAnyAlive: () => (ctx.handOverlayAnyAlive ? ctx.handOverlayAnyAlive() : false),
-    closeHandOverlayWindows: (why) => (ctx.closeHandOverlayWindows ? ctx.closeHandOverlayWindows(why) : null),
-    feedHandOverlay: (raw) => (ctx.feedHandOverlay ? ctx.feedHandOverlay(raw) : null),
-    getHandControl: () => ctx.handControl,
-    startHandControl: () => (ctx.startHandControl ? ctx.startHandControl() : null),
-    stopHandControl: (why) => (ctx.stopHandControl ? ctx.stopHandControl(why) : null),
-    handControlStatus: () => (ctx.handControlStatus ? ctx.handControlStatus() : null),
-    handControlLive: () => (ctx.handControlLive ? ctx.handControlLive() : null),
-    finishPoseSampler: () => (ctx.finishPoseSampler ? ctx.finishPoseSampler() : null),
-    selectHandCamera: (sel) => (ctx.selectHandCamera ? ctx.selectHandCamera(sel) : null),
-    onHandDetectFrame: ctx.onHandDetectFrame,
-    handDetectAlive: ctx.handDetectAlive,
-    broadcastHandControlStatus: ctx.broadcastHandControlStatus,
-    handCameraPolicy: ctx.handCameraPolicy,
-    handHardwareCameras: ctx.handHardwareCameras,
-    handCameraPreference: ctx.handCameraPreference,
+    handOverlayAnyAlive: () => (wm ? wm.handOverlayAnyAlive() : false),
+    closeHandOverlayWindows: (why) => (wm ? wm.closeHandOverlayWindows(why) : null),
+    feedHandOverlay: (raw) => (wm ? wm.feedHandOverlay(raw) : null),
+    applyHandOverlaySettings: () => (wm ? wm.applyHandOverlaySettings() : null),
+    handDetectAlive: () => (wm ? wm.handDetectAlive() : false),
+    getHandControl: () => (hs ? hs.handControl : ctx.handControl),
+    startHandControl: (opts) => (hs ? hs.startHandControl(opts) : null),
+    stopHandControl: (why) => (hs ? hs.stopHandControl(why) : null),
+    handControlStatus: () => (hs ? hs.handControlStatus() : null),
+    handControlLive: () => (hs ? hs.handControlLive() : null),
+    finishPoseSampler: () => (hs ? hs.finishPoseSampler() : null),
+    selectHandCamera: (sel) => (hs ? hs.selectHandCamera(sel) : null),
+    onHandDetectFrame: (ev, p) => (hs ? hs.onHandDetectFrame(ev, p) : null),
+    broadcastHandControlStatus: () => (hs ? hs.broadcastHandControlStatus() : null),
+    handCameraPolicy: hs ? hs.handCameraPolicy : ctx.handCameraPolicy,
+    handHardwareCameras: () => (hs ? hs.handHardwareCameras() : null),
+    handCameraPreference: () => (hs ? hs.handCameraPreference() : null),
+  };
+}
+
+function _buildHandAndMobileDeps(ctx) {
+  const mob = ctx.mobileService;
+  const out = Object.assign(_resolveHandOps(ctx), {
     getSyncRuntime: () => ctx.syncRuntime,
     getSyncIpcSurface: () => ctx.syncIpcSurface,
     mobilePending: ctx.mobilePending,
@@ -259,7 +266,18 @@ function _buildHandAndMobileDeps(ctx) {
     mobileStartFailure: (c) => (ctx.mobileStartFailure ? ctx.mobileStartFailure(c) : null),
     mobileKillSwitch: () => (ctx.mobileKillSwitch ? ctx.mobileKillSwitch() : null),
     mobileProbe: ctx.mobileProbe,
-  };
+  });
+  const handKeys = [
+    'handOverlayAnyAlive', 'closeHandOverlayWindows', 'feedHandOverlay', 'applyHandOverlaySettings',
+    'startHandControl', 'stopHandControl', 'handControlStatus', 'handControlLive', 'finishPoseSampler',
+    'selectHandCamera', 'onHandDetectFrame', 'handDetectAlive', 'broadcastHandControlStatus',
+    'handHardwareCameras', 'handCameraPreference',
+  ];
+  for (let i = 0; i < handKeys.length; i++) {
+    const k = handKeys[i];
+    if (typeof ctx[k] === 'function') out[k] = ctx[k];
+  }
+  return out;
 }
 
 function _resolveBrowserDeps(ctx) {
