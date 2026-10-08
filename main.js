@@ -2921,7 +2921,7 @@ function relaunchForAccountChange(nextKey, reason) {
 //   • BL-01 köprü `/sprint` → dalga tavanı (REDDETMEZ, dalgayı KISITLAR + söyler)
 
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
-const { createIntegrationService, createBrowserService } = require('./src/features/services');
+const { createIntegrationService, createBrowserService, createWorkspaceFileService } = require('./src/features/services');
 
 const integrationService = createIntegrationService({
   instancePaths,
@@ -3372,239 +3372,90 @@ function syncSkillEngineViews(reason) {
 }
 
 const {
-  withinActiveRoots: rawWithinActiveRoots,
-  resolveInRoots: rawResolveInRoots,
-  resolveSearchRoot: rawResolveSearchRoot,
-  displayPath: rawDisplayPath,
-  readWorkspaceFile: rawReadWorkspaceFile,
-  writeWorkspaceFile: rawWriteWorkspaceFile,
-  listWorkspaceDir: rawListWorkspaceDir,
   gitBranchCache,
   GIT_BRANCH_TTL_MS,
   invalidateGitBranchCache,
-  readGitBranch: rawReadGitBranch,
 } = require('./src/shared/utils');
 
+// ── ADP-103/108/109/437 — ÇALIŞMA ALANI DOSYA VE KALICILIK SERVİSİ (src/features/services/workspaceFileService.js - Faz 3.6.27)
+const workspaceFileService = createWorkspaceFileService({
+  activeRoots,
+  getWorkspaceRoot: () => agentWorkspaceRoot,
+  getUserDataPath: () => app.getPath('userData'),
+  ptys,
+  dialog,
+  appI18n,
+  fileMaxBytes: FILE_MAX_BYTES,
+  logLine: (line) => logLine(line),
+  renameWithRetry: renameWithRetrySync,
+});
+
 function withinActiveRoots(abs) {
-  return rawWithinActiveRoots(abs, activeRoots);
+  return workspaceFileService.withinActiveRoots(abs);
 }
 
 function resolveInRoots(p) {
-  return rawResolveInRoots(p, { workspaceRoot: agentWorkspaceRoot, activeRoots });
+  return workspaceFileService.resolveInRoots(p);
 }
 
 function readGitBranch(startDir) {
-  return rawReadGitBranch(startDir, { activeRoots });
+  return workspaceFileService.readGitBranch(startDir);
 }
 
 function resolveSearchRoot(p) {
-  return rawResolveSearchRoot(p, { workspaceRoot: agentWorkspaceRoot, activeRoots });
+  return workspaceFileService.resolveSearchRoot(p);
 }
 
 function displayPath(abs) {
-  return rawDisplayPath(abs, agentWorkspaceRoot);
+  return workspaceFileService.displayPath(abs);
 }
 
 function readWorkspaceFile(p) {
-  return rawReadWorkspaceFile(p, {
-    workspaceRoot: agentWorkspaceRoot,
-    activeRoots,
-    fileMaxBytes: FILE_MAX_BYTES,
-    logLine,
-  });
+  return workspaceFileService.readWorkspaceFile(p);
 }
 
 function writeWorkspaceFile(payload) {
-  return rawWriteWorkspaceFile(payload, {
-    workspaceRoot: agentWorkspaceRoot,
-    activeRoots,
-    fileMaxBytes: FILE_MAX_BYTES,
-    logLine,
-  });
+  return workspaceFileService.writeWorkspaceFile(payload);
 }
 
 function listWorkspaceDir(dir) {
-  return rawListWorkspaceDir(dir, {
-    workspaceRoot: agentWorkspaceRoot,
-    activeRoots,
-  });
+  return workspaceFileService.listWorkspaceDir(dir);
 }
 
-
-/**
- * ADP-103 — open the OS directory picker and ADD the chosen dir to the active-root
- * allow-list, so the tree can browse outside the workspace. The renderer never
- * supplies the path: only what the user picks in the native dialog becomes a root
- * (capability-by-user-choice; no renderer-driven root injection). Returns the new
- * root's display path + basename, or `{ ok:false, reason }` (canceled/not-a-dir).
- */
-async function openFolderDialog(win) {
-  let result;
-  try {
-    result = await dialog.showOpenDialog(win ?? undefined, {
-      title: appI18n.t('main.dialog.openFolder.title'),
-      properties: ['openDirectory', 'createDirectory'],
-    });
-  } catch (err) {
-    return { ok: false, reason: 'dialog-failed', detail: err.message };
-  }
-  if (!result || result.canceled || !Array.isArray(result.filePaths) || result.filePaths.length === 0) {
-    return { ok: false, reason: 'canceled' };
-  }
-  let chosen = result.filePaths[0];
-  try { chosen = fs.realpathSync(chosen); } catch { /* dir must exist; fall through to stat */ }
-  try {
-    if (!fs.statSync(chosen).isDirectory()) return { ok: false, reason: 'not-a-directory' };
-  } catch (err) {
-    return { ok: false, reason: 'read-failed', detail: err.message };
-  }
-  activeRoots.add(chosen);
-  persistGrantedRoots(); // ADP-109 — remember it so a restart can restore this root
-  logLine(`file:openDialog added root ${chosen}`);
-  return { ok: true, root: displayPath(chosen), name: path.basename(chosen) || chosen };
+function openFolderDialog(win) {
+  return workspaceFileService.openFolderDialog(win);
 }
 
-/**
- * ADP-108 — grant the editor read access to a WATCHED pane's working directory.
- * The capability is keyed to a pane MAIN ITSELF spawned (the renderer supplies only
- * a paneId, never a path), so this preserves the ADP-103 sandbox model: a root is
- * added only for a real, main-known cwd — not an arbitrary renderer-supplied path.
- *
- * Why: a watched agent's spawn cwd defaults to HOME (sanitizeCwd), so when it writes
- * a relative path ("oyun/x.html") the file lands at <cwd>/oyun/x.html, OUTSIDE the
- * crewpane/ workspace root. The editor's fileApi only resolves inside active roots,
- * so it never found the file (the false-PASS root cause). Adding the pane's cwd as a
- * root — and returning it + HOME + the workspace root — lets the renderer rebase the
- * printed path to an absolute path the editor can open WHEREVER the agent wrote it.
- * Returns the ABSOLUTE cwd (not displayPath) so the renderer can join relative paths.
- */
 function allowPaneRoot(paneId) {
-  const entry = ptys.get(paneId);
-  if (!entry) return { ok: false, reason: 'no-pane' };
-  let cwd = entry.cwd;
-  if (typeof cwd !== 'string' || cwd.length === 0) return { ok: false, reason: 'no-cwd' };
-  try { cwd = fs.realpathSync(cwd); } catch { /* cwd may be gone; use as recorded */ }
-  activeRoots.add(cwd);
-  logLine(`file:allowPaneRoot paneId=${paneId} root=${cwd}`);
-  return { ok: true, cwd, home: os.homedir(), workspaceRoot: agentWorkspaceRoot };
+  return workspaceFileService.allowPaneRoot(paneId);
 }
 
-// ADP-109 — origin-stable editor state (last-session + recent) under userData. A single
-// JSON blob `{ recent, session }`; the renderer owns its shape (we just persist it).
-function editorStatePath() {
-  return path.join(app.getPath('userData'), 'editor-state.json');
-}
-
-// ADP-109 — persist the user-GRANTED external roots (ADP-103 dialog picks) so the
-// editor's last-session restore can re-list / re-open a folder across a real restart.
-// Security model is unchanged: a path lands here ONLY after the user picked it in the
-// OS dialog at least once (renderer-supplied paths still can't add roots). On startup
-// we re-validate each (realpath + still-a-directory) before re-granting.
-function grantedRootsPath() {
-  return path.join(app.getPath('userData'), 'editor-granted-roots.json');
-}
-function persistGrantedRoots() {
-  try {
-    const extra = [...activeRoots].filter((r) => r !== agentWorkspaceRoot);
-    fs.writeFileSync(grantedRootsPath(), JSON.stringify(extra), 'utf8');
-  } catch { /* best-effort */ }
-}
 function rehydrateGrantedRoots() {
-  let list;
-  try {
-    list = JSON.parse(fs.readFileSync(grantedRootsPath(), 'utf8'));
-  } catch {
-    return; // none saved
-  }
-  if (!Array.isArray(list)) return;
-  for (const r of list) {
-    if (typeof r !== 'string') continue;
-    let abs = r;
-    try { abs = fs.realpathSync(r); } catch { continue; } // gone → don't re-grant
-    try { if (!fs.statSync(abs).isDirectory()) continue; } catch { continue; }
-    activeRoots.add(abs);
-  }
-  logLine(`rehydrated ${activeRoots.size - 1} granted editor root(s)`);
-}
-function readEditorState() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(editorStatePath(), 'utf8'));
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null; // missing / malformed → "no history"
-  }
+  return workspaceFileService.rehydrateGrantedRoots();
 }
 
-// ADP-437 — office layout/floor/custom-asset persistence. userData, NOT localStorage:
-// the embedded Next server binds a RANDOM free port each launch, so the renderer
-// origin changes every restart and localStorage-saved furniture silently vanished.
-// Same store discipline as editorState; atomic write (tmp+rename) because this file
-// holds the user's hand-built office (a torn write must not eat it).
-function officeStatePath() {
-  return path.join(app.getPath('userData'), 'office-state.json');
+function readEditorState() {
+  return workspaceFileService.readEditorState();
 }
-// FDBK-F1 — filigran dosyası (office-state ile aynı kalıp: userData + atomik yazım).
-function feedbackSeenPath() {
-  return path.join(app.getPath('userData'), 'feedback-seen.json');
-}
-function readFeedbackSeen() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(feedbackSeenPath(), 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null; // yok/bozuk → renderer boş filigranla başlar (en fazla bir fazla duyuru)
-  }
-}
-function writeFeedbackSeen(state) {
-  try {
-    const file = feedbackSeenPath();
-    if (state == null) {
-      try { fs.unlinkSync(file); } catch { /* zaten yok */ }
-      return { ok: true };
-    }
-    if (typeof state !== 'object' || Array.isArray(state)) return { ok: false, error: 'invalid' };
-    const tmp = file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
-    renameWithRetrySync(tmp, file);
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: String((err && err.message) || err) };
-  }
-}
-function readOfficeState() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(officeStatePath(), 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null; // missing / malformed → renderer falls back to defaults
-  }
-}
-function writeOfficeState(state) {
-  try {
-    const file = officeStatePath();
-    if (state == null) {
-      try { fs.unlinkSync(file); } catch { /* already gone */ }
-      return { ok: true };
-    }
-    const tmp = file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state), 'utf8');
-    renameWithRetrySync(tmp, file);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: String((e && e.message) || e) };
-  }
-}
+
 function writeEditorState(state) {
-  try {
-    if (state == null) {
-      try { fs.unlinkSync(editorStatePath()); } catch { /* already gone */ }
-      return { ok: true };
-    }
-    fs.writeFileSync(editorStatePath(), JSON.stringify(state), 'utf8');
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, reason: String((e && e.message) || e) };
-  }
+  return workspaceFileService.writeEditorState(state);
+}
+
+function readOfficeState() {
+  return workspaceFileService.readOfficeState();
+}
+
+function writeOfficeState(state) {
+  return workspaceFileService.writeOfficeState(state);
+}
+
+function readFeedbackSeen() {
+  return workspaceFileService.readFeedbackSeen();
+}
+
+function writeFeedbackSeen(state) {
+  return workspaceFileService.writeFeedbackSeen(state);
 }
 
 // ADP-487 — tek-aktif-pane-per-agent: bir agentId'nin CANLI (exit olmamış) pane'i

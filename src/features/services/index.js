@@ -11,11 +11,14 @@ const { registerWorkspaceIpc } = require('./workspaceIpc');
 
 const { createIntegrationService } = require('./integrationService');
 const { createBrowserService, BrowserService } = require('./browserService');
+const { createWorkspaceFileService, WorkspaceFileService } = require('./workspaceFileService');
 
 module.exports = {
   createIntegrationService,
   createBrowserService,
   BrowserService,
+  createWorkspaceFileService,
+  WorkspaceFileService,
   registerWorktreeIpc,
   registerBrowserIpc,
   registerIntegIpc,
