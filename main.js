@@ -50,6 +50,7 @@ const { createMobileService } = require('./src/features/mobile');
 const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
+const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
 let windowManager = null;
 let mobileService = null;
 
@@ -820,22 +821,6 @@ function noteQuit(reason, signal) {
   return quitReason;
 }
 const APP_STARTED_AT = Date.now();
-let quitJournalWritten = false;
-app.on('before-quit', () => {
-  if (quitJournalWritten) return; // quit birden çok kez tetiklenebilir
-  quitJournalWritten = true;
-  try {
-    crashJournal.record(instancePaths.instanceHome(crewpaneHome()), {
-      reason: quitReason || 'user-quit', // işaretlenmemiş quit = kullanıcı yolu (Cmd+Q / pencere)
-      signal: quitSignal,
-      uptimeMs: Date.now() - APP_STARTED_AT,
-      rssBytes: process.memoryUsage().rss,
-      panes: ptys.size,
-      version: app.getVersion(),
-      pid: process.pid,
-    });
-  } catch { /* defter ASLA kapanışı geciktirmez */ }
-});
 
 // App-shell smoke probe: load the embedded app offscreen, assert the real app
 // rendered (title + #__next root), log proof, then quit. Used to verify ADP-002
@@ -1027,6 +1012,29 @@ const startupSweepService = createStartupSweepService({
   helperReaper,
   logLine,
   autoIndexDelayMs: Number(process.env.CREWPANE_AUTO_INDEX_DELAY_MS || 15000),
+});
+
+// ── RESET-03/ENV-08/CRASH-R1 — AÇILIŞ KAPILARI & DOĞRULAMA (src/main/lifecycle/startupGate.js - Faz 3.6.19)
+const startupGate = createStartupGate({
+  app,
+  dialog,
+  singleInstanceGate,
+  singleInstanceEarlyLog,
+  resetGate,
+  resetBootService,
+  resetT: (k) => resetBootService.resetT(k),
+  logEnvBannerAndGuard: () => logEnvBannerAndGuard(),
+  applyAppLocale: () => applyAppLocale(),
+  initLog: () => initLog(),
+  logLine: (line) => logLine(line),
+  crewpaneHome: () => crewpaneHome(),
+  instancePaths,
+  singleInstanceLock,
+  translocationNotice: require('./src/core/translocationNotice.cjs'),
+  crashJournal,
+  i18n: require('./i18n/index.cjs'),
+  logTarget: () => (typeof LOG_TARGET !== 'undefined' ? LOG_TARGET : null),
+  logPath: () => (typeof LOG_PATH !== 'undefined' ? LOG_PATH : ''),
 });
 
 // ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
@@ -6183,137 +6191,9 @@ function scanE2EResidueAtStartup() {
   return startupSweepService.scanE2EResidueAtStartup();
 }
 
-const resetT = (key) => resetBootService.resetT(key);
-
 app.whenReady().then(async () => {
-  // RESET-03 — KOMUT SATIRI YOLU, KİLİT KAPISI. `--reset` istendiyse ve kilit
-  // BİZDE DEĞİLSE (uygulama başka bir kopyada açık) hiçbir şeye dokunmadan
-  // çıkılır: açık uygulamanın altından veri kökünü silmek, tam da tasarımın
-  // engellediği durumdur. Çıkış kodu 2 — destek betikleri "kapalı değildi"yi
-  // "sıfırlandı"dan ayırt edebilsin.
-  const resetCli = resetGate.argvReset(process.argv);
-  const lockIsOurs = !singleInstanceGate
-    || singleInstanceGate.enforced === false // CREWPANE_SINGLE_INSTANCE=0 (kaçış kapağı)
-    || singleInstanceGate.primary === true;
-  if (resetCli && !lockIsOurs) {
-    try { process.stderr.write('[reset] kilit BİZDE DEĞİL — uygulama açık, sıfırlama yapılmadı\n'); } catch { /* ignore */ }
-    try {
-      dialog.showMessageBoxSync({
-        type: 'warning',
-        title: resetT('main.reset.locked.title'),
-        message: resetT('main.reset.locked.message'),
-        detail: resetT('main.reset.locked.detail'),
-        buttons: [resetT('main.reset.partial.button.ok')],
-        noLink: true,
-      });
-    } catch { /* kutu çizilemedi → stderr satırı kaldı */ }
-    app.exit(2);
-    return;
-  }
-  // ENV-08-FIX-01 — İKİNCİ KOPYA BARİYERİ. Kilit kapısı ikinci kopyanın diyaloğunu
-  // bu kancadan ÖNCE (kendi whenReady'sinde) açar ve kararı burada BEKLETİRİZ.
-  // İki ölçülmüş gerekçe: (1) `app.exit()` ASENKRONDUR (aşağıdaki ENV-01 kapısında
-  // da aynı gerekçe) — "Kapat"tan sonra bu kanca yine koşuyordu ve ölmekte olan
-  // kopya hesabı bağlayıp standalone sunucuyu + Next'i başlatıyordu, yani tam da
-  // engellemeye çalıştığımız İKİNCİ YAZAR oluyordu; (2) diyalog artık ASENKRON
-  // (kutu açıldıktan sonra pencereyi öne alabilmek için) → senkron modal'ın açılışı
-  // bloklama yan etkisi yok, beklemeyi AÇIKÇA yapıyoruz. "Yine de aç" seçilirse söz
-  // `false` çözülür ve açılış kaldığı yerden sürer.
-  if (singleInstanceGate && typeof singleInstanceGate.whenDecided === 'function'
-    && await singleInstanceGate.whenDecided()) return;
-  // RESET-03 — SİLME BURADA, `initLog()`TEN ÖNCE. Bu satırdan sonrası veri
-  // köküne dosya AÇAR (log dosyası, çökme defteri, ayarlar, pane defteri);
-  // Windows'ta açık bir tutamaç `fs.rm`i EBUSY ile düşürür. Satırlar tampona
-  // yazılır ve log açılır açılmaz dosyaya basılır (kanıt stdout'ta kalmasın).
-  {
-    const resetLines = [];
-    const resetLog = (m) => {
-      resetLines.push(String(m));
-      try { process.stderr.write(`${m}\n`); } catch { /* ignore */ }
-    };
-    try {
-      if (resetCli && await resetBootService.runArgvReset(resetCli, resetLog)) return; // süreç çıkıyor
-      if (!resetCli) await resetBootService.applyPendingReset(resetLog);
-    } catch (e) {
-      resetLog(`[reset] açılış kancası HATASI (${(e && e.code) || 'ERR'}) — açılış normal sürüyor`);
-    }
-    initLog();
-    for (const line of resetLines) logLine(line);
-    // WIN-DUP-INSTANCE-01 — kilit kararı artık DOSYA log'unda (destek kanıtı).
-    for (const line of singleInstanceEarlyLog.splice(0)) logLine(`[single-instance] ${line}`);
-    if (singleInstanceGate) {
-      logLine(`[single-instance] sonuç: primary=${!!singleInstanceGate.primary}`
-        + ` forced=${!!singleInstanceGate.forced} degraded=${!!singleInstanceGate.degraded}`
-        + `${singleInstanceGate.why ? ` why=${singleInstanceGate.why}` : ''}`
-        + `${singleInstanceGate.reason ? ` reason=${singleInstanceGate.reason}` : ''}`);
-    }
-    // YARIM SIFIRLAMA SESSİZ KALAMAZ. `locked` doluysa işaretçi duruyor demektir
-    // ve kullanıcının yapması gereken tek şey var: kapat, tekrar aç. Bunu söyleyen
-    // yüzeyi MAIN çizer — uygulama-içi şerit (RESET-02) henüz açılmamış bile
-    // olabilir ve sessiz bir boş ekran YALAN olurdu ([[silent-empty-state-is-a-lie]]).
-    if (!resetCli) resetBootService.showPartialWipeDialog(logLine);
-  }
-  // ENV-01 — AÇILIŞ BANNER'I + KARIŞIM KAPISI. `initLog()`ten hemen SONRA: satır dosya
-  // log'una da düşsün (GUI'den açılan kopyada terminal yok). Pencere/Next/mobil/
-  // e2e-artık taramasından ÖNCE: karışım varsa TEK BİR istek bile çıkmadan durulur
-  // (`scanE2EResidueAtStartup` bu satırdan sonra fetch atıyor — sıra bu yüzden kritik).
-  // `app.exit(1)` çağrıldı ama Electron çıkışı asenkron: `return` ile açılışın kalanını
-  // da kesiyoruz ki ölmekte olan süreç bu arada bir yere BAĞLANMASIN.
-  if (logEnvBannerAndGuard().level === 'block') return;
-  // CRASH-R1 — ÖNCEKİ KAPANIŞI RAPORLA. "Uygulama kendiliğinden kapandı" şikâyeti
-  // 13/14/16.09'da üç kez geldi ve her seferinde sebep günlük arkeolojisiyle
-  // aranmak zorunda kaldı. Artık ilk satırlarda yazıyor. KAYIT YOKSA da bir şey
-  // söyler: temiz kapanışta satır HEP yazılır → yokluğu SIGKILL (jetsam / Force
-  // Quit / panic) demektir.
-  try {
-    // `app.isPackaged` şartı: paketsiz koşuda LOG_PATH zaten spike-log.txt'dir,
-    // "yalıtıldı" demek YANILTICI olurdu (yalıtılacak ortak dosya orada yok).
-    if (app.isPackaged && LOG_TARGET && LOG_TARGET.isolated) {
-      logLine(`[crash-r1] YALITILMIŞ GÜNLÜK (${LOG_TARGET.source}) → ${LOG_PATH} — canlı uygulamanın günlüğüne DOKUNULMADI`);
-    }
-    logLine(`[crash-r1] ${crashJournal.formatPrevious(crashJournal.readLast(instancePaths.instanceHome(crewpaneHome())))}`);
-    crashJournal.trim(instancePaths.instanceHome(crewpaneHome()));
-  } catch (e) { logLine(`[crash-r1] kapanış defteri okunamadı: ${e.message}`); }
-  // ADP-888 (ADP-885 Faz A) — DİLİ RENDERER'DAN ÖNCE ÇÖZ. Main, pencere hiç
-  // açılmadan da diyalog gösterebilir (çökme bildirimi, lisans hatası); o metin
-  // renderer'ın diline BAĞLANAMAZ. Tercih 'system' ise işletim sistemi sorulur
-  // (app.getLocale() yalnız whenReady'den sonra doğrudur).
-  applyAppLocale();
-  // ENV-08 (d) — GEÇİCİ KONUM UYARISI (28.08: DMG doğrudan açıldı → AppTranslocation
-  // kopyası prod çözüp gerçek veri köküne bağlandı). Tek-örnek kilidi (yukarıdaki
-  // enforce) çarpışmayı zaten engeller; bu kutu kullanıcıya NEDENİNİ söyler ve temiz
-  // çıkışlar sunar. BLOKLAMAZ (fail-open bilgi kutusu): "Anladım" → açılış normal
-  // sürer; "Ayrı test profiliyle yeniden başlat" → kilit bırakılır + --instance=test.
-  try {
-    if (require('./src/core/translocationNotice.cjs').isTransientLocation(process.execPath, process.platform)) {
-      logLine(`[env-08] geçici konumdan koşuyor (AppTranslocation/DMG): ${process.execPath}`);
-      const i18nMod = require('./i18n/index.cjs');
-      dialog.showMessageBox({
-        type: 'warning',
-        title: i18nMod.t('main.translocation.title'),
-        message: i18nMod.t('main.translocation.message'),
-        detail: i18nMod.t('main.translocation.detail'),
-        buttons: [i18nMod.t('main.translocation.button.ok'), i18nMod.t('main.translocation.button.separateProfile')],
-        defaultId: 0,
-        cancelId: 0,
-        noLink: true,
-      }).then(({ response }) => {
-        if (response !== 1) return;
-        logLine('[env-08] kullanıcı geçici konumdan AYRI TEST PROFİLİYLE yeniden başlatmayı seçti');
-        try {
-          singleInstanceLock.releaseForRelaunch({
-            dataRoot: instancePaths.instanceHome(),
-            log: (m) => logLine(`[env-08] ${m}`),
-          });
-        } catch (e) { logLine(`[env-08] kilit bırakılamadı: ${e && e.message}`); }
-        const args = process.argv.slice(1)
-          .filter((a) => !/^--(crewpane-)?instance=/.test(a))
-          .concat(['--instance=test']);
-        try { app.relaunch({ args }); } catch (e) { logLine(`[env-08] relaunch hatası: ${e && e.message}`); }
-        app.exit(0);
-      }).catch((e) => logLine(`[env-08] translocation kutusu gösterilemedi: ${e && e.message}`));
-    }
-  } catch (e) { logLine(`[env-08] translocation tespiti atlandı: ${e && e.message}`); }
+  const gate = await startupGate.runStartupGate(process.argv);
+  if (!gate.proceed) return;
   // ADP-734 Kapı 2 — defter küçülme nöbeti: yedek zaten kayıt modülünde alınır;
   // burada LOG'a basılır ve defter BOŞALIYORSA kullanıcıya teklif edilir. Sessiz
   // bir "7 pane → 0" yazımı bir daha yaşanmasın.
@@ -8519,109 +8399,65 @@ function startPtyResumeDaemonOnce() {
   }
 }
 
-// SEC-02 — TEMİZ ÇIKIŞ: kapanırken cihaz kirasını BIRAK.
-//
-// Neden çıkışı KISA SÜRE geciktirmeye değer: kira 15 dakikalıktır ve bırakılmazsa
-// kullanıcının kendi makinesi 15 dakika boyunca koltuğu tutar. Dizüstünü kapatıp
-// masaüstüne geçen tek kişi, kendi hesabında "başka cihazda aktif" duvarına
-// toslardı — bu, tavanın KENDİSİNDEN çok şikâyet üretir.
-//
-// Neden ÇIKIŞ ASLA ASILMAZ (üç bağımsız kemer):
-//   1. `releaseDeviceLease` kendi içinde `Promise.race` ile zaman aşımına uğrar
-//   2. burada AYRICA bir failsafe zamanlayıcı `app.quit()` çağırır
-//   3. bayrak tek seferliktir → ikinci `before-quit` doğrudan yıkıma gider
-// Kira bırakılamazsa kayıp küçüktür (kira zaten dolacak); asılı kalan bir
-// uygulama ise kullanıcının görebileceği en kötü hatadır.
-let leaseReleaseAttempted = false;
-app.on('before-quit', (event) => {
-  if (!leaseReleaseAttempted && seatGate && !AUTOTEST) {
-    leaseReleaseAttempted = true;
-    const s = (() => { try { return seatGate.state(); } catch { return null; } })();
-    // Yalnız gerçekten koltuk TUTAN kurulum için geciktir (giriş yapılmamışsa
-    // ya da cihaz kimliği yoksa bırakılacak kira da yoktur).
-    if (s && s.signedIn && s.device && s.device.device_id) {
-      event.preventDefault();
-      const failsafe = setTimeout(() => app.quit(), 2000);
-      if (typeof failsafe.unref === 'function') failsafe.unref();
-      seatGate.releaseDeviceLease({ timeoutMs: 1200 })
-        .catch(() => {})
-        .finally(() => { clearTimeout(failsafe); app.quit(); });
-      return;
-    }
-  }
-  app.isQuitting = true;
-  // HATA-14 — FREN BURADA KURULUR: bu dal, kaynağı ne olursa olsun (X düğmesi,
-  // menüden Çıkış, ⌘Q, oturum kapatma, güncelleme) HER GERÇEK kapanışın tek
-  // ortak noktasıdır. Koltuk kirası dalı yukarıda quit'i bir kez erteler ve
-  // kendisi yeniden quit çağırır; fren o gecikmeyi kesmesin diye ORAYA değil
-  // BURAYA kurulur (kira bırakma penceresi 1200 ms + 2000 ms failsafe).
-  armQuitBrake('quit');
-  stopCrashWatchdog(); // ADP-475 — a deliberate quit isn't a crash; stop ticking
-  // HATA-14 — KAPANIŞ HUNİSİ: adımlar quitFunnel.TEARDOWN_ORDER sözleşmesindeki
-  // SIRAYLA koşar ve BİR ADIMIN ATMASI kalanları İPTAL ETMEZ. Eskiden bunlar düz
-  // bir gövdeydi: `stopNextServer()` ya da `killAllPtys()` atarsa ondan sonraki
-  // her şey (pane'ler, köprü) sessizce atlanır ve yetim kalırdı.
-  const teardown = quitFunnel.runTeardown([
+// ── SEC-02/HATA-14/ADP-905 — YAŞAM DÖNGÜSÜ & TEMİZ ÇIKIŞ YÖNETİCİSİ (src/main/lifecycle - Faz 3.6.19)
+const lifecycleManager = createLifecycleManager({
+  app,
+  quitFunnel,
+  crashJournal,
+  instancePaths,
+  getSeatGate: () => seatGate,
+  isAutotest: AUTOTEST,
+  crewpaneHome: () => crewpaneHome(),
+  armQuitBrake: (label) => armQuitBrake(label),
+  stopCrashWatchdog: () => stopCrashWatchdog(),
+  killAllPtys: () => killAllPtys(),
+  stopNextServer: () => stopNextServer(),
+  noteQuit: (reason, signal) => noteQuit(reason, signal),
+  getLivePaneCount: () => ptys.size,
+  getQuitReason: () => quitReason,
+  getQuitSignal: () => quitSignal,
+  appStartedAt: APP_STARTED_AT,
+  logLine,
+  getTeardownSteps: () => [
     // ADP-386 — ekran kuyruğu snapshot'tan ÖNCE yazılır ki write-ahead kopya da taşısın.
     { name: 'persist-screen-tails', run: () => persistScreenTails() },
     // TASK-MRDXOGZJDQLJG — write-ahead: copy the live-pane registry BEFORE any
     // teardown touches a pty. Whatever empties live-panes.json during this quit
     // (a kill race, a crash mid-teardown), the next launch can still restore from
     // the snapshot (restoreLivePanes fallback).
-    { name: 'quit-snapshot', run: () => {
-      const n = livePaneRegistry.writeQuitSnapshot(crewpaneHome());
-      if (n) logLine(`quit: live-pane registry snapshot written (${n} pane(s))`);
-    } },
+    {
+      name: 'quit-snapshot',
+      run: () => {
+        const n = livePaneRegistry.writeQuitSnapshot(crewpaneHome());
+        if (n) logLine(`quit: live-pane registry snapshot written (${n} pane(s))`);
+      },
+    },
     { name: 'global-shortcuts', run: () => globalShortcut.unregisterAll() },
     // ADP-limit — clear the pty resume timers before the ptys are torn down.
-    // Referans ÖNCE bırakılır: eski gövdede `= null` bir try/catch'in DIŞINDAydı,
-    // yani stop() atsa bile çalışıyordu. Sıra korunmazsa atan bir daemon geride
-    // kalır ve ikinci quit onu yeniden durdurmaya kalkardı.
-    { name: 'pty-resume-daemon', run: () => {
-      const daemon = ptyResumeDaemon; ptyResumeDaemon = null;
-      if (daemon) daemon.stop();
-    } },
+    {
+      name: 'pty-resume-daemon',
+      run: () => {
+        const daemon = ptyResumeDaemon;
+        ptyResumeDaemon = null;
+        if (daemon) daemon.stop();
+      },
+    },
     // ADP-594 — stop the Responses→ChatCompletions adapter cleanly.
     { name: 'adapter', run: () => { if (adapter.isRunning()) adapter.stopAdapter(); } },
-    // ADP-813 — yerel whisper sunucusu main'in ÇOCUĞU: kapanışta öldürülmezse yetim
-    // kalır ve ~1.5 GB RAM'i tutmaya devam eder (bu makinede ağır iş yasağı var).
+    // ADP-813 — yerel whisper sunucusu main'in ÇOCUĞU: kapanışta öldürülmezse yetim kalır
     { name: 'whisper-local', run: () => jarvisVoice.whisperLocal.stopServer() },
-    // ADP-815 — kalıcı `claude` beyni de main'in ÇOCUĞU: aynı gerekçe (yetim süreç
-    // + bellek). Boşta-kapanma zamanlayıcısı 10 dk'lık; quit onu beklemez.
+    // ADP-815 — kalıcı `claude` beyni de main'in ÇOCUĞU
     { name: 'jarvis-brain', run: () => jarvisVoice.stopBrain() },
     { name: 'next-server', run: () => stopNextServer() },
     { name: 'ptys', run: () => killAllPtys() },
-    { name: 'delegation-bridge', run: () => {
-      const bridge = delegationBridge; delegationBridge = null; // aynı gerekçe (yukarı)
-      if (bridge) bridge.stop();
-    } },
-  ], { log: logLine });
-  logLine(`[quit] kapanış hunisi: ${teardown.ran.length}/${teardown.ran.length + teardown.failed.length} adım tamam`
-    + (teardown.failed.length ? ` — BAŞARISIZ: ${teardown.failed.map((f) => f.name).join(', ')}` : ''));
+    {
+      name: 'delegation-bridge',
+      run: () => {
+        const bridge = delegationBridge;
+        delegationBridge = null;
+        if (bridge) bridge.stop();
+      },
+    },
+  ],
 });
-
-// ADP-334 — macOS'ta pencere kapanınca UYGULAMA YAŞAR (Dock'ta durur): mobil gateway
-// main'de koştuğu için telefon ofisi görmeye DEVAM eder. Eskiden niyet buydu ama zincir
-// tersini yapıyordu: stopNextServer() → next server 'exit' → `if (!app.isQuitting)
-// app.quit()` → uygulama tamamen ölüyordu (gateway de onunla). Artık darwin'de sunucu
-// AYAKTA bırakılır; Dock'tan geri açınca (activate) aynı URL anında yüklenir.
-// Pane'ler yine reap edilir (preserve=true → restart-resume defteri korunur).
-// ADP-905 — …ve pane'ler ARTIK reap EDİLMEZ. Buradaki koşulsuz `killAllPtys()`,
-// hemen altındaki "darwin'de quit ATLA" kararıyla doğrudan çelişiyordu: uygulama
-// yaşıyor, çocukları ölüyordu (12 ajan, code=129). Öldürme artık GERÇEKTEN çıkılan
-// dalın içinde; `before-quit`'teki çağrı AYNEN durur (gerçek quit'te öldürmek doğru).
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin' || AUTOTEST) {
-    killAllPtys();
-    stopNextServer();
-    // HATA-14 — bu yol ARTIK tek giriş DEĞİL, YEDEK: ana pencere kapanışı
-    // (createAppWindow → win.on('closed')) çıkışı zaten başlatır. Burası
-    // yardımcı pencere HİÇ açılmamışken gelen (ve eskiden tek olan) yoldur;
-    // fren ikisinde de AYNI tek-seferlik durumu paylaşır.
-    armQuitBrake('window-all-closed');
-    noteQuit('user-quit', 'window-all-closed');
-    app.quit();
-  } else {
-    logLine(`ADP-905 window-all-closed: darwin — ${ptys.size} pane yaşamaya devam ediyor (quit YOK)`);
-  }
-});
+lifecycleManager.register();
