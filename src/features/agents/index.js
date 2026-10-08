@@ -11,6 +11,10 @@ const {
   createDelegationSupervisorService,
   supervisorFingerprint,
 } = require('./delegationSupervisorService');
+const {
+  createDelegationBridgeService,
+  DelegationBridgeService,
+} = require('./delegationBridgeService');
 
 module.exports = {
   registerSkillsIpc,
@@ -22,4 +26,6 @@ module.exports = {
   createTeamComposeService,
   createDelegationSupervisorService,
   supervisorFingerprint,
+  createDelegationBridgeService,
+  DelegationBridgeService,
 };

@@ -3489,7 +3489,7 @@ async function deliverDictationToFocusedSurface(text) {
 // 🔴 Defter BELLEKTE: geri alma "o koşuda yazılanı geri almak"tır, genel bir çöp
 // kutusu değil — uygulama kapanınca pencere kapanır (ADR §4.4).
 // ── TC-01 — TAKIM KURUCU (src/features/agents/teamComposeService.js - Faz 3.6.7)
-const { createTeamComposeService } = require('./src/features/agents');
+const { createTeamComposeService, createDelegationBridgeService } = require('./src/features/agents');
 
 const teamComposeService = createTeamComposeService({
   teamComposeCore,
@@ -3513,114 +3513,44 @@ function composeFail(status, code, error, extra = {}) { return teamComposeServic
 function teamComposeRequest(req, transport) { return teamComposeService.teamComposeRequest(req, transport); }
 
 
-// ADP-050 — start the loopback delegation bridge once an app window exists.
+// ── ADP-050 — DELEGASYON KÖPRÜSÜ SERVİSİ (src/features/agents/delegationBridgeService.js - Faz 3.6.39)
+const delegationBridgeService = createDelegationBridgeService({
+  delegationBridgeMod,
+  crewpaneEnv,
+  crewpanePaths,
+  ensureDelegationSupervisor,
+  resolveWindow: () => appWindow,
+  logLine,
+  ipcMain,
+  runBrowserAction,
+  probeBrowserTarget,
+  getBrowserGate: () => browserGate(),
+  recycleWorkerPanes,
+  telemetryBump: (key) => telemetryBump(key),
+  listPanesForControl,
+  closePanesForControl,
+  focusPaneForControl,
+  authorizeTeamScopeInteractive: ({ action, leaderId, targetScope }) =>
+    authorizeTeamScopeInteractive({ action, leaderId, targetScope }),
+  teamComposeRequest: (payload, transport) => teamComposeRequest(payload, transport),
+  setComposeTransport: (transport) => { composeTransport = transport; },
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  shotBridgeAgents,
+  shotBridgeSend,
+  ingestTaskAttachment: (req) => ingestTaskAttachment(req),
+  notifyLog,
+  resolveWorkerNotifyPath: (department) => resolveWorkerNotifyPath(department),
+  appDbTokenFor: (source) => appDbTokenFor(source),
+  integrationsStatusFor: (req) => integrationsStatusFor(req),
+  seatDenial: (action) => seatDenial(action),
+  planWaveLimit: (requested) => planWaveLimit(requested),
+  deliverDictationToFocusedSurface: (text) => deliverDictationToFocusedSurface(text),
+});
+
 async function startBridge() {
-  // ADP-659 — gözcü köprüden ÖNCE ayağa kalkar: bir önceki oturumdan kalan öksüz
-  // kayıtlar (app çökmüş/kapatılmışken biten worker'lar) daha ilk delegasyon
-  // gelmeden onarılsın ve lider "sen yokken" özetini alsın.
-  try { ensureDelegationSupervisor(); } catch (e) { logLine(`supervisor start failed: ${e.message}`); }
-  if (delegationBridge) return;
-  try {
-    delegationBridge = await delegationBridgeMod.startDelegationBridge({
-      resolveWindow: () => appWindow,
-      log: logLine,
-      ipcMain,
-      onBrowserAction: runBrowserAction, // ADP-095 — headed browser automation (CDP)
-      // ADP-341 (ADR-026) — risk kapısı: kapı, kararı vermeden ÖNCE gerçek origin'i ve
-      // hedef elemanı BURADAN ölçer (ajanın payload'ından değil).
-      onBrowserProbe: probeBrowserTarget,
-      browserGate: browserGate(),
-      onRecyclePane: recycleWorkerPanes, // TASK-MQSBV4EFQ8D6B — free finished worker panes
-      // ADP-659 — lider status okudu = ACK; supervisor'ın uyandırma tekrarları durur.
-      onLeaderAck: (leaderId) => {
-        try { ensureDelegationSupervisor().ack(String(leaderId || '')); } catch { /* best-effort */ }
-      },
-      // ADP-672 — statü sorusunun KALICI kaynağı. Renderer defteri reload/restart'ta
-      // BOŞALIR; lider o zaman ya "aktif delegasyon yok" ya da bayat "working" okur ve
-      // patrona yanlış cevap verir. Bu kanal main'in DİSKTEKİ defterinden okur.
-      onSupervisorStatus: (leaderId) => {
-        try { return ensureDelegationSupervisor().leaderStatus(String(leaderId || '')); } catch { return null; }
-      },
-      // ADP-303 — lider pane kontrolü (crewpane_pane MCP → bridge → burası).
-      // PH-01 — ayrı süreçteki görev-açma yolu (crewpane-task-mcp) sayacı
-      // buradan artırır; `telemetryBump` hem heartbeat sayacını hem PostHog
-      // olayını TEK yoldan besler (ikisi ayrışamaz).
-      onTelemetryBump: (key) => telemetryBump(key),
-      onListPanes: listPanesForControl,
-      onClosePane: closePanesForControl,
-      onFocusPane: focusPaneForControl,
-      // ADP-717 — /delegate + /sprint takım kapsamı kapısı. `/pane/close` ile AYNI
-      // fonksiyon (teamScope.authorize): iş verebiliyorsan kapatabilirsin, kapatamıyorsan
-      // iş de veremezsin. Bu satır olmadan lider yönetemeyeceği ajana iş verebiliyordu.
-      // ADP-737 — red artık bir DUVAR değil bir SORU: `cross-team` reddinde sahibe onay
-      // kartı çıkar ve cevabı beklenir (izin verilirse aynı çağrı devam eder).
-      onAuthorizeScope: ({ action, leaderId, targetScope }) =>
-        authorizeTeamScopeInteractive({ action, leaderId, targetScope }),
-      // TC-01 — TAKIM KURUCU. Karar (rol süzgeci, tavan, jeton, geri alma günlüğü)
-      // main'de; köprü yalnız taşır. `callRenderer` köprünün KENDİ IPC turudur —
-      // ikinci bir correlation defteri açmıyoruz.
-      onTeamCompose: (payload, transport) => {
-        // TC-02 — KULLANICININ "Geri al"ı da AYNI turu kullanır. Köprünün
-        // `callRenderer`ı bir kapanıştır ve dışarıdan erişilemez; burada
-        // saklanır. İkinci bir correlation defteri açmıyoruz (ADR §7).
-        // Şerit ancak bir `apply` TAMAMLANDIKTAN sonra doğduğu için, düğme
-        // görünür olduğunda bu tur HER ZAMAN yakalanmış olur.
-        composeTransport = transport;
-        return teamComposeRequest(payload, transport);
-      },
-      // ADP-234 — the /report fallback writes under the SELECTED workspace, not the
-      // legacy CrewPane path baked into delegationBridge.defaultResultsDir. The
-      // CREWPANE_RESULTS_DIR test seam keeps top priority so e2e/tests can still
-      // redirect reports without touching the workspace setting.
-      // ADP-233 — yeni kanonik yazım yeri `<workspace>/.crewpane/results`
-      // (writeReportFile mkdir -p yapar); eski docs/agent-results DONMUŞ legacy,
-      // okuma tarafı (reports.ts reportsDirs) dual-read ile taramaya devam eder.
-      resolveResultsDir: () => {
-        const dir =
-          crewpaneEnv.readEnv('RESULTS_DIR') || // ADP-244 Faz 3 — dual-read
-          crewpanePaths.resultsDir(agentWorkspaceRoot) ||
-          (agentWorkspaceRoot ? path.join(agentWorkspaceRoot, 'docs', 'agent-results') : null);
-        // ADP-232-C — root yokken path.join(null,…) THROW ederdi (belirsiz TypeError);
-        // ilk-kurulum bitmeden worker da yok, ama ulaşılırsa net hata verilir.
-        if (!dir) throw new Error('workspace_not_configured: sonuç dizini için çalışma alanı gerekli');
-        return dir;
-      },
-      // ADP-352 (ADR-024 §5-c) — bağımsız AgentShot'un OPSİYONEL köprüsü.
-      onShotAgents: shotBridgeAgents,
-      onShotSend: shotBridgeSend,
-      // BOARD-IMG-7 — task MCP'nin `attach_to_task`/`attachments` yolu. Renderer
-      // IPC'si ile AYNI fonksiyon (ingestTaskAttachment): iki ayrı ingest = iki
-      // farklı "geçerli ek" tanımı olurdu.
-      onTaskAttachment: (req) => ingestTaskAttachment(req),
-      // ADP-538 — /report fallback yazımı da notify-log'a düşer (renderer follow-loop'unu
-      // kaçıran completion'lar için kemer+askı; liderin Monitor'u yine tetiklenir).
-      onReportNotify: (evt) => notifyLog.appendWorkerEvent(resolveWorkerNotifyPath(evt && evt.department), evt),
-      // ADP-622 — ajanların (task MCP) app DB'ye AUTHENTICATED yazabilmesi için taze
-      // JWT. Renderer'ın `appdb:token` IPC'siyle AYNI karar + AYNI kaynak (seatGate):
-      // kimlik tek yerden türer, iki yüzey ayrışamaz.
-      // ADP-646/773 — `appdb:token` IPC'siyle AYNI kapı ve AYNI kod yolu (appDbTokenFor):
-      // ajan yolu da lisanssız kimlik almaz, üç yüzey ayrışamaz.
-      onAppDbToken: () => appDbTokenFor('bridge:/app-db/token'),
-      // BR-01 (ADR-INT-BRIDGE §2) — ENTEGRASYON KEŞFİ: ajanın `crewpane_integrations`
-      // aracı buraya düşer. Cevabı main hesaplar çünkü üç kaynak da BURADADIR: katalog,
-      // vault'un META görünümü (sır DEĞİL) ve canlı pane defteri.
-      onIntegrationsStatus: (req) => integrationsStatusFor(req),
-      // ADP-646 — LİSANS KAPISI köprüde de: delegasyon isteği renderer'a hiç
-      // gitmeden temiz bir 402 ile döner (yoksa IPC timeout'una düşer, ajan
-      // "köprü bozuk" sanırdı). Enjekte edilmezse köprü eski davranışını sürdürür.
-      onRequireSeat: (action) => seatDenial(action),
-      // BL-01 — PAKET DALGA TAVANI. Lisans kapısı "girebilir mi"yi, bu satır
-      // "kaç worker aynı anda"yı kapatır. Sprint reddedilmez; dalga daraltılır ve
-      // kullanıcı nudge'ı görür (sessiz kısıtlama = ürünün yavaş göründüğü hata).
-      onPlanWave: (requested) => planWaveLimit(requested),
-      // VOICE-TRUNC-02 — AgentVoice dikte teslimi (POST /dictation → odaklı yüzey).
-      onDictation: (text) => deliverDictationToFocusedSurface(text),
-    });
-    logLine(`delegation bridge ready port=${delegationBridge.info().port}`);
-  } catch (err) {
-    logLine(`delegation bridge failed to start: ${err.message}`);
-    delegationBridge = null;
-  }
+  const bridge = await delegationBridgeService.startBridge();
+  delegationBridge = bridge;
+  return bridge;
 }
 
 /**
@@ -3799,9 +3729,8 @@ const lifecycleManager = createLifecycleManager({
     {
       name: 'delegation-bridge',
       run: () => {
-        const bridge = delegationBridge;
         delegationBridge = null;
-        if (bridge) bridge.stop();
+        delegationBridgeService.stopBridge();
       },
     },
   ],
