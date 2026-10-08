@@ -4256,609 +4256,110 @@ function notifyScreenshotsMovedOnce() {
 }
 
 // ─── ADP-390 (ADR-027 / G9) — CrewPane hesabı + CrewPane seat ────────────────
-// CrewPane ekosistemin son halkası: kendisi de CrewPane hesabına bağlanır.
-// Giriş SİSTEM TARAYICISINDA (PKCE, RFC 8252 — gömülü webview YASAK), dönüş
-// `crewpane://auth/callback`. Seat KAPISI yazıldı ama geliştirici kopyasında
-// varsayılan KAPALI — orada giriş OPSİYONEL, hiçbir yetenek kapanmaz; Ayarlar
-// yalnız hesabı ve lisans durumunu GÖSTERİR. Müşteri build'inde kapı ZORUNLU.
-//
-// Yol iki dünyada farklı (shot-core ile aynı desen): dev'de repo kökündeki
-// packages/, paketli app'te asar içine kopyalanan ./packages/.
-const CREWPANE_AUTH_DIR = fs.existsSync(path.join(__dirname, 'packages', 'crewpane-auth'))
-  ? path.join(__dirname, 'packages', 'crewpane-auth')
-  : path.join(__dirname, '..', 'packages', 'crewpane-auth');
-const crewpaneAuth = require(path.join(CREWPANE_AUTH_DIR, 'index.cjs'));
-const { crewpaneIdConfig, gateOverrides, devEscapeProbeEnv } = require('./src/config/crewpaneId.cjs');
-// ADP-780-B — bu kopyanın URL şeması (prod: crewpane · dev: crewpane-dev ·
-// test: crewpane-test). Aşağıdaki üç kontrol de bu TEK kaynaktan okur; şema adı
-// main.js'e ikinci kez YAZILMAZ (yazılsaydı dev build kendi dinlemediği bir şemayı
-// kontrol eder ve giriş sessizce kırılırdı).
+// Kurulum ve boğazlar src/features/auth/service.js içinde modülerleştirildi (Faz 3.6.8).
+const { createAuthService } = require('./src/features/auth');
+const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
+// ADP-780-B — bu kopyanın URL şeması (prod: crewpane · dev: crewpane-dev · test: crewpane-test).
 const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
 const APP_URL_SCHEME = appScheme();
 const APP_URL_PREFIX = appSchemePrefix();
-// ADP-801 — bu süreç bir OTOMASYON oturumu mu (e2e / ajan koşumu)? Şema talebi ve
-// OS-yönlendirmeli giriş dönüşü buna göre KAPANIR: test kopyası kullanıcının
-// `crewpane-dev://auth/callback`'ini yutmamalı (gerekçe: automatedSession.cjs).
+// ADP-801 — bu süreç bir OTOMASYON oturumu mu (e2e / ajan koşumu)?
 const { isAutomatedSession, automatedSessionReason } = require('./src/agents/automatedSession.cjs');
 const IS_AUTOMATED_SESSION = isAutomatedSession(process.env);
 const AUTOMATED_SESSION_REASON = automatedSessionReason(process.env);
-// ADP-646 — "müşteri build'i mi" (env ile DEĞİŞTİRİLEMEZ) tek gerçek kaynağı.
-const buildChannel = require('./src/config/buildChannel.cjs');
-const vendorSurface = require('./src/core/vendorSurface.cjs'); // BR-04 — vendor/müşteri YÜZEY kararı (tek yer)
-const { createSeatGate } = require('./src/security/seatGate.cjs');
+// ADP-646 — vendor/müşteri YÜZEY kararı (tek yer)
+const vendorSurface = require('./src/core/vendorSurface.cjs');
 // ADP-614 — katman kataloğu (hangi entitlement CrewPane açar + etiketler).
 const planCatalog = require('./src/config/planCatalog.cjs');
-// ADP-660 — katman LİMİTİ kararı (Basic ⇄ Pro/Ultra). Karar + kullanıcı metni orada;
-// burada yalnız boğazlara bağlama var (seatGate/decideAccess ile aynı iş bölümü).
+// ADP-660 — katman LİMİTİ kararı (Basic ⇄ Pro/Ultra).
 const planLimits = require('./src/config/planLimits.cjs');
-
-let seatGate = null;
-
-/** Ayarlar'a canlı durum push'u (yeniden açmaya gerek kalmasın — ADP-384 deseni). */
-function pushAccountState(snapshot) {
-  if (appWindow && !appWindow.isDestroyed()) {
-    appWindow.webContents.send('crewpane:state', snapshot);
-  }
-  // SEC-02 — CİHAZ REDDİ EKRANA DÜŞSÜN. Ret arka planda (jeton tazeleme /
-  // kalp atışı) doğar; Ayarlar açık değilse kullanıcı hiçbir şey görmezdi ve
-  // "lisansım neden yenilenmiyor" sorusunun cevabı hiçbir yerde olmazdı.
-  // Nudge yolu YENİ DEĞİL: BL-03'ün `plan:limit` kanalı — cümle planLimits'te,
-  // düğme hedefi veriden. Burada yalnız sunucunun VERİSİ o kanala bağlanır.
-  try { pushDeviceDenial(snapshot); } catch (e) { logLine(`[device] nudge hatası: ${e.message}`); }
-  // ADP-703 — giriş yapılan hesap değiştiyse yerel veri kökü de değişmeli.
-  try { reconcileAccountBinding(snapshot); } catch (e) { logLine(`[account] reconcile hatası: ${e.message}`); }
-}
-
-/**
- * SEC-02 — sunucunun cihaz reddini `plan:limit` nudge'ına çevir.
- *
- * Karar SUNUCUNUNDUR (jetonu imzalamayan taraf); burada ikinci bir tavan
- * hesaplanmaz. `planLimits.decide` yalnız CÜMLEYİ ve düğmeleri üretir — bu
- * yüzden `current` olarak sunucunun bildirdiği sayı verilir, istemcinin tahmini
- * değil. Reddedilen kadran `snapshot.device.feature` ile gelir (isim kontrolü yok).
- */
-let lastDeviceDenialKey = null;
-function pushDeviceDenial(snapshot) {
-  const dev = snapshot && snapshot.device;
-  if (!dev || dev.denied !== true || !dev.feature) {
-    lastDeviceDenialKey = null; // çözüldü → bir sonraki ret yeniden bildirilebilsin
-    return;
-  }
-  // Aynı ret her durum push'unda tekrar basmasın (nudge fırtınası).
-  const key = `${dev.feature}:${dev.active}/${dev.limit}`;
-  if (key === lastDeviceDenialKey) return;
-  lastDeviceDenialKey = key;
-  const denial = planLimits.decide({
-    snapshot,
-    feature: dev.feature,
-    current: Number(dev.active) || 0,
-  });
-  if (denial.allowed) return; // katman/limit istemcide izinli görünüyorsa cümle kurulmaz
-  pushPlanLimit(denial);
-}
-
-function initSeatGate() {
-  if (seatGate) return seatGate;
-  const cfg = crewpaneIdConfig(process.env);
-  seatGate = createSeatGate({
-    authPkg: crewpaneAuth,
-    safeStorage: require('electron').safeStorage,
-    // ADP-703 — ÖNYÜKLEME KÖKÜ: oturum blob'u hesabı BELİRLER, dolayısıyla hesap
-    // kökünün İÇİNDE olamaz (döngü). auth/ cihaz kökünde kalır.
-    homeDir: instancePaths.instanceHome(), // instance-aware (~/.crewpane | -test)
-    supabaseUrl: cfg.supabaseUrl,
-    anonKey: cfg.anonKey,
-    scheme: cfg.scheme,
-    loginUrl: cfg.loginUrl,
-    openExternal: (url) => shell.openExternal(url),
-    log: (line) => logLine(line),
-    onChange: (snapshot) => pushAccountState(snapshot),
-    billingUrl: cfg.billingUrl, // ADP-646 — kapı ekranının "Satın al" hedefi
-    // ADP-714 — lansman görünürlüğü: oturum kaydına ürün+sürüm damgası düşsün.
-    appVersion: app.getVersion(),
-    // ADP-646/SEC-W1-A1 — LİSANS KAPISI: müşteri build'inde HER ZAMAN açık;
-    // geliştirici kopyasında escapes.cjs (pakete girmeyen modül) karar verir.
-    requireSeat: cfg.requireSeat,
-    // ADP-520 — LOGIN DUVARI (0.2.9 gelir kapısı): varsayılan AÇIK. Geliştirici
-    // kopyasında kapatılabilir; müşteri build'inde kapatma mantığı PAKETTE YOKTUR.
-    requireLogin: cfg.requireLogin,
-    // SEC-W2-A2 — BÜTÜNLÜK RAPORU SAĞLAYICISI. seatGate paketin nerede
-    // durduğunu bilmez; yalnız "rapor varsa isteğe bindir" der. Karar sunucunun.
-    getIntegrityReport: () => integrityReportOnce(),
-    // SEC-01 — CİHAZ KİMLİĞİ. Zaten VARDI (ADP-704 çatışma çözümü için üretiliyordu)
-    // ama sunucuya hiç gitmiyordu; tek eksik halka buydu. Kimlik hesaptan ÖNCE
-    // doğar (kurulum başına kalıcı) — bu yüzden hesap bağlanmasını beklemez.
-    device: (() => {
-      try {
-        return {
-          id: accountScope.ensureDeviceId(instancePaths.instanceHome()),
-          // Kullanıcı listede kendi makinesini TANIYABİLMELİ; aksi hâlde
-          // "hangisini çıkarayım?" sorusu cevapsız kalır ve tavan kilide döner.
-          name: `${os.hostname()} · ${process.platform}`,
-          platform: process.platform,
-        };
-      } catch (e) {
-        // Kimlik üretilemezse cihaz-farkındalığı DEVRE DIŞI kalır (sunucu eski
-        // davranışa düşer) — bir dosya hatası kullanıcıyı kilitlemez.
-        logLine(`seatGate: cihaz kimliği okunamadı (${e.message}) — cihaz tavanı bu koşuda uygulanmaz`);
-        return null;
-      }
-    })(),
-  });
-  logLine(
-    `seatGate kurulumu: customerBuild=${cfg.customerBuild} requireLogin=${cfg.requireLogin} requireSeat=${cfg.requireSeat}`,
-  );
-  // Açılış ağa BEKLETİLMEZ: depodan oku, kararı ver, tazelemeyi arkaya at.
-  // ADP-703 — promise SAKLANIR: hesap kökü bağlaması (bindAccountRoot) bunu bekler.
-  // Bu bekleme AĞ beklemez (yalnız safeStorage disk okuması), yani açılışı geciktirmez.
-  seatGateReady = seatGate.init().catch((e) => {
-    logLine(`seatGate init error: ${e.message}`);
-    return null;
-  });
-
-  // e2e DİKİŞİ — YALNIZ test instance'ında (~/.crewpane-test). Playwright'ın
-  // electronApp.evaluate'i MAIN'de koşar; renderer'a hiçbir kanal açılmaz (test'te
-  // bile "oturum enjekte et" ucu renderer'dan erişilebilir OLMAMALI). Gerçek
-  // magic-link girişi + gerçek callback URL'i buradan sürülür — ürünün KENDİ
-  // kod yolları (seatGate.signInWithEmail/handleUrl) çağrılır, e2e kendi kanalını KURMAZ.
-  // ADP-646 — `instanceId()` env'den geliyor (CREWPANE_INSTANCE=test), yani müşteri
-  // bu dikişi kendi kopyasında AÇTIRABİLİRDİ. Dikiş bir seat VERMEZ (jeton tohumlama
-  // ucu yok), ama saldırı yüzeyini bedavaya küçültüyoruz: müşteri build'inde ASLA.
-  if (instancePaths.instanceId() === instancePaths.TEST && !buildChannel.isCustomerBuild()) {
-    global.__crewpaneAuthTest = {
-      state: () => seatGate.evaluate(),
-      signInWithEmail: (email) => seatGate.signInWithEmail(email),
-      handleUrl: (url) => seatGate.handleUrl(url),
-      requireSeat: (action) => seatGate.requireSeat(action),
-      refreshLicense: () => seatGate.refreshLicense(),
-      signOut: () => seatGate.signOut(),
-      // LIC-ENFORCE-01 — GERÇEK kalp atışı kod yolu. e2e 5 dakikayı BEKLEMEZ, ama
-      // beklemek zorunda da değil: ürünün zamanlayıcısının çağırdığı FONKSİYONUN
-      // AYNISI çağrılır (e2e kendi mekanizmasını KURMAZ). Aralığın gerçekten
-      // ~5 dk olduğu ayrıca log'dan doğrulanır.
-      heartbeat: () => seatGate.heartbeat(),
-      // LIC-ENFORCE-01 (B) — güncelleme kanalının lisans kararı (main'in KENDİ
-      // fonksiyonu; renderer'a açılan bir uç değil).
-      updateGate: () => updateCheck.updateLicenseGate(seatGate.evaluate()),
-      /**
-       * ADP-646 — KAÇIŞ BAYRAĞI PROBU. Ürünün KENDİ karar fonksiyonunu, çalışan
-       * app'in KENDİ env'iyle (bypass bayrakları dolu) çağırır; tek enjekte edilen
-       * şey "paketli müşteri build'i mi" sinyalidir. Kanıt: aynı env, iki sonuç.
-       */
-      escapeProbe: () => ({
-        env: {
-          // SEC-W1-A1 — anahtar adları geçersiz kılma modülünden gelir; müşteri
-          // paketinde o modül yoktur ve bu nesne BOŞ döner.
-          ...devEscapeProbeEnv(process.env),
-          CREWPANE_INSTANCE: process.env.CREWPANE_INSTANCE ?? null,
-        },
-        asCustomer: crewpaneIdConfig(process.env, { customerBuild: true }),
-        asDeveloper: crewpaneIdConfig(process.env, { customerBuild: false }),
-        actual: crewpaneIdConfig(process.env),
-      }),
-      /**
-       * ADP-660 — PLAN LİMİTİ PROBU. Ürünün KENDİ karar fonksiyonunu, çalışan
-       * app'in GERÇEK lisans anlık görüntüsüyle çağırır. `tier` verilirse yalnız
-       * katman alanı değiştirilir (jetonu bozup "tanınmayan katman" senaryosunu
-       * ölçmek için) — karar mantığı test tarafından TAKLİT EDİLMEZ.
-       */
-      /**
-       * ADP-660 — GÖZETİMSİZ DEVAM boğazının KENDİSİ. Test kendi kopyasını
-       * kurmaz: supervisor'a enjekte edilen FONKSİYONUN AYNISI çağrılır. `blocked`
-       * sayacı "plan kapattı" ile "renderer cevap vermedi"yi ayırır (ikisi de false).
-       */
-      supervisorPush: async (channel, payload) => {
-        const before = supervisorAdvanceBlocked;
-        const ok = await supervisorPushRenderer(channel, payload || {});
-        return { ok, blocked: supervisorAdvanceBlocked > before, blockedTotal: supervisorAdvanceBlocked };
-      },
-      /**
-       * BL-01 — DALGA TAVANI boğazının KENDİSİ. Köprüye `onPlanWave` olarak
-       * enjekte edilen FONKSİYONUN AYNISI çağrılır (supervisorPush ile aynı
-       * disiplin: test ikinci bir kopya kurmaz). Yan etkileri de gerçektir —
-       * kısıtlama olduysa log satırı düşer ve nudge EKRANA gider.
-       */
-      planWaveProbe: (requested) => planWaveLimit(requested),
-      /**
-       * PLAN-FIX-01 (F-4) — SPAWN NİYET KAPISININ KENDİSİ. `planWaveProbe` deseni:
-       * test ikinci bir karar kopyası kurmaz, `spawnPty`'nin AYNISI çağrılır ve
-       * yalnız NİYET verilir. Nöbetin ölçtüğü iki şey buradan geçer:
-       *   • 'restore' tavandayken → `planLimited` (kaçak KAPALI)
-       *   • 'replace' tavandayken → GERÇEK pane (YANLIŞ RET yok — L-7/L-8)
-       * Yan etkiler gerçektir (pane açılır); test kendi açtığını kendisi kapatır.
-       */
-      spawnIntentProbe: (intent, agentId) => {
-        const before = ptys.size;
-        const res = spawnPty(appWindow, {
-          command: 'claude',
-          department: 'crewpane',
-          agentId: agentId || null,
-          forceFresh: true,
-          spawnIntent: intent,
-        });
-        return {
-          planLimited: !!(res && res.planLimited),
-          paneId: (res && res.paneId) || null,
-          reused: !!(res && res.reused),
-          liveBefore: before,
-          liveAfter: ptys.size,
-        };
-      },
-      /**
-       * PLAN-FIX-01 — canlı pane sayısı + DEFTERDEKİ kayıt sayısı (L-5 ölçümü).
-       * `restoreSnapshot` DEĞİL, `loadRegistry`: snapshot okuması sahibi HAYATTA
-       * olan kayıtları eler (ADP-269) → koşan app kendi defterini 0 görürdü.
-       * Nöbetin sorusu "kayıt DURUYOR mu", "şu an restore edilebilir mi" değil.
-       */
-      paneCensus: () => {
-        let ledger = null;
-        let file = null;
-        try {
-          const home = crewpaneHome();
-          file = livePaneRegistry.registryPath(home);
-          ledger = Object.keys(livePaneRegistry.loadRegistry(home).panes || {}).length;
-        } catch { ledger = null; }
-        return { live: ptys.size, ledger, file, restoreSkippedByPlan };
-      },
-      /** PLAN-FIX-01 — bir pane'i GERÇEK kapatma yolundan kapat (L-6: tavanın altına in). */
-      killPaneProbe: (paneId) => {
-        const entry = ptys.get(paneId);
-        if (!entry) return { ok: false };
-        killPane(paneId, entry, entry.agentId, 'PLAN-FIX-01 e2e');
-        return { ok: true, live: ptys.size };
-      },
-      /**
-       * BL-02 — MOBİL UZAKTAN KONTROL boğazının KENDİSİ. `startMobile()`in ilk
-       * satırında çağrılan FONKSİYONUN AYNISI koşar (planWaveProbe deseni): test
-       * ikinci bir karar kopyası kurmaz. `notify:false` da açılış yolunun aynısı —
-       * ekrana basma zaten kullanıcı eyleminde (`mobile:enable`) ölçülüyor.
-       */
-      mobilePlanProbe: () => {
-        const d = mobilePlanDenial({ notify: false });
-        return { denied: !!d, denial: d };
-      },
-      /**
-       * TIER-DESIGN-01 — TASARIM TURU boğazının KENDİSİ. `openDesignWindow()`in
-       * ilk satırında çağrılan FONKSİYONUN AYNISI koşar (mobilePlanProbe deseni):
-       * test ikinci bir karar kopyası kurmaz. `notify:false` çünkü ekrana basma
-       * kullanıcının GERÇEK tıklamasında ayrıca ölçülüyor.
-       */
-      designPlanProbe: () => {
-        const d = designPlanDenial({ notify: false });
-        return { denied: !!d, denial: d };
-      },
-      /** TIER-DESIGN-01 — main defterinde şu an kaç `/design` penceresi var (renderer iddiası DEĞİL). */
-      designWindowCount: () => BrowserWindow.getAllWindows()
-        .filter((w) => !w.isDestroyed() && /\/design(\?|$)/.test(w.webContents.getURL())).length,
-      planProbe: (feature, current, tier) => {
-        const snapshot = seatGate.evaluate();
-        const s = tier === undefined ? snapshot : { ...snapshot, tier };
-        return {
-          snapshot: { requireSeat: s.requireSeat, tier: s.tier, seat: s.seat, accessAllowed: s.accessAllowed },
-          decision: planLimits.decide({ snapshot: s, feature, current }),
-          describe: planLimits.describe(s, { agents: ptys.size }),
-        };
-      },
-    };
-  }
-  return seatGate;
-}
-
-// ─── ADP-703 — HESAP-KAPSAMLI YEREL DEPO (bağlama / geçiş) ────────────────────
-//
-// ÜRÜN VAADİ (Eren): "bi hesaba girdiysem o hesaptaki değişiklik o hesaba ait tutulur
-// ve kaybolmaz; hesap değiştirirsem girdiğim yeni hesabın verileri yüklenir".
-//
-// Bulut zaten hesap-izole (ADP-623 RLS + ADP-624 company trigger) ama YEREL depo tek
-// kökteydi: çıkış yapmak ayarları/hafızayı/pane defterini/delegasyon defterini yerinde
-// bırakıyor, sonraki hesap onları AYNEN görüyordu. Burası o eksiği kapatır: veri kökü
-// `<instanceHome>/accounts/<accountKey>` olur ve `accountKey` OTURUMDAN türer.
-//
-// Tasarım + envanter + ADP-704 senkron sözleşmesi: docs/design/ACCOUNT-SCOPED-STORE.md
+// ADP-703 — HESAP-KAPSAMLI YEREL DEPO (bağlama / geçiş)
 const accountScope = require('./src/config/accountScope.cjs');
-// SYNC-F1-6 — bulut senkronu: kuruluş (syncBoot) + IPC sınırı (syncIpc) + MEMORY.md
-// türetme kancası. Üçü de Electron'suz `node --test` ile sınanır.
+// SYNC-F1-6 — bulut senkronu
 const syncBoot = require('./sync/syncBoot.cjs');
-// SYNC-F1-7 — taşınabilir tercih projeksiyonu (beyaz liste + anahtar-seviyesi LWW).
 const prefsProjectorFactory = require('./prefs/prefsProjector.cjs');
 const prefsWhitelist = require('./prefs/prefsWhitelist.cjs');
 const syncSurface = require('./sync/syncIpc.cjs');
 const memoryIndexDerive = require('./src/memory/memoryIndexDerive.cjs');
 
-/** Bu süreçte bağlı hesap — { key, userId, email, root }. Açılışta bir kez set edilir. */
+let seatGate = null;
 let boundAccount = null;
-/** Aynı anda iki bağlama koşmasın (giriş callback'i + açılış yarışabilir). */
-let accountBindInFlight = null;
 
-/** seatGate.init()'in TEK promise'i — hesap bağlaması onu bekler (ağ beklemez, disk okur). */
-let seatGateReady = null;
+const authService = createAuthService({
+  instancePaths,
+  app,
+  shell,
+  logLine,
+  getAppWindow: () => appWindow,
+  pushPlanLimit: (denial) => pushPlanLimit(denial),
+  integrityReportOnce: () => integrityReportOnce(),
+  ptys,
+  persistScreenTails: () => persistScreenTails(),
+  livePaneRegistry,
+  crewpaneHome: () => crewpaneHome(),
+  killAllPtys: () => killAllPtys(),
+  noteQuit: (r) => noteQuit(r),
+  armQuitBrake: (r) => armQuitBrake(r),
+  agentSettings,
+  getResourceGovernor: () => _resourceGovernor,
+  appI18n,
+  testSeamDeps: {
+    updateCheck,
+    supervisorPushRenderer: (c, p) => supervisorPushRenderer(c, p),
+    planWaveLimit: (r) => planWaveLimit(r),
+    spawnPty: (win, opts) => spawnPty(win, opts),
+    ptys,
+    livePaneRegistry,
+    crewpaneHome: () => crewpaneHome(),
+    killPane: (id, e, aid, r) => killPane(id, e, aid, r),
+    mobilePlanDenial: (opts) => mobilePlanDenial(opts),
+    designPlanDenial: (opts) => designPlanDenial(opts),
+    BrowserWindow,
+    getRestoreSkippedByPlan: () => restoreSkippedByPlan,
+    getSupervisorAdvanceBlocked: () => supervisorAdvanceBlocked,
+  },
+});
 
-/**
- * Hesap kökünü ÇÖZ + BAĞLA. Açılışta (pencere açılmadan) bir kez çağrılır.
- *
- * Sıra kritik: pin (`CREWPANE_ACCOUNT`) her veri modülünden ÖNCE yazılmalı, çünkü
- * `instancePaths.crewpaneHome()` onu okur ve o pin bu sürecin SPAWN ETTİĞİ her çocuğa
- * (ajan pane'leri, MCP server'ları, gömülü Next server) miras geçer — ADP-206'nın
- * CREWPANE_INSTANCE için kanıtlanmış deseni.
- */
+function initSeatGate() {
+  seatGate = authService.initSeatGate();
+  return seatGate;
+}
+
+function requireSeatOrThrow(action) {
+  return authService.requireSeatOrThrow(action);
+}
+
+function seatDenial(action) {
+  return authService.seatDenial(action);
+}
+
 async function bindAccountRoot(reason = 'boot') {
-  if (accountBindInFlight) return accountBindInFlight;
-  accountBindInFlight = (async () => {
-    const instanceRoot = instancePaths.instanceHome();
-    let snapshot = null;
-    try {
-      if (seatGateReady) await seatGateReady;
-      snapshot = seatGate ? seatGate.evaluate() : null;
-    } catch (e) {
-      logLine(`[account] oturum okunamadı (${e.message}) — anonim köke bağlanılıyor`);
-    }
-    // Kimliğe göre HARDCODE yok: anahtar yalnız "userId var mı" durumundan türer.
-    const key = accountScope.accountKeyForSession(snapshot);
-
-    // İlk kez hesap-kapsamlı açılış → eski (kapsamsız) veriyi bu hesap DEVRALIR.
-    // İdempotent (manifest) + kayıpsız (yalnız rename) + geri alınabilir
-    // (scripts/accountScopeRollback.cjs).
-    let claim = { claimed: false, alreadyClaimed: true, moved: [], skipped: [] };
-    try {
-      claim = accountScope.claimLegacyData(instanceRoot, key, { log: (l) => logLine(l) });
-    } catch (e) {
-      logLine(`[account] eski veri devralınamadı: ${e.message} — mevcut veri OLDUĞU GİBİ bırakıldı`);
-    }
-
-    const deviceId = accountScope.ensureDeviceId(instanceRoot);
-    let root;
-    try {
-      root = accountScope.ensureAccountRoot(instanceRoot, key, {
-        userId: (snapshot && snapshot.userId) || null,
-        email: (snapshot && snapshot.email) || null,
-        deviceId,
-      });
-    } catch (e) {
-      logLine(`[account] hesap kökü kurulamadı (${e.message}) — kapsamsız köke düşülüyor`);
-      accountBindInFlight = null;
-      return null;
-    }
-
-    // PIN: ikiz yazım (CREWPANE_ACCOUNT + CREWPANE_ACCOUNT). İkiz-OKUMA yasak —
-    // okuma tek yerden: instancePaths.accountKey() (crewpaneEnv PINNED_BASES).
-    crewpaneEnv.dualWrite(process.env, 'ACCOUNT', key);
-    // ADP-716 — pin YAZILDIĞI AN ayar önbelleğini düşür. `settingsPath()` artık
-    // hesap köküne çözülüyor; pin'den önce dolmuş önbellek KAPSAMSIZ kökten geliyor
-    // ve bir daha tazelenmiyordu → hesap kökündeki ayarlar (duyuru okundu defteri
-    // dahil) yeniden açılışta GÖRÜNMÜYORDU. Bu tek satır o sınıfı kapatır.
-    agentSettings.invalidateCache();
-    if (_resourceGovernor) {
-      try {
-        const freshGov = agentSettings.readSettings().resourceGovernor;
-        if (freshGov) _resourceGovernor.configure(freshGov);
-      } catch (e) {}
-    }
-    try {
-      accountScope.writeActiveAccount(instanceRoot, {
-        accountKey: key,
-        userId: (snapshot && snapshot.userId) || null,
-        email: (snapshot && snapshot.email) || null,
-      });
-    } catch (e) { logLine(`[account] active-account.json yazılamadı: ${e.message}`); }
-
-    boundAccount = {
-      key,
-      userId: (snapshot && snapshot.userId) || null,
-      email: (snapshot && snapshot.email) || null,
-      root,
-      deviceId,
-    };
-    logLine(
-      `[account] bağlandı (${reason}): key=${key} signedIn=${!!(snapshot && snapshot.signedIn)} `
-      + `kök=${root} devralma=${claim.claimed ? `${claim.moved.length} girdi` : 'gerek yok'}`,
-    );
-    accountBindInFlight = null;
-    return boundAccount;
-  })();
-  return accountBindInFlight;
+  const res = await authService.bindAccountRoot(reason);
+  boundAccount = authService.getBoundAccount();
+  return res;
 }
 
-/**
- * Bu süreçte ÇALIŞAN ajan pane'leri (hesap değişimi uyarısı için).
- * Eren'in açık korkusu: "çıkış yapınca koşan ajanlar bozulur" → çıkış/giriş SESSİZCE
- * yapılmaz; kullanıcı ne olacağını görmeden hesap değişmez.
- */
 function runningPaneSummary() {
-  const panes = [];
-  for (const [paneId, entry] of ptys) {
-    if (!entry) continue;
-    panes.push({
-      paneId,
-      agentId: entry.agentId || null,
-      label: entry.label || entry.agentId || paneId,
-    });
-  }
-  return panes;
+  return authService.runningPaneSummary();
 }
 
-/**
- * ADP-863 / ADP-876 — ÇIKIŞ ONAYININ SAYILARI (TEK KAYNAK).
- *
- * Onay ekranı iki soruya cevap vermek zorunda: "kaç şey kapanacak" ve "verim ne olacak".
- * SAYIYI burası verir; CÜMLEYİ sözlük tutar (src/app/i18n → `account.signOut.*`).
- *
- * ADP-876 — cümle BURADAN ÇIKARILDI. Eskiden onay metnini main yazıyordu ve metin
- * TEK DİLLİYDİ: arayüz İngilizceye geçince çıkış akışı Türkçe kalıyordu. Bu diyalog
- * renderer'ın React ağacında yaşıyor (main'in `dialog.show*` kutusu DEĞİL), yani
- * doğru sözlük renderer sözlüğüdür (electron/i18n/dictionaries/en.cjs başlığındaki
- * `main.*` sınırı: main yalnız KENDİ gösterdiği kutuların metnini taşır).
- *
- * İki sayı AYRI şeydir ve kullanıcı ikisini de görmeli:
- *   terminals — açık terminal penceresi sayısı (bir ajanın birden fazlası olabilir)
- *   agents    — o pencerelerde çalışan FARKLI ajan sayısı (ajansız terminal sayılmaz)
- */
 function signOutConfirmCopy(panes) {
-  const agentIds = new Set();
-  for (const p of panes) if (p.agentId) agentIds.add(p.agentId);
-  return { terminals: panes.length, agents: agentIds.size };
+  return authService.signOutConfirmCopy(panes);
 }
 
-/**
- * ADP-876 — ÇIKIŞTAN ÖNCE PANE'LERİ TEMİZ KAPAT.
- *
- * Ölçülen sorun: onaylı çıkış oturumu kapatıp `app.quit()` çağırıyordu ve terminaller
- * ancak `before-quit` içinde ölüyordu. Yani pane'ler AÇIKKEN hesap kökü değişiyordu;
- * bir pty o aralıkta bir şey yazarsa (ADP-703 §3.1) yazma yanlış hesabın defterine
- * düşerdi. Sıra artık AÇIK: önce ekran kuyruğu + defter yazılır (A hesabı hâlâ bağlı,
- * yani snapshot DOĞRU köke düşer), sonra pty'ler `preserve` ile reap edilir, sonra
- * oturum kapanır. Tekrar giriş yapıldığında pane'ler restore edilebilir kalır.
- */
 function closePanesForSignOut() {
-  const open = ptys.size;
-  if (!open) return 0;
-  // ADP-386 sırası: ekran kuyruğu snapshot'tan ÖNCE yazılır ki write-ahead kopya
-  // da taşısın (before-quit'teki sıranın aynısı — ikinci bir sıra ikinci bir gerçek).
-  persistScreenTails();
-  try {
-    const n = livePaneRegistry.writeQuitSnapshot(crewpaneHome());
-    if (n) logLine(`[signout] pane defteri yazıldı (${n} pane) — hesap kökü DEĞİŞMEDEN önce`);
-  } catch (e) { logLine(`[signout] pane defteri yazılamadı: ${e.message}`); }
-  killAllPtys(); // preserve=true → restore defteri korunur (veri kaybı yok)
-  logLine(`[signout] ${open} pane temiz kapatıldı (oturum kapatılmadan ÖNCE)`);
-  return open;
+  return authService.closePanesForSignOut();
 }
 
-/**
- * HESAP DEĞİŞİMİ = YENİDEN BAŞLATMA (bilinçli karar, ACCOUNT-SCOPED-STORE.md §3.3).
- *
- * Canlı geçişte bellekte kalan A verisi B'ye SIZAR ve bunu kapatmak imkânsıza yakın:
- * `ptys` haritası, renderer React state'i, açık pane hücreleri, halihazırda spawn
- * edilmiş MCP çocuklarının env'i — hepsi A'ya bağlıdır; bir sonraki registry yazımı
- * A'nın pane'lerini B'nin defterine yazardı. Yeniden başlatma bu sınıfı YAPISAL olarak
- * siler ve "sızıntı yok" iddiasını kanıtlanabilir kılar.
- *
- * VERİ KAYBI YOK: hiçbir şey silinmez. Kapanış yolu quit-snapshot'ı zaten yazar, yani
- * A'ya tekrar girildiğinde pane'leri restore edilebilir.
- */
-// ADP-837 (P7) — YENİDEN BAŞLATMANIN TEK KAPISI.
-//
-// Üç ayrı yol uygulamayı yeniden başlatıyordu (ayarlar restart'ı, kaynak-derleme
-// sonrası relaunch, hesap değişimi) ve üçü de `app.relaunch()`i doğrudan
-// çağırıyordu. Windows'ta bu YETMEZ: tek-örnek kilidi (ADR-W5) bırakılmadan
-// çıkılırsa yeni kopya kilidi CANLI bulup "CrewPane zaten açık" deyip çıkabilir
-// — kullanıcı için "yeniden başlattım, uygulama geri gelmedi". Kilidi bırakma
-// işi `app.exit()`in ateşlemediği `will-quit` kancasına bağlıydı; artık AÇIK.
-//
-// macOS'ta `releaseForRelaunch` ilk satırda döner → davranış bit-bit aynı.
 function relaunchApp(reason) {
-  try {
-    singleInstanceLock.releaseForRelaunch({
-      dataRoot: instancePaths.instanceHome(),
-      log: (m) => logLine(`[relaunch] ${m}`),
-    });
-  } catch (e) {
-    logLine(`[relaunch] kilit bırakılamadı (${reason}): ${e && e.message}`);
-  }
-  try {
-    app.relaunch();
-  } catch (e) {
-    logLine(`[relaunch] app.relaunch hatası (${reason}): ${e && e.message}`);
-  }
-  app.exit(0);
+  return authService.relaunchApp(reason);
 }
 
 function relaunchForAccountChange(nextKey, reason) {
-  const instanceRoot = instancePaths.instanceHome();
-  try {
-    accountScope.writeActiveAccount(instanceRoot, { accountKey: nextKey });
-  } catch (e) { logLine(`[account] geçişte active-account yazılamadı: ${e.message}`); }
-  // TEST DİKİŞİ (yalnız test instance'ı): e2e harness'ı süreci KENDİ yeniden başlatır —
-  // app.relaunch() Playwright'ın kontrol edemediği yetim bir Electron bırakırdı. KARAR
-  // mantığı aynıdır (active-account.json yazıldı, süreç kapanıyor); yalnız yeni süreci
-  // kimin başlattığı değişir. Müşteri build'inde bu dikiş ERİŞİLEMEZ.
-  const suppressRelaunch = instancePaths.instanceId() === instancePaths.TEST
-    && !buildChannel.isCustomerBuild()
-    && String(process.env.CREWPANE_ACCOUNT_NO_RELAUNCH || '') === '1';
-  logLine(`[account] HESAP DEĞİŞİMİ (${reason}): ${boundAccount ? boundAccount.key : '-'} → ${nextKey}`
-    + (suppressRelaunch ? ' — süreç kapanıyor (relaunch test dikişiyle bastırıldı)' : ' — uygulama yeniden başlatılıyor'));
-  if (!suppressRelaunch) {
-    try {
-      // ADP-837 — kilit AÇIKÇA bırakılır: `app.quit()` will-quit'i ateşlese de
-      // hesap geçişinde iki süreç ömrü üst üste binebilir (Windows).
-      singleInstanceLock.releaseForRelaunch({
-        dataRoot: instancePaths.instanceHome(),
-        log: (m) => logLine(`[account] ${m}`),
-      });
-    } catch (e) { logLine(`[account] kilit bırakılamadı: ${e.message}`); }
-    try {
-      app.relaunch();
-    } catch (e) { logLine(`[account] relaunch hatası: ${e.message}`); }
-  }
-  noteQuit('relaunch');
-  app.quit();
-  // ADP-876 — KAPANIŞ NÖBETÇİSİ. `app.quit()` KİBAR bir istektir: bir pencere
-  // kapanışı engellerse (beforeunload kutusu, `close` dinleyicisi, asılı renderer)
-  // süreç sonsuza dek yarı-kapalı kalır — kullanıcı için "çıkış yaptım, uygulama
-  // kilitlendi". `will-prevent-unload` kancası bilinen sebebi kapatıyor; bu nöbetçi
-  // BİLİNMEYENİ kapatır. `before-quit` (snapshot + defter yazımı) quit'in İLK adımıdır,
-  // yani bu noktada kalıcılaştırma zaten bitmiştir; kalan tek şey süreci sonlandırmak.
-  // HATA-14 — fren ARTIK ORTAK: aynı `armForceExit` normal kapanış yolunda da
-  // kuruludur (before-quit). Buradaki çağrı sözleşmeyi GÖRÜNÜR tutar; durum
-  // paylaşıldığı için ikinci bir zamanlayıcı KURULMAZ (before-quit `app.quit()`
-  // içinde SENKRON ateşlediğinden fren bu satıra gelindiğinde çoktan kurulmuştur).
-  armQuitBrake('account-relaunch');
+  return authService.relaunchForAccountChange(nextKey, reason);
 }
 
-/**
- * GİRİŞ sonrası hesap kökü artık başka bir hesaba ait olabilir (A'dayken B ile giriş,
- * ya da anonim kökten ilk giriş). seatGate her durum değişiminde onChange yayar; burada
- * yalnız "bağlı anahtar ≠ oturumun anahtarı" durumunu yakalayıp geçişi tetikleriz.
- * Çıkış yolu KENDİ handler'ında ele alınır (çalışan-ajan guard'ı orada).
- */
-function reconcileAccountBinding(snapshot) {
-  if (!boundAccount) return; // açılış bağlaması henüz bitmedi
-  if (!snapshot || !snapshot.signedIn) return; // çıkış → crewpane:signOut ele alır
-  const nextKey = accountScope.accountKeyForSession(snapshot);
-  if (nextKey === boundAccount.key) return;
-  relaunchForAccountChange(nextKey, 'signIn');
-}
 
-// ─── ADP-646 (P0 GÜVENLİK) — LİSANS KAPISININ GERÇEK ÇAĞRI YERLERİ ─────────────
-//
-// ADP-390'dan beri `requireSeat` yazılıydı ama HİÇBİR YERDEN çağrılmıyordu →
-// giriş yapan herkes ücretsiz tam sürümü kullanıyordu. Burası o boşluğu kapatır.
-//
-// NEDEN BU İKİ NOKTA (ve neden 40 tane değil):
-//   * `pty:spawn` — CrewPane'in TEK ajan-çalıştırma boğazı. ADP-487'de zaten
-//     kanıtlandı: "spawn kararını veren iki bağımsız renderer yolu vardı, guard'ı
-//     BURAYA koymak yarışı YAPISAL olarak kapatır". Delegasyon, Jarvis "tell",
-//     manuel açma, sprint dispatch — HEPSİ buradan geçer. Renderer'ı devtools ile
-//     kandıran biri bile pane açamaz.
-//   * `appdb:token` / bridge `/app-db/token` — görev panosunun ve ajan yolunun
-//     KİMLİĞİ. Jeton verilmezse ne görev yazılır ne okunur.
-//   * bridge `POST /delegate` — ajan→ajan delegasyon girişi; renderer'a hiç
-//     gitmeden temiz bir 402 döner (yoksa IPC timeout'una düşerdi).
-// Renderer'daki tam-ekran kapı (CrewPaneLicenseGate) UX'tir; DİŞLER burasıdır.
-//
-// KAPSAM DIŞI (bilerek): hesap/ayarlar/güncelleme/çıkış yolları. Kilitli kullanıcı
-// giriş yapabilmeli, paket alabilmeli, durumunu yenileyebilmeli.
-
-/** Kapıyı sor; kapalıysa çağıranın anlayacağı bir hata FIRLAT (invoke reject olur). */
-function requireSeatOrThrow(action) {
-  const gate = seatGate ? seatGate.requireSeat(action) : {
-    // Gate henüz kurulmadıysa FAIL-CLOSED: "hazır değil" bir lisans-bypass şalteri
-    // olamaz. Pratikte erişilmez — initSeatGate() wireIpc()'ten ÖNCE koşar.
-    allowed: !crewpaneIdConfig(process.env).requireSeat,
-    reason: 'not_ready',
-    message: appI18n.t('main.error.seatNotReady'),
-  };
-  if (gate.allowed) return;
-  const err = new Error(gate.message || 'CrewPane paketi gerekli.');
-  err.code = 'ERR_SEAT_REQUIRED';
-  err.reason = gate.reason;
-  throw err;
-}
-
-/** Fırlatmayan sürüm — HTTP/IPC gövdesine çevrilecek yerler için. */
-function seatDenial(action) {
-  const gate = seatGate ? seatGate.requireSeat(action) : { allowed: false, reason: 'not_ready' };
-  return gate.allowed ? null : gate;
-}
 
 // ─── ADP-660 — PLAN LİMİTİ BOĞAZLARI (Basic ⇄ Pro/Ultra) ────────────────────
 // ADP-646 "paketin var mı" sorusunu kapattı; bu katman "HANGİ paket" sorusunu
