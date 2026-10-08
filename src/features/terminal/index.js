@@ -10,11 +10,17 @@ const { createPaneControlService, PaneControlService } = require('./paneControlS
 const { createPaneDispatchService, PaneDispatchService, REFRESH_SUBMIT_GAP_MS } = require('./paneDispatchService');
 const { createPaneQueryService, PaneQueryService, captureScreenTail } = require('./paneQueryService');
 const { createPaneAskService, PaneAskService, PANE_ASK_MIRROR_MAX } = require('./paneAskService');
+const { createPaneTranscriptService, PaneTranscriptService } = require('./paneTranscriptService');
+const { createPaneBudgetService, PaneBudgetService } = require('./paneBudgetService');
 
 module.exports = {
   createPaneAskService,
   PaneAskService,
   PANE_ASK_MIRROR_MAX,
+  createPaneTranscriptService,
+  PaneTranscriptService,
+  createPaneBudgetService,
+  PaneBudgetService,
   registerPtyIpc,
   registerPanesIpc,
   createPaneRestoreService,

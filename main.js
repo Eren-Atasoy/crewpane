@@ -60,6 +60,8 @@ const {
   createPaneDispatchService,
   createPaneQueryService,
   createPaneAskService,
+  createPaneTranscriptService,
+  createPaneBudgetService,
   PANE_ASK_MIRROR_MAX,
   REFRESH_SUBMIT_GAP_MS,
 } = require('./src/features/terminal');
@@ -1051,169 +1053,37 @@ const ptys = new Map();
 // edilemedi" YALANI üretilirdi. Çapa sıfırlamayı görür, yeni oturumu proje dizininden
 // bulur ve defteri tazeler; bulamazsa `null` döner → prob "bakılamadı" der, YALAN ASLA.
 // ─────────────────────────────────────────────────────────────────────────────
-const sessionAnchor = paneSessionAnchor.createSessionAnchor({
-  listSessionHeads: (cwd, sinceMs) => transcriptProbe.listSessionHeads(cwd, undefined, { sinceMs }),
-  log: (line) => logLine(line),
+// ─────────────────────────────────────────────────────────────────────────────
+// ADP-705 — PANE⇄OTURUM ÇAPASI & ENG-02 — TESLİM PROBU (src/features/terminal/paneTranscriptService.js - Faz 3.6.43)
+// ─────────────────────────────────────────────────────────────────────────────
+const paneTranscriptService = createPaneTranscriptService({
+  ptys,
+  paneSessionAnchor,
+  transcriptProbe,
+  codexRolloutProbe,
+  livePaneRegistry,
+  crewpaneHome: () => crewpaneHome(),
+  logLine: (line) => logLine(line),
 });
+const sessionAnchor = paneTranscriptService.sessionAnchor;
+function currentSessionId(paneId) { return paneTranscriptService.currentSessionId(paneId); }
+function probeTranscriptContains(paneId, needle, o) { return paneTranscriptService.probeTranscriptContains(paneId, needle, o); }
+function probeTranscriptVerdict(paneId, needle, o) { return paneTranscriptService.probeTranscriptVerdict(paneId, needle, o); }
+function probeTranscriptVerifiable(paneId) { return paneTranscriptService.probeTranscriptVerifiable(paneId); }
 
-/**
- * Pane'in GÜNCEL claude oturum id'si. Sıfırlama sonrası çözülene kadar `null`
- * (çağıran bunu "bakılamadı" okur — ADP-280 sözleşmesi: yanlış hüküm ASLA).
- * Çözülür çözülmez pty defteri ve kalıcı kayıt tazelenir (restart-resume de düzelir).
- */
-function currentSessionId(paneId) {
-  const entry = ptys.get(paneId);
-  if (!entry) return null;
-  if (!sessionAnchor.isPending(paneId)) return entry.sessionId ?? null;
-  // Sahiplenilmiş id'ler: başka bir pane'in defterini çalmayalım.
-  const claimedIds = new Set();
-  for (const [id, e] of ptys) {
-    if (id !== paneId && e && e.sessionId) claimedIds.add(e.sessionId);
-  }
-  const found = sessionAnchor.resolve(paneId, {
-    cwd: entry.cwd,
-    claimedIds,
-    // Sıfırlama TUTMAMIŞ olabilir (`/clear` slash-menüsüne düştü): eski defter
-    // sıfırlamadan sonra hâlâ yazılıyorsa o id DOĞRUDUR — çapa bunu ayırt eder.
-    knownSessionId: entry.sessionId ?? null,
-  });
-  if (!found) return null;
-  entry.sessionId = found;
-  try {
-    livePaneRegistry.setSessionId(paneId, found, crewpaneHome());
-  } catch {
-    /* kalıcı kayıt best-effort — bellek defteri zaten doğru */
-  }
-  return found;
-}
-
-/**
- * ENG-02 — TESLİM PROBU, MOTOR FARKINDA. Tek boğaz: teslim/uyandırma doğrulamasının
- * DÖRT çağıranı da (supervisor'ın `transcriptHas` + `wakeVerifiable` +
- * `leaderTranscriptHas`, ve renderer'ın `pty:transcriptContains` IPC'si) buradan geçer.
- *
- * Daha önce dördü de claude-only'ydi ve codex pane'inde `null` dönüyordu → ADP-280/705/920
- * kurtarma merdiveni codex'te TAMAMEN devre dışıydı (ENG-R1 §6 Boşluk-2: "prompt yutulursa
- * kimse fark etmez"). Artık:
- *   claude → oturum defteri (`~/.claude/projects/…/<sessionId>.jsonl`)
- *   codex  → rollout defteri (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`)
- *   diğer  → dürüst "bakılamadı" (checked:false) — TAHMİN YOK.
- *
- * Dönüş `transcriptProbe.transcriptContains` sözleşmesidir (`{found, checked, file, reason}`),
- * böylece `deliveryVerdict.ts` tek hüküm kaynağı olarak kalır.
- *
- * @param {string} paneId
- * @param {string} needle
- * @param {{ sessionId?: string|null }} [o] claude dalında okunacak oturum id'si
- *   (verilmezse ADP-705 güncel-oturum çözümü koşar).
- */
-function probeTranscriptContains(paneId, needle, o) {
-  const entry = ptys.get(paneId);
-  // ADP-896 — pane defterde yok: oturum hakkında hüküm veremeyiz ('no-pane').
-  if (!entry) return { found: false, checked: false, file: null, reason: 'no-pane' };
-  const clean = typeof needle === 'string' ? needle.slice(0, 200) : '';
-  const engine = entry.command ?? 'claude';
-  if (engine === 'claude') {
-    const sessionId = o && 'sessionId' in o ? o.sessionId : currentSessionId(paneId);
-    return transcriptProbe.transcriptContains({ cwd: entry.cwd, sessionId }, clean);
-  }
-  if (engine === 'codex') {
-    // codex pane başına oturum kimliği VERMEZ → eşleme cwd + açılış zamanı ile yapılır
-    // ve güven düşükse modül `checked:false` döner (yanlış "teslim edildi" YOK).
-    return codexRolloutProbe.rolloutContains({ cwd: entry.cwd, startedAt: entry.startedAt }, clean);
-  }
-  return { found: false, checked: false, file: null, reason: 'engine-unsupported' };
-}
-
-/** `probeTranscriptContains`in üç-değerli hâli: true/false/null (null = bakılamadı). */
-function probeTranscriptVerdict(paneId, needle, o) {
-  const res = probeTranscriptContains(paneId, needle, o);
-  return res && res.checked ? res.found : null;
-}
-
-/**
- * Bu pane'in defterine BAKILABİLİR mi? (supervisor'ın `wakeVerifiable` dalı.)
- * Yalnız hedef bilgisi sorulur; hüküm probun kendisinden gelir — eşleme belirsizse
- * çağıran zaten `null` görür ve ADP-667 davranışına (teslim=ack) düşer.
- */
-function probeTranscriptVerifiable(paneId) {
-  const e = ptys.get(paneId);
-  if (!e) return false;
-  const engine = e.command ?? 'claude';
-  if (engine === 'claude') return !!(e.sessionId && e.cwd);
-  if (engine === 'codex') return codexRolloutProbe.rolloutVerifiable({ cwd: e.cwd, startedAt: e.startedAt });
-  return false;
-}
-
-/* ───────────────────────────────────────────────────────────────────────────
-   TOK-C (D-02 v2) — HARCAMA FRENİNİN TEK UYGULAMA NOKTASI
-   ───────────────────────────────────────────────────────────────────────────
-   TOK-C'nin ilk turunda fren yalnız `pty:writeGuarded`e takılıydı ve o kapı
-   "sistemin bir pane'e iş yazdığı TEK yol" sanılıyordu. ÖLÇÜLDÜ — değil:
-
-     • görev dağıtımı:  taskAssignment.ts → sendCommand.ts → api.write
-                        → preload `pty:input` → child.write        (fren YOKTU)
-     • otomatik devam:  resumePtyDaemon.writeLine → writePane
-                        → child.write                              (fren YOKTU)
-
-   Yani ürünün para harcatan İKİ ana yolu frenin dışındaydı; kart "duraklatıldı"
-   yazarken sistem o pane'e iş yazmaya devam edebiliyordu. Aşağıdaki iki yardımcı
-   kararın TEK kaynağıdır: üç çağrı yeri de aynı ölçümü, aynı kuralı ve aynı
-   görünürlüğü kullanır (sessiz düşürme yok — her red log'a düşer ve renderer'a
-   `pty:budget-event` olarak gider; ofis balonu onunla ANINDA çıkar).            */
-
-/** Bir pane'in bütçe kararı — kartın gördüğü ÖLÇÜMÜN AYNISINDAN türer. */
-function paneBudgetDecisionFor(paneId, entry) {
-  const e = entry || ptys.get(paneId);
-  if (!e) return null;
-  try {
-    return paneBudgetStore.decide(
-      paneId,
-      tokenUsage.usageForPane({
-        paneId,
-        engine: e.command ?? null,
-        cwd: e.cwd ?? null,
-        sessionId: currentSessionId(paneId),
-        startedAt: e.startedAt ?? null,
-      }),
-    );
-  } catch (err) {
-    // 🔴 Ölçüm patlarsa fren DEVREYE GİRMEZ (kural 2: ölçemediğimiz şey için
-    // duraklatma yok). Sessiz de kalmaz — log'da izi olur.
-    logLine(`pane bütçe kararı alınamadı paneId=${paneId}: ${err.message}`);
-    return null;
-  }
-}
-
-/**
- * Kapıyı uygula + duraklatmayı GÖRÜNÜR yap.
- * @returns {{allow: boolean, decision: object|null, reason: string}}
- */
-function enforcePaneBudget({ paneId, entry, origin, source }) {
-  const verdict = spendGuard.allowWrite({ origin, decision: null });
-  // İnsan yazımı: ölçüm bile YAPILMAZ (kapı ona hiç uğramaz — hem doğru hem ucuz).
-  if (verdict.allow && verdict.reason === 'human-input') return { allow: true, decision: null, reason: verdict.reason };
-  const decision = paneBudgetDecisionFor(paneId, entry);
-  const res = spendGuard.allowWrite({ origin, decision });
-  if (res.allow) return { allow: true, decision, reason: res.reason };
-  logLine(
-    `${source} BÜTÇE DURAKLATTI paneId=${paneId} ölçüt=${decision.metric} ` +
-      `kullanılan=${decision.used} limit=${decision.effectiveLimit} devam=${decision.resumeCount}`,
-  );
-  const e = entry || ptys.get(paneId);
-  if (appWindow && !appWindow.isDestroyed()) {
-    appWindow.webContents.send('pty:budget-event', {
-      kind: 'blocked',
-      source,
-      paneId,
-      // Ofis balonu ajan sprite'ına bağlanır; bu alan KİMLİK DEĞİL ADRES'tir
-      // (karar zaten verilmiştir, burada yalnız "hangi masaya yazılacak").
-      agentId: (e && e.agentId) || null,
-      budget: decision,
-    });
-  }
-  return { allow: false, decision, reason: res.reason };
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// TOK-C (D-02 v2) — HARCAMA FRENİ VE BÜTÇE SERVİSİ (src/features/terminal/paneBudgetService.js - Faz 3.6.43)
+// ─────────────────────────────────────────────────────────────────────────────
+const paneBudgetService = createPaneBudgetService({
+  ptys,
+  currentSessionId: (id) => currentSessionId(id),
+  paneBudgetStore,
+  tokenUsage,
+  spendGuard,
+  getAppWindow: () => appWindow,
+  logLine: (line) => logLine(line),
+});
+function enforcePaneBudget(opts) { return paneBudgetService.enforcePaneBudget(opts); }
 
 /* ───────────────────────────────────────────────────────────────────────────
    TOK-B (D-03) — DAĞITIM POLİTİKASI: "aynı pane'de sürdür" mü "taze oturum" mu
