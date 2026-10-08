@@ -1486,31 +1486,40 @@ const HANDOFF_MAX_CHARS = 4_000;
  * @param {object|null} entry pty defteri satırı
  * @param {{text?: string|null}} opts dağıtılmak ÜZERE olan iş metni (varsa)
  */
+function calculateIdleMinutes(last) {
+  if (!last || typeof last.atMs !== 'number') return null;
+  return Math.floor(Math.max(0, Date.now() - last.atMs) / 60_000);
+}
+
+function calculateRelatedness(paneId, textOpt, th) {
+  const nextText = typeof textOpt === 'string' ? textOpt : null;
+  const cfg = th ? th.relatedness : null;
+  return dispatchPolicy.relatedness({
+    prevText: dispatchStore.lastText(paneId),
+    nextText,
+    corpus: dispatchStore.corpus(),
+    cfg,
+  });
+}
+
 function paneDispatchDecisionFor(paneId, entry, opts = {}) {
   const e = entry || ptys.get(paneId);
   if (!e) return null;
   try {
-    const engine = e.command === 'claude' || e.command === 'codex' ? e.command : null;
+    const isStandard = e.command === 'claude' || e.command === 'codex';
+    const engine = isStandard ? e.command : null;
     const usage = tokenUsage.usageForPane({
       paneId,
-      engine: e.command ?? null,
-      cwd: e.cwd ?? null,
+      engine: e.command || null,
+      cwd: e.cwd || null,
       sessionId: currentSessionId(paneId),
-      startedAt: e.startedAt ?? null,
+      startedAt: e.startedAt || null,
     });
     const th = dispatchPolicy.thresholdsFrom(tokenCost.DEFAULT_PRICING, engine);
     const last = usage.lastRequest || null;
-    const idleMinutes =
-      last && typeof last.atMs === 'number' ? Math.floor(Math.max(0, Date.now() - last.atMs) / 60_000) : null;
-    const rel = dispatchPolicy.relatedness({
-      prevText: dispatchStore.lastText(paneId),
-      nextText: typeof opts.text === 'string' ? opts.text : null,
-      corpus: dispatchStore.corpus(),
-      cfg: th && th.relatedness,
-    });
+    const idleMinutes = calculateIdleMinutes(last);
+    const rel = calculateRelatedness(paneId, opts.text, th);
     const decision = dispatchPolicy.decide({
-      // 🔴 `sessionFound` (BU oturumun defteri) — toplamın ölçülmesi bu soruyu
-      // cevaplamaz: politika SON isteğe bakar, tüm zamanların toplamına değil.
       measured: usage.sessionFound === true,
       ctxTokens: last ? last.ctxTokens : null,
       idleMinutes,
@@ -1520,7 +1529,6 @@ function paneDispatchDecisionFor(paneId, entry, opts = {}) {
     });
     return { ...decision, relatedness: rel, engine, applied: dispatchApplied.get(paneId) || null };
   } catch (err) {
-    // Ölçüm patlarsa POLİTİKA DEVREYE GİRMEZ (bugünkü davranış sürer) — ama sessiz kalmaz.
     logLine(`dağıtım kararı alınamadı paneId=${paneId}: ${err.message}`);
     return null;
   }
@@ -1716,32 +1724,87 @@ async function requestHandoffSummary(paneId, entry, decision) {
  * Süreç, kimlik (argv `--append-system-prompt`), MCP bağlantıları YAŞAR; yalnız
  * KONUŞMA sıfırlanır — paneRecycler'ın (ADP-266) tam olarak aynı mekanizması.
  */
-async function refreshPaneSession(paneId, { handoff, decision, source, requireHandoff }) {
+function checkRefreshPreconditions(paneId) {
   const entry = ptys.get(paneId);
   if (!entry) return { ok: false, reason: 'no-pane', handoff: null };
-  /* Tazeleme PARA HARCAR (özet isteği + taze oturumun ısınması) → bütçe freninden
-     GEÇER. D-02'nin dersi: fren, harcayan her yola takılmalı. */
   const guard = enforcePaneBudget({ paneId, entry, origin: spendGuard.SYSTEM_ORIGIN, source: 'dispatch-refresh' });
   if (!guard.allow) return { ok: false, reason: 'budget-paused', handoff: null, budget: guard.decision };
   const resetCmd = entry.command === 'claude' ? '/clear' : entry.command === 'codex' ? '/new' : null;
   if (!resetCmd) return { ok: false, reason: 'engine-not-resettable', handoff: null };
+  return { ok: true, entry, resetCmd };
+}
+
+async function deliverPaneReset(paneId, entry, resetCmd) {
+  try {
+    entry.child.write('\x1b'); // yarım kalmış girdi satırını at (ADP-270 dersi)
+    await dispatchSleep(REFRESH_ESC_GAP_MS);
+    entry.child.write(resetCmd);
+  } catch (err) {
+    return { ok: false, reason: `reset-write-failed:${err.message}` };
+  }
+  try {
+    const res = await deliverToPane(paneId, resetCmd, {
+      mode: 'submit-only',
+      submitGapMs: REFRESH_SUBMIT_GAP_MS,
+      label: `sıfırlama(${resetCmd})`,
+    });
+    const resetDelivered = res.delivered;
+    if (!resetDelivered) {
+      logLine(
+        `dispatch-policy SIFIRLAMA DOĞRULANAMADI paneId=${paneId} komut=${resetCmd} ` +
+          `hüküm=${res.outcome} enter=${res.enters} — ` +
+          `oturum SIFIRLANMAMIŞ olabilir (session-anchor bunu ayrıca ölçer)`,
+      );
+    }
+    return { ok: true, resetDelivered };
+  } catch (err) {
+    return { ok: false, reason: `reset-write-failed:${err.message}` };
+  }
+}
+
+function recordRefreshApplied(paneId, entry, { decision, source, handoffResult, resetDelivered }) {
+  sessionAnchor.markReset(paneId);
+  dispatchStore.clear(paneId);
+  const applied = {
+    atMs: Date.now(),
+    code: decision ? decision.code : null,
+    reasons: decision ? decision.reasons : [],
+    handoff: handoffResult.ok,
+    handoffReason: handoffResult.reason,
+    resetDelivered,
+    source: source || null,
+  };
+  dispatchApplied.set(paneId, applied);
+  const handoffStr = handoffResult.ok
+    ? `evet(${(handoffResult.text || '').length} karakter)`
+    : `hayır(${handoffResult.reason})`;
+  logLine(
+    `dispatch-policy TAZELENDİ paneId=${paneId} kaynak=${source} sebep=${applied.code} devir=${handoffStr}`,
+  );
+  sendDispatchEvent({
+    kind: 'refreshed',
+    paneId,
+    agentId: entry.agentId || null,
+    decision: decision || null,
+    applied,
+  });
+  return applied;
+}
+
+/**
+ * Pane'in OTURUMUNU tazele: (isteğe bağlı) devir özeti + ESC + `/clear` + ENTER.
+ * Süreç, kimlik (argv `--append-system-prompt`), MCP bağlantıları YAŞAR; yalnız
+ * KONUŞMA sıfırlanır — paneRecycler'ın (ADP-266) tam olarak aynı mekanizması.
+ */
+async function refreshPaneSession(paneId, { handoff, decision, source, requireHandoff }) {
+  const pre = checkRefreshPreconditions(paneId);
+  if (!pre.ok) return pre;
+  const { entry, resetCmd } = pre;
 
   let handoffResult = { ok: false, text: null, reason: 'not-requested' };
   if (handoff) handoffResult = await requestHandoffSummary(paneId, entry, decision);
   if (!ptys.has(paneId)) return { ok: false, reason: 'pane-gone', handoff: handoffResult };
 
-  /* ── LDR-F1 (G3) — DEVİR ÖZETİ ZORUNLU DALI ───────────────────────────────
-     LDR-R1 B3: bugüne dek özet zaman aşımına uğrasa bile `/clear` YİNE atılıyordu
-     (canlı log: 19 tazelemenin 2'si `devir=hayır(timeout)`). Worker'da bu tolere
-     edilebilir — alt-görev metni zaten yeniden yazılacaktır. LİDERDE ise aynı
-     davranış, TÜM oturum bağlamının KANITSIZ yok edilmesidir ve `/clear` geri
-     alınamaz. Bu yüzden bayrak: özet gelmediyse pane'e sıfırlama YAZILMAZ, bağlam
-     DURUR ve çağıran backoff'la yeniden dener.
-
-     🔴 SINIR: bayrak yalnız özet İSTENDİĞİNDE (`handoff===true`) bağlar. Karar
-     `handoff:false` derse taşınacak bağlam zaten taban altındadır (kayıp yok) —
-     orada özet şartı koşmak tazelemeyi sonsuza dek kilitlerdi.
-     🔴 GERİYE UYUM: bayrak VERİLMEZSE (worker yolu) bugünkü davranış AYNEN koşar. */
   const resetGate = leaderRefreshPolicy.resetGate({
     requireHandoff,
     handoffRequested: handoff === true,
@@ -1763,64 +1826,15 @@ async function refreshPaneSession(paneId, { handoff, decision, source, requireHa
     return { ok: false, reason: 'handoff-missing', handoff: handoffResult };
   }
 
-  // ENT-F1 (P3) — SIFIRLAMA DA DOĞRULANIR. ENT-R1 §3 canlı log kanıtı: 22 sıfırlamanın
-  // 4'ü `session-anchor: … sıfırlaması TUTMAMIŞ` ile bitmişti — doğrulanmayan bir
-  // submit'in ikinci imzası. ESC (yarım girdiyi at) + komut YAZIMI burada kalır;
-  // boşluk + `\r` + composer ölçümü primitife devredilir ('submit-only': metni AZ ÖNCE
-  // biz yazdık, primitif İKİNCİ KEZ yazmaz).
-  let resetDelivered = false;
-  try {
-    entry.child.write('\x1b'); // yarım kalmış girdi satırını at (ADP-270 dersi)
-    await dispatchSleep(REFRESH_ESC_GAP_MS);
-    entry.child.write(resetCmd);
-  } catch (err) {
-    return { ok: false, reason: `reset-write-failed:${err.message}`, handoff: handoffResult };
-  }
-  try {
-    const res = await deliverToPane(paneId, resetCmd, {
-      mode: 'submit-only',
-      submitGapMs: REFRESH_SUBMIT_GAP_MS,
-      label: `sıfırlama(${resetCmd})`,
-    });
-    resetDelivered = res.delivered;
-    if (!resetDelivered) {
-      logLine(
-        `dispatch-policy SIFIRLAMA DOĞRULANAMADI paneId=${paneId} komut=${resetCmd} ` +
-          `hüküm=${res.outcome} enter=${res.enters} — ` +
-          `oturum SIFIRLANMAMIŞ olabilir (session-anchor bunu ayrıca ölçer)`,
-      );
-    }
-  } catch (err) {
-    return { ok: false, reason: `reset-write-failed:${err.message}`, handoff: handoffResult };
-  }
-  // ADP-705 — sıfırlamadan sonra oturum id'si BİLİNMEZ; çapa işaretlenmezse
-  // ölçüm bayat defteri okumaya devam eder (kart da politika da yanılırdı).
-  sessionAnchor.markReset(paneId);
-  dispatchStore.clear(paneId); // yeni konuşmanın "önceki işi" yoktur
-  await dispatchSleep(REFRESH_GRACE_MS); // motor temizlerken yazılan prompt yutulur
+  const resetRes = await deliverPaneReset(paneId, entry, resetCmd);
+  if (!resetRes.ok) return { ok: false, reason: resetRes.reason, handoff: handoffResult };
 
-  const applied = {
-    atMs: Date.now(),
-    code: decision ? decision.code : null,
-    reasons: decision ? decision.reasons : [],
-    handoff: handoffResult.ok,
-    handoffReason: handoffResult.reason,
-    // ENT-F1 — sıfırlamanın ÖLÇÜLEN hükmü. `false` "kesin tutmadı" demek değildir
-    // ('unknown' da false'tur) — ama "tuttu" iddiası artık ancak ölçümle yazılır.
-    resetDelivered,
-    source: source || null,
-  };
-  dispatchApplied.set(paneId, applied);
-  logLine(
-    `dispatch-policy TAZELENDİ paneId=${paneId} kaynak=${source} sebep=${applied.code} ` +
-      `devir=${handoffResult.ok ? `evet(${(handoffResult.text || '').length} karakter)` : `hayır(${handoffResult.reason})`}`,
-  );
-  sendDispatchEvent({
-    kind: 'refreshed',
-    paneId,
-    agentId: entry.agentId || null,
-    decision: decision || null,
-    applied,
+  await dispatchSleep(REFRESH_GRACE_MS);
+  const applied = recordRefreshApplied(paneId, entry, {
+    decision,
+    source,
+    handoffResult,
+    resetDelivered: resetRes.resetDelivered,
   });
   return { ok: true, reason: 'ok', handoff: handoffResult, applied };
 }
@@ -2503,6 +2517,67 @@ function labelTaskCodeOf(label) {
   try { return taskCodeMod.taskCodeOf(label) || null; } catch { return null; }
 }
 
+const optVal = (val) => (val == null ? null : val);
+const flagVal = (val) => val === true;
+
+function formatPaneSnapshot(paneId, e, now) {
+  const child = e.child;
+  return {
+    paneId,
+    agentId: optVal(e.agentId),
+    department: optVal(e.department),
+    command: e.command,
+    label: optVal(e.label),
+    pid: e.pid,
+    startedAt: e.startedAt,
+    status: agentRunner.statusFor(e.lastDataAt, now),
+    // ADP-108 — the pane's spawn cwd.
+    cwd: optVal(e.cwd),
+    // ADP-526 — pane'de koşan AI modelinin insan-okur etiketi (header chip'i).
+    modelLabel: optVal(e.modelLabel),
+    // ADP-565 — the pane'effective launch model id.
+    launchModel: optVal(e.launchModel),
+    // AGENT-MODEL-01 — pane'in EFEKTİF launch eforu.
+    launchEffort: optVal(e.launchEffort),
+    // ADP-595 — the pane'effective codex provider.
+    launchProvider: optVal(e.launchProvider),
+    // ACCT-FIX-01 — pane'in hesap profili KİMLİĞİ.
+    engineProfileId: optVal(e.engineProfileId),
+    // ADP-558 — the INVISIBLE half-work flag.
+    stalled: flagVal(e.stalled),
+    // ADP-502 — the stalled pane's evidence target.
+    stallEvidence: optVal(e.stallEvidence),
+    // ADP-667 — GECİKMELİ RESET bayrağı.
+    pendingReset: flagVal(e.pendingReset),
+    // ADP-532 — pty'nin gerçek boyutu.
+    cols: typeof child?.cols === 'number' ? child.cols : null,
+    rows: typeof child?.rows === 'number' ? child.rows : null,
+    // ADP-694 — motor CLI bulunamadığı için açılmış KURULUM REHBERİ pane'i mi?
+    engineMissing: optVal(e.engineMissing),
+    engineInstall: optVal(e.engineInstallGuide),
+    // ADP-852 — çalışma alanı seçilmemiş olduğu için açılmış REHBER pane'i mi?
+    workspaceMissing: flagVal(e.workspaceMissing),
+    // WIN-FIRSTRUN-01 (K1) — Windows kabuk rehberi pane'i mi?
+    shellMissing: optVal(e.shellMissing),
+    // ENG-OPENCODE-PROVIDER-01 — model kapısı rehber pane'i mi?
+    modelGate: optVal(e.modelGate),
+    // B-02 — PANE'İN KENDİ GÖREV BAĞI (§2.10)
+    taskId: optVal(e.taskId),
+    labelTaskCode: labelTaskCodeOf(e.label),
+    // B-01 — pane defterindeki dal + izole ağaç.
+    branch: optVal(e.branch),
+    worktreePath: optVal(e.worktreePath),
+    // ENG-10 — BU PANE'İN YETENEK BEYANI
+    capabilities: optVal(e.capabilities),
+  };
+}
+
+function paneMatchesFilter(entry, win, department) {
+  if (win && entry.win.id !== win.id) return false;
+  if (department && entry.department !== department) return false;
+  return true;
+}
+
 /**
  * Snapshot live panes for one window (ADP-013 `list`). Optionally filtered by
  * department so ADP-012 can render exactly the active team's pane-set. Returns
@@ -2512,87 +2587,8 @@ function listPanes(win, department) {
   const now = Date.now();
   const out = [];
   for (const [paneId, e] of ptys) {
-    if (win && e.win.id !== win.id) continue;
-    if (department && e.department !== department) continue;
-    out.push({
-      paneId,
-      agentId: e.agentId ?? null,
-      department: e.department ?? null,
-      command: e.command,
-      label: e.label ?? null,
-      pid: e.pid,
-      startedAt: e.startedAt,
-      status: agentRunner.statusFor(e.lastDataAt, now),
-      // ADP-108 — the pane's spawn cwd. Live-watch needs it to rebase a RELATIVE
-      // path the agent prints ("oyun/x.html") to the ABSOLUTE file it actually
-      // wrote (under this cwd, which defaults to HOME — NOT the editor's workspace
-      // root). Without it the editor looked for the file under crewpane/ and never
-      // opened it (the false-PASS root cause).
-      cwd: e.cwd ?? null,
-      // ADP-526 — pane'de koşan AI modelinin insan-okur etiketi (header chip'i).
-      // null → bilinmiyor, chip hiç çizilmez ("?" basılmaz).
-      modelLabel: e.modelLabel ?? null,
-      // ADP-565 — the pane's EFFECTIVE launch model id (`--model`; null = engine
-      // default). Authoritative — the delegation reuse gate compares the requested
-      // model against THIS to decide claude in-session /model vs codex respawn.
-      launchModel: e.launchModel ?? null,
-      // AGENT-MODEL-01 — pane'in EFEKTİF launch eforu (null = bayrak eklenmedi →
-      // motorun kendi varsayılanı). Renderer rozeti/kartı bunu okur.
-      launchEffort: e.launchEffort ?? null,
-      // ADP-595 — the pane's EFFECTIVE codex provider (`-c model_provider=…`; null =
-      // engine default). The reuse gate drops a candidate whose provider differs (codex
-      // has no in-session provider switch). Absent from older main builds.
-      launchProvider: e.launchProvider ?? null,
-      // ACCT-FIX-01 — pane'in hesap profili KİMLİĞİ (dizin/jeton değil). Eski main
-      // build'lerinde yok → renderer `undefined`i "bilinmiyor" okur.
-      engineProfileId: e.engineProfileId ?? null,
-      // ADP-558 — the INVISIBLE half-work flag (the user-facing "yarım iş"
-      // label/badge was removed; the ADP-288/289 hygiene machinery now rides on
-      // this flag alone). Set via pty:bind at stall time, cleared on idle relabel.
-      stalled: e.stalled === true,
-      // ADP-502 — the stalled pane's evidence target (set via pty:bind at stall
-      // time, cleared on idle relabel). Lets a freshly reloaded renderer rebuild
-      // its stall ledger so an orphaned stall can still be retracted.
-      stallEvidence: e.stallEvidence ?? null,
-      // ADP-667 — GECİKMELİ RESET bayrağı: iş bitince `/clear` YAZILMAZ (worker'ın son
-      // çıktısı ekranda kalsın), bu pane sıradaki dispatch'ten hemen önce temizlenir.
-      // Bayrak main'de yaşadığı için renderer-only reload onu kaybetmez.
-      pendingReset: e.pendingReset === true,
-      // ADP-532 — pty'nin gerçek boyutu: renderer xterm'iyle karşılaştırılıp
-      // drift'te refit tetiklenir (pane altında boş alan / bayat TUI çizimi).
-      cols: typeof e.child?.cols === 'number' ? e.child.cols : null,
-      rows: typeof e.child?.rows === 'number' ? e.child.rows : null,
-      // ADP-694 — motor CLI bulunamadığı için açılmış KURULUM REHBERİ pane'i mi?
-      // (null = normal pane). Yeniden yüklenen bir renderer rehberi bundan geri kurar.
-      engineMissing: e.engineMissing ?? null,
-      engineInstall: e.engineInstallGuide ?? null,
-      // ADP-852 — çalışma alanı seçilmemiş olduğu için açılmış REHBER pane'i mi?
-      workspaceMissing: e.workspaceMissing === true,
-      // WIN-FIRSTRUN-01 (K1) — Windows kabuk rehberi pane'i mi? (null = normal pane)
-      shellMissing: e.shellMissing ?? null,
-      // ENG-OPENCODE-PROVIDER-01 — model kapısı rehber pane'i mi? (null = normal pane)
-      modelGate: e.modelGate ?? null,
-      // ── B-02 — PANE'İN KENDİ GÖREV BAĞI (§2.10) ──────────────────────────
-      // Terminal başlığındaki görev rozeti bugüne kadar AJANA atanmış board
-      // görevini gösteriyordu (`taskByAgent`); aynı ajan ikinci bir görev pane'i
-      // açtığında İKİ BARDA AYNI (ve birinde yanlış) numara çıkıyordu. Rozetin
-      // doğru kaynağı pane'in KENDİ bağıdır ve o bağ burada, main'de yaşar:
-      //   • `taskId` — B-01 Faz B, spawn anında ÖLÇÜLDÜ (izolasyon açıkken dolu);
-      //   • `labelTaskCode` — pane etiketinden çıkarılan kod. Çıkarımın TEK kaynağı
-      //     `taskCode.cjs` (B-01 Faz A); renderer regex YAZMAZ, burada çözülüp
-      //     taşınır — yoksa "görev kodu" tanımı iki süreçte ayrışırdı (F-6 dersi).
-      taskId: e.taskId ?? null,
-      labelTaskCode: labelTaskCodeOf(e.label),
-      // B-01 — pane defterindeki dal + izole ağaç. Bu BEKLENEN daldır; ağacın
-      // GERÇEĞİ `git:branch(cwd)`ten gelir ve ikisi çelişirse renderer ⚠ çizer.
-      branch: e.branch ?? null,
-      worktreePath: e.worktreePath ?? null,
-      // ENG-10 — BU PANE'İN YETENEK BEYANI (ENG-07 verisi + kullanıcı-yüzü matris).
-      // Ofis hover kartı, terminal başlığı, ayarlar motor kartı ve entegrasyon hub'ı
-      // rozetlerini BUNDAN çizer; renderer motor adına göre HİÇBİR hüküm kurmaz.
-      // null = kabuk pane'i / eski main build'i → rozet çizilmez (uydurma beyan yok).
-      capabilities: e.capabilities ?? null,
-    });
+    if (!paneMatchesFilter(e, win, department)) continue;
+    out.push(formatPaneSnapshot(paneId, e, now));
   }
   return out;
 }
