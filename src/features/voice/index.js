@@ -9,6 +9,10 @@ const {
   JarvisConversationService,
 } = require('./jarvisConversationService.js');
 
+const {
+  createDictationDeliveryService,
+} = require('./dictationDeliveryService.js');
+
 /**
  * Faz 3.5 — Sıra 10: Jarvis, JarvisWidget ve Grok IPC yüzeylerini topluca kaydeder.
  */
@@ -28,4 +32,5 @@ module.exports = {
   registerJarvisConvIpc,
   createJarvisConversationService,
   JarvisConversationService,
+  createDictationDeliveryService,
 };

@@ -74,6 +74,16 @@ const defaultStaticModules = {
   accountScope: require('../../config/accountScope.cjs'),
   mobileDeviceStore: require('../../mobile/mobileDeviceStore.cjs'),
   mobileTranscript: require('../../mobile/mobileTranscript.cjs'),
+  mergeService: require('../../services/mergeService.cjs'),
+  worktreeService: require('../../services/worktreeService.cjs'),
+  mcpProcess: require('../../mcp/mcpProcess.cjs'),
+  updateChannel: require('../../services/updateChannel.cjs'),
+  firstRunDoctor: require('../../agents/firstRunDoctor.cjs'),
+  announcements: require('../../services/announcements.cjs'),
+  demoSitePath: require('../../config/demoSitePath.cjs'),
+  engineCheck: require('../../agents/engineCheck.cjs'),
+  teamComposeCore: require('../../agents/teamCompose.cjs'),
+  schemeOwnership: require('../../core/schemeOwnership.cjs'),
 };
 
 /**

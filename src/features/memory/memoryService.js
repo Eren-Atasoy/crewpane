@@ -16,6 +16,7 @@ const defaultMemorySearchService = require('../../memory/memorySearchService.cjs
 const defaultMemoryEmbedInstall = require('../../memory/memoryEmbedInstall.cjs');
 const defaultMemoryEmbedHosted = require('../../memory/memoryEmbedHosted.cjs');
 const defaultInstancePaths = require('../../config/instancePaths.cjs');
+const defaultTranscriptProbe = require('../../services/transcriptProbe.cjs');
 
 class MemoryService {
   constructor(deps = {}) {
@@ -172,7 +173,7 @@ class MemoryService {
       if (!agentRunner || typeof agentRunner.memoryLedger !== 'function') return null;
       const ledger = agentRunner.memoryLedger();
       if (!ledger) return null;
-      const transcriptProbe = this.deps.transcriptProbe;
+      const transcriptProbe = this.deps.transcriptProbe || defaultTranscriptProbe;
       const res = ledger.settle(
         (entry) => {
           if (!entry || !entry.cwd || !entry.sessionId || !transcriptProbe) return null;

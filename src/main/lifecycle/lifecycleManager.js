@@ -3,10 +3,13 @@
 const defaultQuitFunnel = require('../../core/quitFunnel.cjs');
 const defaultCrashJournal = require('../../core/crashJournal.cjs');
 const defaultInstancePaths = require('../../config/instancePaths.cjs');
+const defaultLivePaneRegistry = require('../../agents/livePaneRegistry.cjs');
+const defaultAdapter = require('../../config/adapter.cjs');
+const defaultJarvisVoice = require('../../voice/jarvisVoice.js');
 
 const defaultLifecycleOptions = {
   app: null,
-  process: null,
+  process,
   quitFunnel: defaultQuitFunnel,
   crashJournal: defaultCrashJournal,
   instancePaths: defaultInstancePaths,
@@ -28,10 +31,10 @@ const defaultLifecycleOptions = {
   getTeardownSteps: null,
   globalShortcut: null,
   paneQueryService: null,
-  livePaneRegistry: null,
+  livePaneRegistry: defaultLivePaneRegistry,
   ptyResumeService: null,
-  adapter: null,
-  jarvisVoice: null,
+  adapter: defaultAdapter,
+  jarvisVoice: defaultJarvisVoice,
   delegationBridgeService: null,
   delegationSupervisorService: null,
   resetDelegationBridge: () => {},

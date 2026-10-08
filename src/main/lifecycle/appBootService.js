@@ -188,8 +188,40 @@ function _normalizeDoctorAndGovernorServices(d) {
   }
 }
 
+const defaultBootStaticModules = {
+  engineCoerce: require('../../agents/engineCoerce.cjs'),
+  livePaneRegistry: require('../../agents/livePaneRegistry.cjs'),
+  schemeOwnership: require('../../core/schemeOwnership.cjs'),
+  safeStorageIdentity: require('../../security/safeStorageIdentity.cjs'),
+  groqShim: require('../../voice/groqResponsesShim.cjs'),
+  providers: require('../../agents/providers.cjs'),
+  adapter: require('../../config/adapter.cjs'),
+  jarvisVoice: require('../../voice/jarvisVoice.js'),
+  telemetryMod: require('../../../telemetry/telemetry.cjs'),
+  agentSettings: require('../../agents/agentSettings.cjs'),
+  telemetryChannelMod: require('../../../telemetry/channel.cjs'),
+  tamperSignals: require('../../security/tamperSignals.cjs'),
+};
+
+function _normalizeStaticAndEnvModules(d) {
+  if (!d.BrowserWindow) {
+    try { d.BrowserWindow = require('electron').BrowserWindow; } catch { /* ignore */ }
+  }
+  if (d.isAutomatedSession === undefined) {
+    d.isAutomatedSession = require('../../agents/automatedSession.cjs').isAutomatedSession(process.env);
+  }
+  if (d.automatedSessionReason === undefined) {
+    d.automatedSessionReason = require('../../agents/automatedSession.cjs').automatedSessionReason(process.env);
+  }
+  if (d.isPackaged === undefined) d.isPackaged = d.app ? d.app.isPackaged : false;
+  if (!d.resourcesPath) d.resourcesPath = process.resourcesPath;
+  if (!d.appUrlScheme) d.appUrlScheme = require('../../core/appScheme.cjs').appScheme();
+  if (d.externalUrl === undefined) d.externalUrl = process.env.CREWPANE_EXTERNAL_URL;
+}
+
 function _normalizeBootDeps(deps) {
-  const d = Object.assign({}, deps);
+  const d = Object.assign({}, defaultBootStaticModules, deps);
+  _normalizeStaticAndEnvModules(d);
   _normalizeUpdateRoutines(d);
   _normalizeMemoryAndStorageRoutines(d);
   _normalizeWindowRoutines(d);
