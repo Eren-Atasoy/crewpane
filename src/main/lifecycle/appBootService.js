@@ -169,6 +169,10 @@ function _normalizeWorkspaceAndAuthServices(d) {
     if (!d.seedBuiltinSkills) d.seedBuiltinSkills = (r) => d.workspaceRootService.seedBuiltinSkills(r);
     if (!d.syncSkillEngineViews) d.syncSkillEngineViews = (r) => d.workspaceRootService.syncSkillEngineViews(r);
   }
+  if (d.authService) {
+    if (!d.initSeatGate) d.initSeatGate = () => d.authService.initSeatGate();
+    if (!d.bindAccountRoot) d.bindAccountRoot = (reason) => d.authService.bindAccountRoot(reason);
+  }
 }
 
 function _normalizeBootDeps(deps) {

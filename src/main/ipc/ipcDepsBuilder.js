@@ -53,7 +53,7 @@ function buildPlatformAndWindowDeps(ctx) {
     getAppUrlScheme: ctx.getAppUrlScheme || (() => ctx.APP_URL_SCHEME),
     getAppUrlPrefix: ctx.getAppUrlPrefix || (() => ctx.APP_URL_PREFIX),
     mode: ctx.mode ?? ctx.MODE,
-    relaunchApp: ctx.relaunchApp,
+    relaunchApp: typeof ctx.relaunchApp === 'function' ? ctx.relaunchApp : ((r) => (ctx.authService ? ctx.authService.relaunchApp(r) : null)),
     rebuildAndRelaunch: ctx.rebuildAndRelaunch || ((e) => (ctx.rebuildService ? ctx.rebuildService.rebuildAndRelaunch(e) : null)),
   };
 }
@@ -432,7 +432,7 @@ function _buildSkillAndSupervisorDeps(ctx) {
     if (ctx[k] !== undefined) out[k] = ctx[k];
   }
   Object.assign(out, {
-    requireSeatOrThrow: ctx.requireSeatOrThrow,
+    requireSeatOrThrow: typeof ctx.requireSeatOrThrow === 'function' ? ctx.requireSeatOrThrow : ((act) => (ctx.authService ? ctx.authService.requireSeatOrThrow(act) : null)),
     jarvisVoice: ctx.jarvisVoice,
     grokVoice: ctx.grokVoice,
     inputSim: ctx.inputSim,
@@ -451,7 +451,7 @@ function _buildSkillAndSupervisorDeps(ctx) {
     builtinSkills: ctx.builtinSkills,
     skillGuard: ctx.skillGuard,
     skillEngineView: ctx.skillEngineView,
-    getBoundAccount: () => ctx.boundAccount,
+    getBoundAccount: () => (typeof ctx.getBoundAccount === 'function' ? ctx.getBoundAccount() : (ctx.boundAccount || (ctx.authService ? ctx.authService.getBoundAccount() : null))),
     syncSkillEngineViews: typeof ctx.syncSkillEngineViews === 'function' ? ctx.syncSkillEngineViews : ((reason) => (ctx.workspaceRootService ? ctx.workspaceRootService.syncSkillEngineViews(reason) : null)),
     delegationQueueStore: ctx.delegationQueueStore,
     delegationSupervisorStore: ctx.delegationSupervisorStore,
@@ -500,11 +500,11 @@ function buildSystemAuthAndEngineDeps(ctx) {
     telemetryMod: ctx.telemetryMod,
     provisionStoreMod: ctx.provisionStoreMod,
     telemetryChannelMod: ctx.telemetryChannelMod,
-    getSeatGate: () => ctx.seatGate,
+    getSeatGate: () => (typeof ctx.getSeatGate === 'function' ? ctx.getSeatGate() : (ctx.authService ? ctx.authService.getSeatGate() : ctx.seatGate)),
     gateOverrides: ctx.gateOverrides,
-    signOutConfirmCopy: ctx.signOutConfirmCopy,
+    signOutConfirmCopy: typeof ctx.signOutConfirmCopy === 'function' ? ctx.signOutConfirmCopy : ((p) => (ctx.authService ? ctx.authService.signOutConfirmCopy(p) : '')),
     accountScope: ctx.accountScope,
-    relaunchForAccountChange: ctx.relaunchForAccountChange,
+    relaunchForAccountChange: typeof ctx.relaunchForAccountChange === 'function' ? ctx.relaunchForAccountChange : ((k, r) => (ctx.authService ? ctx.authService.relaunchForAccountChange(k, r) : null)),
     schemeOwnership: ctx.schemeOwnership,
     getSchemeVerdict: () => ctx.schemeVerdict,
     setSchemeVerdict: (v) => { ctx.schemeVerdict = v; },

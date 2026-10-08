@@ -364,7 +364,6 @@ let agentWorkspaceRoot = agentSettings.resolveWorkspaceRoot(
 // RLS-protected client key — safe to hand an agent) from, in order: process.env → REPO_ROOT/
 // .env.local (dev) → ~/.crewpane/crewpane-public-env.json (packaged; written from .env.local).
 // Cached; returns {} when none found (board just stays unconfigured — no crash).
-let seatGate = null;
 
 // ── ADP-201/621/622/723/741/773/ENV-01/02 — BACKEND VE SUPABASE ORTAM SERVİSİ (src/features/services/backendEnvService.js - Faz 3.6.41)
 const backendEnvService = createBackendEnvService({
@@ -377,8 +376,8 @@ const backendEnvService = createBackendEnvService({
   devChannel: require('./src/config/devChannel.cjs'),
   crewpaneIdConfig,
   instancePaths,
-  getSeatGate: () => seatGate,
-  seatDenial: (action) => seatDenial(action),
+  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
+  seatDenial: (action) => (typeof authService !== 'undefined' && authService ? authService.seatDenial(action) : null),
   logLine,
   envProfile: ENV_PROFILE,
   appUrlScheme: APP_URL_SCHEME,
@@ -670,7 +669,7 @@ const updateService = createUpdateService({
   updateCheck,
   updateChannel,
   logLine,
-  getSeatGate: () => seatGate,
+  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
   heartbeat: () => telemetryService.heartbeat(),
 });
 
@@ -712,7 +711,7 @@ const mediaService = createMediaService({
   attachmentStoreMod,
   feedbackBridgeMod,
   logLine,
-  getBoundAccount: () => boundAccount,
+  getBoundAccount: () => (typeof authService !== 'undefined' && authService ? authService.getBoundAccount() : null),
   getLogPath: () => LOG_PATH,
 });
 
@@ -722,7 +721,7 @@ const doctorService = createDoctorService({
   crewpaneEnv,
   instancePaths,
   os,
-  getSeatGate: () => seatGate,
+  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
   getRendererSupabaseTarget: () => rendererSupabaseTarget(),
   getEnvLayerView: () => envLayerView(),
   getIdentityMode: () => appDbIdentityMode().mode,
@@ -775,7 +774,7 @@ const telemetryService = createTelemetryService({
   agentSettings,
   crewpaneEnv,
   logLine,
-  getSeatGate: () => seatGate,
+  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
   appDbTokenFor: (action) => appDbTokenFor(action),
   rendererSupabaseTarget: () => rendererSupabaseTarget(),
   currentUpdateChannel: () => updateService.currentUpdateChannel(),
@@ -1194,11 +1193,9 @@ const prefsWhitelist = require('./prefs/prefsWhitelist.cjs');
 const syncSurface = require('./sync/syncIpc.cjs');
 const memoryIndexDerive = require('./src/memory/memoryIndexDerive.cjs');
 
-let boundAccount = null;
-
 // ─── ADP-660/BL-01 — Katman Limitleri & Nudge Yönetimi (src/features/auth/planLimitService.js - Faz 3.6.13)
 const planLimitService = createPlanLimitService({
-  getSeatGate: () => seatGate,
+  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
   getAppWindow: () => appWindow,
   analyticsNow: () => telemetryService.analyticsNow(),
   logLine,
@@ -1239,36 +1236,7 @@ const authService = createAuthService({
   },
 });
 
-function initSeatGate() {
-  seatGate = authService.initSeatGate();
-  return seatGate;
-}
-
-function requireSeatOrThrow(action) {
-  return authService.requireSeatOrThrow(action);
-}
-
-function seatDenial(action) {
-  return authService.seatDenial(action);
-}
-
-async function bindAccountRoot(reason = 'boot') {
-  const res = await authService.bindAccountRoot(reason);
-  boundAccount = authService.getBoundAccount();
-  return res;
-}
-
-function signOutConfirmCopy(panes) {
-  return authService.signOutConfirmCopy(panes);
-}
-
-function relaunchApp(reason) {
-  return authService.relaunchApp(reason);
-}
-
-function relaunchForAccountChange(nextKey, reason) {
-  return authService.relaunchForAccountChange(nextKey, reason);
-}
+// Auth routines directly dispatched via authService
 
 
 
@@ -1327,7 +1295,7 @@ const codeIndexService = createCodeIndexService({
 const authUrlService = createAuthUrlService({
   app,
   appUrlPrefix: APP_URL_PREFIX,
-  getSeatGate: () => seatGate,
+  getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
   isAutomatedSession: IS_AUTOMATED_SESSION,
   automatedSessionReason: AUTOMATED_SESSION_REASON,
   logLine: (line) => logLine(line),
@@ -1497,7 +1465,7 @@ function _buildWindowAndWorkspaceDeps() {
     APP_URL_SCHEME,
     APP_URL_PREFIX,
     MODE,
-    relaunchApp,
+    authService,
     rebuildService,
     planLimitService,
     workspaceFileService,
@@ -1590,7 +1558,7 @@ function _buildMobileAndVoiceIpcDeps() {
     handService,
     mobileDeviceStore,
     mobileProbe,
-    requireSeatOrThrow,
+    authService,
     jarvisWidget,
     jarvisVoice,
     grokVoice,
@@ -1609,7 +1577,6 @@ function _buildMobileAndVoiceIpcDeps() {
     builtinSkills,
     skillGuard,
     skillEngineView,
-    boundAccount,
     delegationQueueStore,
     delegationSupervisorStore,
     resumeQueueStore,
@@ -1632,11 +1599,9 @@ function _buildSystemAndEngineIpcDeps() {
     telemetryMod,
     provisionStoreMod,
     telemetryChannelMod,
-    seatGate,
+    authService,
     gateOverrides,
-    signOutConfirmCopy,
     accountScope,
-    relaunchForAccountChange,
     schemeOwnership,
     schemeVerdict,
     IS_AUTOMATED_SESSION,
@@ -1715,7 +1680,7 @@ const rebuildService = createRebuildService({
   spawn,
   repoRoot: REPO_ROOT,
   logLine,
-  relaunchApp,
+  relaunchApp: (reason) => authService.relaunchApp(reason),
 });
 
 
@@ -1892,11 +1857,11 @@ mobileService = createMobileService({
 // ayrı hâldir ve karıştırılmaz.
 const syncService = createSyncService({
   agentSettings,
-  getBoundAccount: () => boundAccount,
+  getBoundAccount: () => authService.getBoundAccount(),
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   publicSupabaseEnv,
   accountScope,
-  getSeatGate: () => seatGate,
+  getSeatGate: () => authService.getSeatGate(),
   appDbTokenFor,
   memoryIndexDerive,
   pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
@@ -1978,7 +1943,9 @@ const teamComposeService = createTeamComposeService({
   engineRegistry,
   planLimits,
   agentSettings,
-  seatGate,
+  seatGate: {
+    state: () => (authService && authService.getSeatGate() ? authService.getSeatGate().state() : null),
+  },
   paneControlService,
   ptys,
   getAppWindow: () => appWindow,
@@ -2007,7 +1974,7 @@ const delegationBridgeService = createDelegationBridgeService({
   notifyLog,
   appDbTokenFor: (source) => appDbTokenFor(source),
   integrationsStatusFor: (req) => integrationService.integrationsStatusFor(req),
-  seatDenial: (action) => seatDenial(action),
+  seatDenial: (action) => authService.seatDenial(action),
   planWaveLimit: (requested) => planLimitService.planWaveLimit(requested),
   deliverDictationToFocusedSurface: (text) => deliverDictationToFocusedSurface(text),
 });
@@ -2045,8 +2012,7 @@ app.whenReady().then(async () => {
     safeStorageScope: SAFE_STORAGE_SCOPE,
     secretBackendState,
     instanceHome: instancePaths.instanceHome(),
-    initSeatGate,
-    bindAccountRoot,
+    authService,
     syncService,
     authUrlService,
     workspaceRootService,
@@ -2094,7 +2060,7 @@ const lifecycleManager = createLifecycleManager({
   quitFunnel,
   crashJournal,
   instancePaths,
-  getSeatGate: () => seatGate,
+  authService,
   isAutotest: AUTOTEST,
   crewpaneHome: () => crewpaneHome(),
   armQuitBrake: (label) => armQuitBrake(label),

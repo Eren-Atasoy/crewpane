@@ -36,6 +36,7 @@ const defaultLifecycleOptions = {
   delegationSupervisorService: null,
   resetDelegationBridge: () => {},
   listenSignals: true,
+  authService: null,
 };
 
 function normalizeLifecycleDeps(deps = {}) {
@@ -45,6 +46,9 @@ function normalizeLifecycleDeps(deps = {}) {
   }
   if (d.nextServerManager && d.stopNextServer === defaultLifecycleOptions.stopNextServer) {
     d.stopNextServer = () => d.nextServerManager.stopNextServer();
+  }
+  if (d.authService && d.getSeatGate === defaultLifecycleOptions.getSeatGate) {
+    d.getSeatGate = () => d.authService.getSeatGate();
   }
   return d;
 }
