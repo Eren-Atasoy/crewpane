@@ -5652,190 +5652,69 @@ function syncSkillEngineViews(reason) {
   }
 }
 
-/** True iff `abs` is the workspace root itself or strictly inside it. */
+const {
+  withinWorkspace: rawWithinWorkspace,
+  withinActiveRoots: rawWithinActiveRoots,
+  resolveInRoots: rawResolveInRoots,
+  resolveSearchRoot: rawResolveSearchRoot,
+  displayPath: rawDisplayPath,
+  readWorkspaceFile: rawReadWorkspaceFile,
+  writeWorkspaceFile: rawWriteWorkspaceFile,
+  listWorkspaceDir: rawListWorkspaceDir,
+  GIT_BRANCH_TTL_MS,
+  invalidateGitBranchCache,
+  readGitBranch: rawReadGitBranch,
+} = require('./src/shared/utils');
+
 function withinWorkspace(abs) {
-  if (!agentWorkspaceRoot) return false; // ADP-232-C — unconfigured: nothing is "in the workspace"
-  const rootWithSep = agentWorkspaceRoot.endsWith(path.sep) ? agentWorkspaceRoot : agentWorkspaceRoot + path.sep;
-  return abs === agentWorkspaceRoot || abs.startsWith(rootWithSep);
+  return rawWithinWorkspace(abs, agentWorkspaceRoot);
 }
 
-/** True iff `abs` is, or is strictly inside, ANY currently-active root. */
 function withinActiveRoots(abs) {
-  for (const root of activeRoots) {
-    const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
-    if (abs === root || abs.startsWith(rootWithSep)) return true;
-  }
-  return false;
+  return rawWithinActiveRoots(abs, activeRoots);
 }
 
-/**
- * Resolve a renderer-supplied path and reject anything outside EVERY active root.
- * Relative paths resolve under the workspace root (backward compat with the
- * workspace-relative tree); absolute paths are normalized then range-checked against
- * the active-root allow-list. Returns the absolute path, or null if denied.
- * (Symlink-escape is checked separately by the caller via realpath, since the
- * target may not exist yet for a write.)
- */
 function resolveInRoots(p) {
-  if (typeof p !== 'string' || p.length === 0) return null;
-  // ADP-232-C — no workspace root: relative paths have no base to resolve under →
-  // deny (absolute paths can still hit a user-opened active root).
-  if (!path.isAbsolute(p) && !agentWorkspaceRoot) return null;
-  const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(agentWorkspaceRoot, p);
-  return withinActiveRoots(abs) ? abs : null;
-}
-
-// ADP-402 — pane cwd → saran git repo'nun branch adı (pane header rozeti).
-// `git` subprocess'i yerine .git/HEAD dosyası okunur (maliyet mikrosaniye);
-// yukarı yürüyüş aktif-root sandbox'ının DIŞINA çıkmaz (dışarıdaki bir üst
-// repo'nun bilgisi sızmasın). Worktree (.git DOSYA: "gitdir: …") desteklenir;
-// detached HEAD → kısa hash gösterilir.
-const GIT_BRANCH_TTL_MS = 5000;
-const gitBranchCache = new Map(); // abs cwd → { at, value }
-
-/**
- * B-02 (§3) — TTL'i BEKLEMEDEN tazele.
- *
- * 5 saniyelik cache ADP-284'ün boşta-CPU disiplini için doğru, ama merge/worktree
- * geçişi gibi ANLARDA yanlış: rozet 5 saniye boyunca ARTIK GEÇERSİZ bir dal adı
- * gösterir ve kullanıcı "hangi daldayım" sorusunu yanlış cevaplar. Bu yüzden cache
- * OLAYLA düşürülür (yeni bir poll döngüsü EKLENMEZ — spec'in açık yasağı):
- *   • merge başarıyla indi        (worktree:merge)
- *   • worktree serbest bırakıldı  (worktree:release)
- *   • çalışma alanı değişti       (workspace:switch)
- *   • yeni pane doğdu             (spawnPty)
- * Renderer ayrıca `git:branch(cwd, { force: true })` ile aynı şeyi kendi
- * olaylarında (görev değişimi, attach) isteyebilir.
- */
-function invalidateGitBranchCache(absDir) {
-  if (typeof absDir === 'string' && absDir) gitBranchCache.delete(path.resolve(absDir));
-  else gitBranchCache.clear();
+  return rawResolveInRoots(p, { workspaceRoot: agentWorkspaceRoot, activeRoots });
 }
 
 function readGitBranch(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 40; i++) {
-    if (!withinActiveRoots(dir)) return null;
-    const dotGit = path.join(dir, '.git');
-    try {
-      const st = fs.statSync(dotGit);
-      let headPath;
-      if (st.isDirectory()) {
-        headPath = path.join(dotGit, 'HEAD');
-      } else {
-        const gitdir = fs.readFileSync(dotGit, 'utf8').trim().replace(/^gitdir:\s*/, '');
-        headPath = path.join(path.isAbsolute(gitdir) ? gitdir : path.resolve(dir, gitdir), 'HEAD');
-      }
-      const head = fs.readFileSync(headPath, 'utf8').trim();
-      const ref = head.match(/^ref: refs\/heads\/(.+)$/);
-      return ref ? ref[1] : head.slice(0, 7);
-    } catch {
-      /* bu seviyede .git yok/okunamadı → bir üst dizine */
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
+  return rawReadGitBranch(startDir, { activeRoots });
 }
 
-/**
- * TASK-MQTIVZSDYPNRH — resolve the editor-supplied "active workspace" (a file path or a
- * folder, workspace-relative or absolute) to a DIRECTORY inside an active root, for the
- * search bridge to scope to. A file → its parent dir; anything denied/missing → the
- * workspace root. codeIntel then narrows to the enclosing git repo. Never escapes the
- * active-root sandbox.
- */
 function resolveSearchRoot(p) {
-  const abs = resolveInRoots(p);
-  if (abs) {
-    try {
-      return fs.statSync(abs).isDirectory() ? abs : path.dirname(abs);
-    } catch {
-      /* missing → fall through */
-    }
-  }
-  return agentWorkspaceRoot;
+  return rawResolveSearchRoot(p, { workspaceRoot: agentWorkspaceRoot, activeRoots });
 }
 
-/**
- * The path form handed back to the renderer: workspace-relative for in-workspace
- * paths (so the existing tree/tabs keep their familiar `docs/…` labels), and the
- * ABSOLUTE path for anything under a user-opened root (the renderer round-trips it
- * straight back through read/write/list — both forms resolve here).
- */
 function displayPath(abs) {
-  return withinWorkspace(abs) ? (path.relative(agentWorkspaceRoot, abs) || '.') : abs;
+  return rawDisplayPath(abs, agentWorkspaceRoot);
 }
 
-/** Read a file inside any active root as UTF-8. `{ ok, content, encoding, path }` or `{ ok:false, reason }`. */
 function readWorkspaceFile(p) {
-  try {
-    const abs = resolveInRoots(p);
-    if (!abs) return { ok: false, reason: 'path-denied' };
-    // Symlink-escape guard: an existing path's REAL location must stay in an active root.
-    const real = fs.existsSync(abs) ? fs.realpathSync(abs) : abs;
-    if (!withinActiveRoots(real)) return { ok: false, reason: 'path-denied' };
-    const st = fs.statSync(real);
-    if (st.isDirectory()) return { ok: false, reason: 'is-directory' };
-    if (st.size > FILE_MAX_BYTES) return { ok: false, reason: 'too-large' };
-    const content = fs.readFileSync(real, 'utf8');
-    logLine(`file:read ${displayPath(real)} (${st.size} bytes)`);
-    return { ok: true, content, encoding: 'utf8', path: displayPath(real) };
-  } catch (err) {
-    return { ok: false, reason: 'read-failed', detail: err.message };
-  }
+  return rawReadWorkspaceFile(p, {
+    workspaceRoot: agentWorkspaceRoot,
+    activeRoots,
+    fileMaxBytes: FILE_MAX_BYTES,
+    logLine,
+  });
 }
 
-/** Write UTF-8 content to a file inside any active root. `{ ok, bytes, path }` or `{ ok:false, reason }`. */
 function writeWorkspaceFile(payload) {
-  try {
-    if (!payload || typeof payload !== 'object') return { ok: false, reason: 'bad-request' };
-    const { path: p, content } = payload;
-    if (typeof content !== 'string') return { ok: false, reason: 'bad-data' };
-    const abs = resolveInRoots(p);
-    if (!abs) return { ok: false, reason: 'path-denied' };
-    const bytes = Buffer.byteLength(content, 'utf8');
-    if (bytes > FILE_MAX_BYTES) return { ok: false, reason: 'too-large' };
-    // Symlink-escape guard for the PARENT dir (a new file) and the file itself
-    // (an existing symlink): both REAL locations must stay in an active root.
-    const parent = path.dirname(abs);
-    const realParent = fs.existsSync(parent) ? fs.realpathSync(parent) : parent;
-    if (!withinActiveRoots(realParent)) return { ok: false, reason: 'path-denied' };
-    if (fs.existsSync(abs) && !withinActiveRoots(fs.realpathSync(abs))) {
-      return { ok: false, reason: 'path-denied' };
-    }
-    fs.writeFileSync(abs, content, 'utf8');
-    logLine(`file:write ${displayPath(abs)} (${bytes} bytes)`);
-    return { ok: true, bytes, path: displayPath(abs) };
-  } catch (err) {
-    return { ok: false, reason: 'write-failed', detail: err.message };
-  }
+  return rawWriteWorkspaceFile(payload, {
+    workspaceRoot: agentWorkspaceRoot,
+    activeRoots,
+    fileMaxBytes: FILE_MAX_BYTES,
+    logLine,
+  });
 }
 
-/** List a directory inside any active root (files + dirs, hidden + node_modules skipped). */
 function listWorkspaceDir(dir) {
-  try {
-    const abs = resolveInRoots(dir == null || dir === '' ? '.' : dir);
-    if (!abs) return { ok: false, reason: 'path-denied' };
-    const real = fs.existsSync(abs) ? fs.realpathSync(abs) : abs;
-    if (!withinActiveRoots(real)) return { ok: false, reason: 'path-denied' };
-    const st = fs.statSync(real);
-    if (!st.isDirectory()) return { ok: false, reason: 'not-a-directory' };
-    const entries = fs
-      .readdirSync(real, { withFileTypes: true })
-      .filter((d) => !d.name.startsWith('.') && d.name !== 'node_modules')
-      .map((d) => ({
-        name: d.name,
-        path: displayPath(path.join(real, d.name)),
-        type: d.isDirectory() ? 'dir' : 'file',
-      }))
-      .sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
-    return { ok: true, dir: displayPath(real), entries };
-  } catch (err) {
-    return { ok: false, reason: 'list-failed', detail: err.message };
-  }
+  return rawListWorkspaceDir(dir, {
+    workspaceRoot: agentWorkspaceRoot,
+    activeRoots,
+  });
 }
+
 
 /**
  * ADP-103 — open the OS directory picker and ADD the chosen dir to the active-root
