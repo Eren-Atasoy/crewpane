@@ -72,7 +72,7 @@ const {
 const { registerMemoryIpc } = require('./src/features/memory');
 const { registerHandIpc } = require('./src/features/hand');
 const { registerSyncIpc, registerPrefsIpc } = require('./src/features/sync');
-const { registerMobileIpc } = require('./src/features/mobile');
+const { registerMobileIpc, createMobileService } = require('./src/features/mobile');
 const {
   registerEngineIpc,
   registerEngineAuthIpc,
@@ -90,7 +90,9 @@ const {
 } = require('./src/features/agents');
 const { registerPtyIpc, registerPanesIpc } = require('./src/features/terminal');
 const { registerVoiceIpc } = require('./src/features/voice');
+const { createWindowManager } = require('./src/main/windows');
 let windowManager = null;
+let mobileService = null;
 
 const bootstrapCtx = {
   app,
@@ -5661,6 +5663,7 @@ const {
   readWorkspaceFile: rawReadWorkspaceFile,
   writeWorkspaceFile: rawWriteWorkspaceFile,
   listWorkspaceDir: rawListWorkspaceDir,
+  gitBranchCache,
   GIT_BRANCH_TTL_MS,
   invalidateGitBranchCache,
   readGitBranch: rawReadGitBranch,
@@ -6509,11 +6512,11 @@ function wireIpc() {
     mobilePending,
     mobileCommandPending,
     emitMobileEvent: (e) => emitMobileEvent(e),
-    getMobileGateway: () => mobileGateway,
+    getMobileGateway: () => (mobileService ? mobileService.getMobileGateway() : null),
     mobileDeviceStore,
     mobilePlanDenial: (opts) => mobilePlanDenial(opts),
     startMobile: () => startMobile(),
-    getMobileGatewayLastFailure: () => mobileGatewayLastFailure,
+    getMobileGatewayLastFailure: () => (mobileService ? mobileService.getMobileGatewayLastFailure() : null),
     mobileStartFailure: (ctx) => mobileStartFailure(ctx),
     mobileKillSwitch: () => mobileKillSwitch(),
     mobileProbe,
@@ -6724,7 +6727,6 @@ function wireIpc() {
     analyticsSchema,
     analyticsFirstTime,
     supervisorFor,
-    vendorOnlyGate,
     logLine,
     telemetryTokenFor,
     credentialGate,
@@ -10380,7 +10382,6 @@ const mobileOffice = require('./src/mobile/mobileOffice.cjs'); // ADP-334 — of
 const mobileReports = require('./src/mobile/mobileReports.cjs'); // ADP-364 — raporlar MAIN'de (INDEX.md)
 const mobileTranscript = require('./src/mobile/mobileTranscript.cjs'); // ADP-368 — okuma modu (claude oturum JSONL'i)
 const mobileUploads = require('./src/mobile/mobileUploads.cjs'); // ADP-371 — telefondan görsel yükleme (prompt eki)
-let mobileGateway = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADP-317 — JARVİS KONUŞMASI: TEK DEFTER (main). Renderer paneli ve telefon AYNI
@@ -10482,361 +10483,50 @@ jarvisConv.onChange((event) => {
   void paneAskRuntime.onMirrorResolved(event.approvalId, event.status, event.choice || null);
 });
 
-/** SSE dinleyicileri (gateway subscribe eder; pty/renderer olayları buraya düşer). */
-const mobileSubscribers = new Set();
-function emitMobileEvent(event) {
-  if (mobileSubscribers.size === 0) return;
-  for (const cb of mobileSubscribers) {
-    try {
-      cb(event);
-    } catch {
-      /* tek dinleyici hatası akışı düşürmez */
-    }
-  }
-}
+mobileService = createMobileService({
+  app,
+  ptys,
+  getAppWindow: () => appWindow,
+  rendererSupabaseTarget,
+  getMobileAppDbToken: () => mobileAppDbToken(),
+  planDenial,
+  delegationBridgeMod,
+  secretRedactor,
+  mobileTranscript,
+  currentSessionId,
+  agentRunner,
+  delegationQueueStore,
+  mobileOffice,
+  jarvisVoice,
+  mobileGatewayMod,
+  mobileReports,
+  mobileUploads,
+  jarvisConv,
+  mobileDeviceStore,
+  logLine,
+  repoRoot: REPO_ROOT,
+  shellCommit: SHELL_COMMIT,
+  standaloneDir,
+});
 
-/**
- * ADP-324 — bir pane'in seq'li tail'i: VT EKRANINDAN (satır listesi + canlı satırlar).
- * `opts`: { lines, before, since } — sayfalama/boşluk doldurma (bkz. paneScreen.cjs).
- * Ekranı olmayan (eski/patolojik) pane'de rolling buffer'a düşülür — kırılmaz.
- */
-function mobilePaneTail(paneId, opts = {}) {
-  const entry = ptys.get(String(paneId || ''));
-  if (!entry) return null;
-  if (entry.screen) return entry.screen.tail(opts);
-  const clean = delegationBridgeMod.cleanPaneTail(entry.buffer || '', opts.lines || 200);
-  const arr = clean ? clean.split('\n') : [];
-  return {
-    entries: arr.map((text, i) => ({ seq: i + 1, text })), // sentetik seq — sayfalama YOK
-    live: [],
-    firstSeq: arr.length ? 1 : 0,
-    lastSeq: arr.length,
-    hasMore: false,
-    truncated: (entry.bytes || 0) > (entry.buffer || '').length,
-  };
-}
-
-/**
- * ADP-368 — OKUMA MODU sayfası: pane'in claude oturum defterinden (JSONL) yapılandırılmış
- * sohbet öğeleri. Pane→{cwd,sessionId} çözümü pty defterinden (ADP-280 teslim-doğrulama
- * ile aynı kaynak); transcript'i olmayan pane (codex/shell) supported:false döner ve
- * telefon ham VT görünümüne düşer. Pane yoksa null → gateway 404 basar.
- */
-function mobilePaneTranscript(paneId, opts = {}) {
-  const entry = ptys.get(String(paneId || ''));
-  if (!entry) return null;
-  // ADP-586 — telefon de aynı transcript dosyasını okur; maskeleme masaüstü IPC'siyle
-  // AYNI olmalı (yoksa "ekranda maskeli, telefonda düz" gibi bir delik kalırdı).
-  return secretRedactor.redactDeep(mobileTranscript.readTranscriptPage({
-    cwd: entry.cwd,
-    // ADP-705 — `/clear` sonrası GÜNCEL oturum (bkz. currentSessionId).
-    sessionId: currentSessionId(String(paneId || '')),
-    // CDX-READ-02 — masaüstüyle AYNI motor-bağımsız defter çözümü (telefon da codex okur).
-    startedAt: entry.startedAt ?? null,
-    engine: entry.command ?? null,
-    limit: opts.limit,
-    before: opts.before,
-    // ADP-738 — kırpma tavanı YALNIZ ağ yüzeyinde: telefon bir sayfada megabaytlarca
-    // markdown çekmesin. Kesme markdown-güvenli sınıra çekilir + `textTruncated`
-    // bayrağı yanar (mobil "…mesaj sunucuda kısaltıldı" notunu gösterir). Masaüstü
-    // IPC'si (pty:transcriptPage) tavan GEÇMEZ → okunabilir mod veri düşürmez.
-    maxText: mobileTranscript.MAX_TEXT,
-  }));
-}
-
-/** Mobil pane listesi (tam tampon YOK — son satır + statü). */
-function mobileListPanes() {
-  const out = [];
-  for (const [paneId, e] of ptys) {
-    // ADP-324 — `lastLine` VT ekranından ve KIRPILMIŞ gelir (200 kr). Eskiden ham tampondan
-    // türetiliyordu: tek TUI satırı 171.800 karaktere ulaşıyor, liste 766 KB'a şişiyordu.
-    const tail = e.screen ? e.screen.lastLine() : delegationBridgeMod.cleanPaneTail(e.buffer || '', 1).slice(0, 200);
-    out.push({
-      paneId,
-      agentId: e.agentId ?? null,
-      label: e.label ?? null,
-      department: e.department ?? null,
-      command: e.command,
-      status: agentRunner.statusFor(e.lastDataAt, Date.now()),
-      startedAt: e.startedAt,
-      lastLine: tail || '',
-    });
-  }
-  return out;
-}
-
-/** Renderer'a soru sor (office/delegations/tasks) — köprünün callRenderer deseni. */
-const mobilePending = new Map();
-
-// ADP-326 — `params` (arama/filtre/sayfalama · taskId · free) gateway'de SÜZÜLÜR,
-// burada yalnız TAŞINIR: sorguyu renderer'ın mevcut Supabase yüzeyi kurar.
-function mobileQueryRenderer(kind, params, timeoutMs = 8000) {
-  const win = appWindow;
-  if (!win || win.isDestroyed()) return Promise.reject(new Error('uygulama penceresi yok'));
-  const requestId = crypto.randomBytes(12).toString('hex');
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      mobilePending.delete(requestId);
-      reject(new Error('renderer timeout'));
-    }, timeoutMs);
-    mobilePending.set(requestId, { resolve, timer });
-    win.webContents.send('mobile:query', { requestId, kind, params: params || {} });
-  });
-}
-
-// ADP-296 — YAZMA komutları: gateway → main → renderer (mevcut motorlar orada:
-// sendCommandToAgent / startTeamDelegationEx / executeDecision / executeBoard).
-// Main hiçbir iş mantığı çalıştırmaz; yalnız korelasyonlu taşır (query deseninin ikizi).
-const mobileCommandPending = new Map();
-
-function mobileCommandRenderer(kind, payload) {
-  const win = appWindow;
-  if (!win || win.isDestroyed()) return Promise.reject(new Error('uygulama penceresi yok'));
-  const requestId = crypto.randomBytes(12).toString('hex');
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      mobileCommandPending.delete(requestId);
-      reject(new Error('renderer timeout'));
-    }, 44000); // gateway'in COMMAND_TIMEOUT_MS'inden hemen önce düşer (dürüst hata)
-    mobileCommandPending.set(requestId, { resolve, timer });
-    win.webContents.send('mobile:command', { requestId, kind, payload: payload || {} });
-  });
-}
-
-/**
- * ADP-334 — /m/office MAIN'de derlenir. Renderer'a SORULMAZ; tek istisna delegasyon
- * DURUMU: uçuştaki delegasyonların motoru renderer-ömürlüdür (delegationRunner), o
- * yüzden pencere AÇIKSA gerçeği ondan alırız. Pencere KAPALIYSA uçuşta delegasyon
- * olamaz (pane'leri de öldürülür) → diskteki kuyruk defteri (kuyruk + limitte
- * duraklamış kayıtlar) dürüst cevaptır. Renderer cevap vermezse de aynı yere düşeriz:
- * ofis 503 vermez, DEĞERLİ olanı (roster + pane'ler) yine gösterir.
- */
-async function mobileDelegationState() {
-  const win = appWindow;
-  if (win && !win.isDestroyed()) {
-    try {
-      // Kısa bütçe: ofisin TAMAMI gateway'de 8sn'lik bir bütçeye sığmalı — takılan bir
-      // renderer ofisi düşürmesin, sadece delegasyon sayaçlarını diske düşürsün.
-      return await mobileQueryRenderer('delegation-state', {}, 3000);
-    } catch { /* renderer yok/yavaş → diske düş */ }
-  }
-  return mobileOffice.delegationStateFromQueue(delegationQueueStore.loadQueueState());
-}
-
-// ADP-773 — MOBİL OFİS, MASAÜSTÜYLE AYNI HEDEFTEN OKUR.
-//
-// Eskiden burada `publicSupabaseEnv()`ten yalnız url+anahtar alınıyordu; ADP-621'in
-// `schema` alanı (bulutta 'app') ve ADP-622'nin kimliği taşınmıyordu → PostgREST
-// varsayılan `public` şemasına baktı ve /m/office "HTTP 404" ile öldü (masaüstü
-// çalışıyordu çünkü rendererSupabaseTarget() ikisini de veriyor).
-//
-// KURAL: hedef İKİNCİ KEZ türetilmez — renderer'a giden `rendererSupabaseTarget()`
-// aynen okunur. Şema/tablo sözleşmesi değişirse iki yüzey birlikte değişir.
-function mobileOfficeSnapshot() {
-  const target = rendererSupabaseTarget();
-  return mobileOffice.officeSnapshot({
-    supabase: { url: target.url, key: target.anonKey, schema: target.schema },
-    // `appdb:token` IPC'si ve delegasyon köprüsünün `onAppDbToken`u ile AYNI kaynak
-    // (seatGate). Oturum yoksa/lisans kapalıysa `ok:false` döner → istek anon'a düşer
-    // ve yerel/e2e (public şema) yolu bugünkü gibi çalışmaya devam eder.
-    accessToken: mobileAppDbToken,
-    listPanes: mobileListPanes,
-    delegationState: mobileDelegationState,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// ADP-352 (ADR-024 §5-c) — AGENTSHOT KÖPRÜSÜ: "çekimi ajana gönder"
-// ---------------------------------------------------------------------------
-// Bağımsız AgentShot (ayrı app, ayrı depo ~/.agentshot) ücretsizdir ve İÇİNDE AI
-// analizi YOKTUR (ADR-024 §5: ücretsiz üründe açık uçlu COGS). CrewPane kuruluysa
-// çekim buradan kullanıcının KENDİ ajanına düşer → analiz onun kendi claude CLI
-// aboneliğinde koşar (COGS $0).
-//
-// YENİ TESLİM MANTIĞI YOK: ADP-371'in (mobil görsel) yolu birebir yeniden kullanılır —
-// mobileCommandRenderer('prompt', {attachmentPaths}) → renderer cmdPrompt →
-// withAttachments("[Ekli görsel — Read aracıyla aç: <yol>]") → sendCommandToAgent.
-// Tek fark: AgentShot BAYT YÜKLEMEZ (dosya zaten aynı diskte), yalnız YOL taşır.
-//
-// SHOT-NOENTER-01 — ve bu rota `submit:false` geçer: metin composer'a YAZILIR,
-// Enter BASILMAZ (state:'inserted'). Telefon/delege yolları bayrağı geçmez.
-
-const SHOT_BRIDGE_MAX_BYTES = 25 * 1024 * 1024; // makul PNG tavanı (5K tam ekran ~10MB)
-
-/** Köprüden gelen "kime gönderebilirim?" — ofis anlık görüntüsündeki ajanlar. */
-async function shotBridgeAgents() {
-  const office = await mobileOfficeSnapshot();
-  return (office && Array.isArray(office.agents) ? office.agents : []).map((a) => ({
-    agentId: a.agentId,
-    displayName: a.displayName,
-    department: a.department,
-    role: a.role,
-    status: a.status,
-  }));
-}
-
-/**
- * Köprüden gelen çekim(ler) → ajanın pane'i. Dosya VARLIĞI burada ölçülür (fs main'de).
- *
- * TASK-MRZ9EAKX2LIJO — ÇOKLU: `paths` birden fazla çekim taşıyabilir ve hepsi TEK
- * prompt'a iliştirilir (attachmentPaths ZATEN dizidir — ADP-371 yolu; withAttachments
- * "[Ekli görsel i/N — Read aracıyla aç: …]" satırlarını sırayla üretir). Yani N görsel
- * = N istek DEĞİL, tek dispatch. Tekil `path` (eski AgentShot menüsü) aynen çalışır.
- */
-async function shotBridgeSend({ path: shotPath, paths, agentId, text }) {
-  const list = Array.isArray(paths) && paths.length ? paths : (shotPath ? [shotPath] : []);
-  if (!list.length) return { ok: false, reason: 'not-found', error: 'görsel yolu yok' };
-  for (const p of list) {
-    let st;
-    try {
-      st = fs.statSync(p);
-    } catch {
-      return { ok: false, reason: 'not-found', error: `görsel bulunamadı: ${p}` };
-    }
-    if (!st.isFile()) return { ok: false, reason: 'not-found', error: `görsel bir dosya değil: ${p}` };
-    if (st.size > SHOT_BRIDGE_MAX_BYTES) return { ok: false, error: `görsel çok büyük (tavan 25MB): ${p}` };
-  }
-  return mobileCommandRenderer('prompt', {
-    agentId,
-    text: typeof text === 'string' ? text : '',
-    attachmentPaths: list,
-    // SHOT-NOENTER-01 — INSERT-ONLY: çekim yolları ajanın composer'ına YAZILIR ama
-    // Enter BASILMAZ. Eren çekimi gönderdikten sonra "şu butona bak" gibi kendi
-    // cümlesini peşine ekleyip Enter'a KENDİSİ basar; otomatik gönderim onu bu
-    // fırsattan mahrum bırakıyordu. Bayrak YALNIZ bu rotadan geçer — telefonun
-    // /m/prompt yolu bayrağı hiç yollamaz, orada davranış bit-bit aynı kalır.
-    submit: false,
-  });
-}
-
-/** ADP-296 — telefondan gelen sesin transkripti MAC'te (OpenAI anahtarı burada kalır). */
-function mobileTranscribe(payload) {
-  return jarvisVoice.transcribeWhisper({ ...(payload || {}), apiKey: jarvisVoice.openAiKey(REPO_ROOT) });
-}
-
-/**
- * BL-02 — MOBİL UZAKTAN KONTROL TAVANI. TEK boğaz burasıdır, çünkü gateway'e giden
- * İKİ yol var: (1) açılışta defterde `enabled:true` görünce kendiliğinden kalkmak,
- * (2) kullanıcının "Mobil erişimi aç" düğmesi. Yalnız düğmeyi kapatmak, Pro'dayken
- * açıp Basic'e düşen kullanıcıda özelliği her açılışta SESSİZCE geri verirdi.
- *
- * Sıra önemli: karar defter YAZILMADAN ÖNCE sorulur — reddedilen bir eylem kalıcı
- * durumu değiştiremez (aksi hâlde `enabled:true` diskte kalır ve yükseltme anında
- * kullanıcının hiç onaylamadığı bir sunucu açılırdı).
- *
- * `notify` KİMİN eylemi olduğunu söyler: kullanıcı düğmeye bastıysa ret EKRANA
- * basılır; açılışta kendiliğinden denenen kalkış yalnız LOG'a düşer (gerekçesi
- * planDenial'ın başında — ölçülmüş bir kusur).
- * @returns {object|null} denial ya da null (izinli)
- */
-function mobilePlanDenial({ notify = true } = {}) {
-  return planDenial('mobileRemote', 0, { notify });
-}
-
-async function startMobile() {
-  if (mobileGateway) return mobileGateway;
-  // Açılıştaki otomatik kalkış SESSİZ reddedilir (kullanıcı bir şey istemedi);
-  // `mobile:enable` kendi kararını notify:true ile ZATEN vermiş olur.
-  const planGate = mobilePlanDenial({ notify: false });
-  if (planGate) {
-    logLine(`mobile gateway: plan tavanı — kalkmadı (katman=${planGate.tier}); cihaz defteri diskte KORUNUYOR`);
-    return null;
-  }
-  try {
-    mobileGateway = await mobileGatewayMod.startMobileGateway({
-      log: logLine,
-      // ADP-372 — masaüstü kimliği /m/health'e: telefonun Cihaz sekmesi "masaüstü hangi
-      // sürüm/commit'te?" sorusunu buradan cevaplar (SHELL_COMMIT = ADP-268 kaynağı;
-      // packaged'da extraMetadata.gitCommit, kaynaktan koşarken git rev-parse).
-      appInfo: { version: app.getVersion(), commit: SHELL_COMMIT },
-      // ADP-313 — mobil ajan kartlarındaki pixel sprite'lar masaüstü ofisiyle AYNI
-      // PNG'lerden gelir (ikinci kopya YOK): public/sprites/characters/<key>/48x48.png
-      spriteDir: mobileSpriteDir(),
-      // ADP-556 — mobil arayüz BUILT-IN: expo web export'u gateway'den sunulur;
-      // telefon dev server olmadan http://<tailnet-ip>:7823/ açar.
-      webRoot: mobileWebRoot(),
-      listPanes: mobileListPanes,
-      paneTail: mobilePaneTail,
-      // ADP-368 — okuma modu: claude oturum JSONL'inden yapılandırılmış sayfa (main'de,
-      // pencere kapalıyken de gelir; VT bozulma sınıfı bu kaynakta imkânsız).
-      paneTranscript: mobilePaneTranscript,
-      queryRenderer: mobileQueryRenderer,
-      // ADP-334 — OFİS main'de: roster+sprite Supabase'ten, pane'ler pty defterinden,
-      // delegasyon durumu renderer'dan (varsa) ya da disk kuyruğundan. Uygulama
-      // penceresi KAPALIYKEN de telefon ofisi görür (eskiden 503'tü).
-      officeSnapshot: mobileOfficeSnapshot,
-      // ADP-364 — RAPORLAR: docs/agent-results/INDEX.md main'de parse edilir (ofis gibi;
-      // renderer'a/Supabase'e sorulmaz → pencere kapalıyken de telefon raporları görür).
-      reportsList: (params) => mobileReports.listReports({ params }),
-      reportRead: (reportId, opts) => mobileReports.readReport({ reportId, page: opts && opts.page }),
-      command: mobileCommandRenderer, // ADP-296
-      transcribe: mobileTranscribe, // ADP-296 (sesli Jarvis)
-      // ADP-371 — GÖRSEL: baytlar main'de diske düşer (renderer'a uğramaz); prompt'taki
-      // uploadId'ler yine main'de mutlak yola çözülür (regex + kök-kontrolü traversal'ı keser).
-      saveUpload: (p) => mobileUploads.saveUpload(p),
-      resolveUpload: (id) => mobileUploads.resolveUpload(id),
-      // ADP-317 — telefon açılışta AYNI defteri okur (renderer'a hiç sormadan; uygulama
-      // penceresi kapalı/uykuda olsa bile konuşma geçmişi gelir).
-      // ADP-329 — SAYFALANMIŞ defter: telefon açılışta son N satırı alır, yukarı
-      // kaydırınca `before` imleciyle geriye gider (tam defter artık gitmiyor).
-      jarvisHistory: (q) => jarvisConv.history(q),
-      killSwitch: mobileKillSwitch, // ADP-296 (telefondan acil kapatma)
-      subscribe: (cb) => {
-        mobileSubscribers.add(cb);
-        return () => mobileSubscribers.delete(cb);
-      },
-    });
-  } catch (err) {
-    logLine(`mobile gateway failed to start: ${err.message}`);
-    mobileGateway = null;
-    // WIN-DUP-INSTANCE-01 (FB-1012) — sebep saklanır; `mobile:enable` sihirbaza
-    // İNSAN cümlesi döndürür (port dolu = bilgisayarda başka bir CrewPane açık).
-    mobileGatewayLastFailure = mobileStartFailure(err);
-  }
-  // ADP-371 — yükleme temizliği: açılışta + günde bir, KEEP_DAYS'ten eski gün
-  // klasörleri silinir. Callback İÇİ try/catch ADP-335 kuralı (asenkron hata
-  // çağrı yerindeki catch'e uğramaz — app'i öldürmesin).
-  if (mobileGateway && !mobileUploadsSweepTimer) {
-    const sweep = () => {
-      try {
-        const n = mobileUploads.sweepUploads({});
-        if (n) logLine(`mobile uploads: ${n} eski gün klasörü temizlendi`);
-      } catch (err) {
-        logLine(`mobile uploads: temizlik hatası: ${err.message}`);
-      }
-    };
-    sweep();
-    mobileUploadsSweepTimer = setInterval(sweep, 24 * 60 * 60 * 1000);
-    mobileUploadsSweepTimer.unref?.();
-  }
-  return mobileGateway;
-}
-let mobileUploadsSweepTimer = null;
-/** WIN-DUP-INSTANCE-01 — son gateway kalkış hatası: {reason, error} ya da null. */
-let mobileGatewayLastFailure = null;
-/**
- * WIN-DUP-INSTANCE-01 (FB-1012) — gateway kalkış hatasını SİHİRBAZ cümlesine çevir.
- * Gövde saf modülde (electron/mobileStartFailure.cjs — Electron'suz test edilir);
- * burada yalnız sözlük bağlanır. Cümlede iç mekanizma YOK: port, hata kodu yazılmaz.
- * @returns {{reason:'port_in_use'|'start_failed', error:string}}
- */
-function mobileStartFailure(err) {
-  const i18nMod = require('./i18n/index.cjs');
-  return require('./src/mobile/mobileStartFailure.cjs').mobileStartFailure(err, (k) => i18nMod.t(k));
-}
-
-/** Mobil erişimi kes: defterde enabled:false (restart'ta da kapalı) + sunucuyu durdur. */
-function mobileKillSwitch() {
-  const state = mobileDeviceStore.loadState();
-  state.enabled = false;
-  mobileDeviceStore.saveState(state);
-  if (mobileGateway) {
-    mobileGateway.stop();
-    mobileGateway = null;
-  }
-  logLine('mobile gateway: KILL-SWITCH — mobil erişim kapatıldı');
-  return { ok: true };
-}
+const mobileSubscribers = mobileService.mobileSubscribers;
+const mobilePending = mobileService.mobilePending;
+const mobileCommandPending = mobileService.mobileCommandPending;
+function emitMobileEvent(event) { return mobileService.emitMobileEvent(event); }
+function mobilePaneTail(paneId, opts) { return mobileService.mobilePaneTail(paneId, opts); }
+function mobilePaneTranscript(paneId, opts) { return mobileService.mobilePaneTranscript(paneId, opts); }
+function mobileListPanes() { return mobileService.mobileListPanes(); }
+function mobileQueryRenderer(kind, params, timeoutMs) { return mobileService.mobileQueryRenderer(kind, params, timeoutMs); }
+function mobileCommandRenderer(kind, payload) { return mobileService.mobileCommandRenderer(kind, payload); }
+function mobileDelegationState() { return mobileService.mobileDelegationState(); }
+function mobileOfficeSnapshot() { return mobileService.mobileOfficeSnapshot(); }
+function shotBridgeAgents() { return mobileService.shotBridgeAgents(); }
+function shotBridgeSend(opts) { return mobileService.shotBridgeSend(opts); }
+function mobileTranscribe(payload) { return mobileService.mobileTranscribe(payload); }
+function mobilePlanDenial(opts) { return mobileService.mobilePlanDenial(opts); }
+function startMobile() { return mobileService.startMobile(); }
+function mobileStartFailure(err) { return mobileService.mobileStartFailure(err); }
+function mobileKillSwitch() { return mobileService.mobileKillSwitch(); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SYNC-F1-6 — BULUT SENKRONU: motorun açılışa bağlandığı ÜÇ SATIR (§16.7'nin borcu)
