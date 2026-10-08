@@ -6,6 +6,7 @@ const { buildIntegrationsStatus } = require('../../mcp/integrationStatus.cjs');
 const { createIntegrationIpc } = require('../../mcp/integrationIpc.cjs');
 const integrationCatalog = require('../../mcp/integrationCatalog.cjs');
 const mcpProbe = require('../../mcp/mcpProbe.cjs');
+const defaultPaneCapabilityMatrix = require('../../terminal/paneCapabilityMatrix.cjs');
 
 function findPaneEntryByAgentId(ptys, agentId) {
   if (!agentId || !ptys) return null;
@@ -107,7 +108,7 @@ function createIntegrationService(deps = {}) {
     engineAuth,
     getPtys = () => null,
     agentRunner,
-    paneCapabilityMatrix,
+    paneCapabilityMatrix = defaultPaneCapabilityMatrix,
     baseEnv = process.env,
   } = deps;
 

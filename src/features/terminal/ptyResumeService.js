@@ -6,6 +6,7 @@ const instancePaths = require('../../config/instancePaths.cjs');
 const engineProfiles = require('../../agents/engineProfiles.cjs');
 const notifyPathMod = require('../../services/notifyPath.cjs');
 const spendGuard = require('../../security/spendGuard.cjs');
+const claudeCliProbe = require('./claudeCliProbe');
 
 const defaultDeps = {
   ptys: new Map(),
@@ -21,8 +22,8 @@ const defaultDeps = {
   isAppProbe: () => false,
   getMode: () => '',
   limitResume02: false,
-  probeClaudeCliVersion: () => {},
-  getClaudeCliVersionCache: () => null,
+  probeClaudeCliVersion: () => claudeCliProbe.probeClaudeCliVersion(),
+  getClaudeCliVersionCache: () => claudeCliProbe.getClaudeCliVersionCache(),
   getAgentWorkspaceRoot: () => null,
   isPackaged: () => false,
   repoRoot: process.cwd(),

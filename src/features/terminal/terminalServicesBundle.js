@@ -23,6 +23,7 @@ const mcpProcess = require('../../mcp/mcpProcess.cjs');
 const { createDeliverPrompt } = require('../../agents/deliverPrompt.cjs');
 const agentxDeliverMod = require('../../agents/agentxDeliver.cjs');
 const delegationBridgeMod = require('../../agents/delegationBridge.js');
+const claudeCliProbe = require('./claudeCliProbe');
 const engineRegistry = require('../../agents/engineRegistry.cjs');
 
 const { createPaneRestoreService } = require('./paneRestoreService');
@@ -226,8 +227,8 @@ function _createSpawnRestoreResumeServices(deps, ptys, baseServices, midServices
     isAppProbe: () => deps.isAppProbe(),
     getMode: () => deps.getMode(),
     limitResume02: deps.limitResume02,
-    probeClaudeCliVersion: () => (typeof deps.probeClaudeCliVersion === 'function' ? deps.probeClaudeCliVersion() : null),
-    getClaudeCliVersionCache: () => (typeof deps.getClaudeCliVersionCache === 'function' ? deps.getClaudeCliVersionCache() : null),
+    probeClaudeCliVersion: () => (typeof deps.probeClaudeCliVersion === 'function' ? deps.probeClaudeCliVersion() : claudeCliProbe.probeClaudeCliVersion()),
+    getClaudeCliVersionCache: () => (typeof deps.getClaudeCliVersionCache === 'function' ? deps.getClaudeCliVersionCache() : claudeCliProbe.getClaudeCliVersionCache()),
     getAgentWorkspaceRoot: () => deps.getAgentWorkspaceRoot(),
     isPackaged: () => deps.isPackaged(),
     repoRoot: deps.repoRoot,

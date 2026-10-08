@@ -4,6 +4,7 @@ const net = require('node:net');
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawn: defaultSpawn } = require('node:child_process');
 
 /**
  * Reserve a free TCP port from the OS, then release it for Next to bind.
@@ -82,7 +83,7 @@ function buildNextEnv(options) {
 function createNextServerManager(deps) {
   const {
     app,
-    spawn,
+    spawn = defaultSpawn,
     repoRoot,
     logLine = () => {},
     noteQuit = () => {},

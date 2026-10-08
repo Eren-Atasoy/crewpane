@@ -13,9 +13,12 @@ const { createPaneAskService, PaneAskService, PANE_ASK_MIRROR_MAX } = require('.
 const { createPaneTranscriptService, PaneTranscriptService } = require('./paneTranscriptService');
 const { createPaneBudgetService, PaneBudgetService } = require('./paneBudgetService');
 const { createTerminalServicesBundle } = require('./terminalServicesBundle');
+const { probeClaudeCliVersion, getClaudeCliVersionCache } = require('./claudeCliProbe');
 
 module.exports = {
   createTerminalServicesBundle,
+  probeClaudeCliVersion,
+  getClaudeCliVersionCache,
   createPaneAskService,
   PaneAskService,
   PANE_ASK_MIRROR_MAX,

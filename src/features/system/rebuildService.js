@@ -1,5 +1,7 @@
 'use strict';
 
+const { spawn: defaultSpawn } = require('node:child_process');
+
 /**
  * Rebuild & Relaunch Service (ADP-139 / Phase 3.6.42)
  * Rebuilds the standalone bundle (`electron:build:prep`) and relaunches the app so
@@ -13,7 +15,7 @@
 class RebuildService {
   constructor({
     app,
-    spawn,
+    spawn = defaultSpawn,
     repoRoot,
     logLine = () => {},
     relaunchApp = () => {},

@@ -1,5 +1,8 @@
 'use strict';
 
+const path = require('node:path');
+const electron = require('electron');
+
 const { tagTestWindow, E2E_WINDOW_TAG } = require('./tagTestWindow');
 const { createSharedWebPreferences } = require('./sharedPreferences');
 const { attachHtmlFullscreenGuard } = require('./htmlFullscreenGuard');
@@ -102,14 +105,29 @@ function showAppFromJarvisWidget(deps) {
   return { ok: true, created: true };
 }
 
-function createWindowManager(deps) {
-  const sharedWebPreferences = () => createSharedWebPreferences(deps);
-  const enrichedDeps = { ...deps, sharedWebPreferences };
+const defaultStaticWindowManagerDeps = {
+  BrowserWindow: electron.BrowserWindow,
+  shell: electron.shell,
+  screen: electron.screen,
+  Notification: electron.Notification,
+  app: electron.app,
+  preloadPath: path.join(__dirname, '..', '..', '..', 'dist', 'preload.js'),
+  supabaseTarget: require('../../config/supabaseTarget.cjs'),
+  crashWatchdog: require('../../core/crashWatchdog.cjs'),
+  reportsWatcher: require('../../services/reportsWatcher.cjs'),
+  quitFunnel: require('../../core/quitFunnel.cjs'),
+  appI18n: require('../../../i18n/index.cjs'),
+};
+
+function createWindowManager(deps = {}) {
+  const mergedDeps = { ...defaultStaticWindowManagerDeps, ...deps };
+  const sharedWebPreferences = () => createSharedWebPreferences(mergedDeps);
+  const enrichedDeps = { ...mergedDeps, sharedWebPreferences };
 
   return {
     sharedWebPreferences,
-    tagTestWindow: (win, base) => tagTestWindow(win, base, deps.isTest),
-    attachHtmlFullscreenGuard: (win, wc) => attachHtmlFullscreenGuard(win, wc, deps.logLine),
+    tagTestWindow: (win, base) => tagTestWindow(win, base, mergedDeps.isTest),
+    attachHtmlFullscreenGuard: (win, wc) => attachHtmlFullscreenGuard(win, wc, mergedDeps.logLine),
     applyGuestPermissionPolicy: (ses) => applyGuestPermissionPolicy(ses, enrichedDeps),
     attachWebviewGuards: (win) => attachWebviewGuards(win, enrichedDeps),
     createAppWindow: (url) => createAppWindow(url, enrichedDeps),
@@ -159,7 +177,7 @@ function createWindowManager(deps) {
     getHandOverlayLastFeedAt,
     getHandOverlayDebugInfo,
     openHandOverlayWindows: () => openHandOverlayWindows(enrichedDeps),
-    closeHandOverlayWindows: (reason) => closeHandOverlayWindows(reason, deps.logLine),
+    closeHandOverlayWindows: (reason) => closeHandOverlayWindows(reason, mergedDeps.logLine),
     rebuildHandOverlayWindows: () => rebuildHandOverlayWindows(enrichedDeps),
     hookHandOverlayScreenEvents: () => hookHandOverlayScreenEvents(enrichedDeps),
     startHandOverlayWatchdog,

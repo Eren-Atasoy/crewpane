@@ -18,15 +18,13 @@
 // nodeIntegration:false, sandbox:true, whitelisted preload bridge.
 
 
-const { app, BrowserWindow, ipcMain, shell, dialog, screen, globalShortcut, Notification, clipboard, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, screen, globalShortcut, Notification, nativeImage } = require('electron');
 
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { spawn, execFile } = require('node:child_process');
 
 const instancePaths = require('./src/config/instancePaths.cjs');
-const supabaseTarget = require('./src/config/supabaseTarget.cjs'); // ADP-305 — test instance → e2e DB (kablo: encode/decodeArgv)
 const backendTarget = require('./src/config/backendTarget.cjs'); // ADP-621 — kanal bazlı uygulama DB hedefi
 const publicBackendEnv = require('./src/config/publicBackendEnv.cjs');
 const appDbIdentity = require('./src/config/appDbIdentity.cjs'); // ADP-622 — app DB'ye hangi KİMLİKLE bağlanılır
@@ -110,27 +108,14 @@ const browserCdp = require('./src/services/browserCdp.js'); // ADP-095 — heade
 const browserGateMod = require('./src/security/browserGate.cjs'); // ADP-341 — risk kapısı (izin + audit + DURDUR)
 const jarvisVoice = require('./src/voice/jarvisVoice.js'); // ADP-121 (ADR-009) — voice core (STT/brain/TTS)
 const engineRegistry = require('./src/agents/engineRegistry.cjs'); // ENG-04/07 — motor descriptor defteri (reset komutu + yetenek beyanı)
-const paneCapabilityMatrix = require('./src/terminal/paneCapabilityMatrix.cjs'); // ENG-10 — descriptor beyanı → kullanıcı-yüzü yetenek matrisi (rozetler)
-const engineDelegation = require('./src/agents/engineDelegation.cjs'); // ENG-17/ENG-21 — delegasyon vatandaşlığı ("bu motora İŞ VERİLEBİLİR Mİ")
-const engineOffering = require('./src/agents/engineOffering.cjs'); // ENG-21 — "sunulsun mu" hükmü (migration seed aynası, drift testli)
-const modelDetect = require('./src/agents/modelDetect.cjs'); // ADP-526 — pane model chip (K1 spawn-anı + K2 çıktı teyidi)
 const providers = require('./src/agents/providers.cjs'); // ADP-580 — codex custom AI providers (Groq/DeepSeek/Kimi)
 const modelCatalog = require('./src/agents/modelCatalog.cjs'); // AGENT-MODEL-01 — motor başına model kataloğu (tek kaynak)
-const helperReaper = require('./src/core/helperReaper.cjs'); // ADP-727 — yardımcı süreç defteri + yetim toplayıcı
-const installReset = require('./src/security/installReset.cjs'); // RESET-01 — kurulum sıfırlama ÇEKİRDEĞİ (tek silme boğazı)
 const resetGate = require('./src/security/resetGate.cjs'); // RESET-03 — sıfırlamanın KARAR katmanı (saf; birim testli)
 const quitFunnel = require('./src/core/quitFunnel.cjs'); // HATA-14 — tek kapanış hunisi (karar + fren + adım sırası)
 const agentSettings = require('./src/agents/agentSettings.cjs'); // ADP-203 — user settings (~/.crewpane/settings.json)
 const appI18n = require('./i18n/index.cjs'); // ADP-888 — ana sürecin ARAYÜZ DİLİ katmanı (diyalog/bildirim metinleri)
 const updateCheck = require('./src/services/updateCheck.cjs'); // ADP-533 — Faz 1 güncelleme bildirimi (yalnız bildir + tarayıcıda indir)
-const reportsWatcher = require('./src/services/reportsWatcher.cjs'); // ADP-298 — rapor dizinleri değişince renderer'a olay
 const crewpanePaths = require('./src/config/crewpanePaths.cjs'); // ADP-233 — <workspace>/.crewpane/{tasks,results} yol sözleşmesi
-// ADP-705 — pane⇄oturum çapası. `/clear` claude'da YENİ bir oturum (yeni uuid, yeni
-// jsonl) açar ve bunu bize SÖYLEMEZ; pty defterindeki `--session-id` o an BAYAT olur.
-// Bayat id ile okunan transcript "prompt yok" der → GERÇEKTEN ÇALIŞAN worker
-// `undelivered` YALANIYLA öldürülürdü (2026-07-28'in beş vakasının ölçülmüş kök nedeni).
-// B-01 (GIT-BACKBONE-SPEC) — görev ↔ branch ↔ proje omurgası (izole worktree).
-const delegationQueueStore = require('./src/agents/delegationQueueStore.cjs'); // QUEUE-PERSIST — kuyruk+paused kalıcılığı
 // ADP-659 — OTOPILOT SÜREKLİLİĞİ: uçuştaki delegasyonların MAIN-side kalıcı gözcüsü.
 // Renderer'ın motoru (delegation.ts) efemerdir — reload/crash'te tüm nöbetleri ölür ve
 // uçuştaki alt-görev hiçbir yerde kalıcı DEĞİLDİR (queue store yalnız queued+paused tutar).
@@ -140,14 +125,6 @@ const delegationQueueStore = require('./src/agents/delegationQueueStore.cjs'); /
 // yalnız kod döndürür (cümleyi renderer i18n'den kurar).
 // SUP-UI-01 — limit-devam kuyruğunun deposu (ADP-087). Panel bu defteri de OKUR;
 // yazan taraf hâlâ resume daemon'ıdır (bu dosyada tek çağrı `loadQueue`/`queuePath`).
-// ADP-715/845 — TELEMETRİ. İki ayrı iş, TEK opt-out kapısı:
-//   telemetry.cjs → hata takibi (Sentry). ADP-845 K1: DSN/SDK YOK, yani bugün
-//     `{enabled:false}` döner — ama kablo ARTIK DOĞRU DOSYADA. (ADP-805 §2.2'de
-//     ölçüldü: init çağrısı silinmiş kök main.js'teydi, paketlenen giriş noktası
-//     burasıydı → yayındaki üründe sıfır telemetri.)
-//   heartbeat.cjs → "kim, hangi sürümde, ne zaman aktifti" (kendi Supabase'imiz).
-const telemetryMod = require('./telemetry/telemetry.cjs');
-const telemetryChannelMod = require('./telemetry/channel.cjs'); // build kanalı (prod|dev|test) TEK GERÇEK
 // SEC-W1-C1 — kurcalama sinyalleri (saf ölçüm; muslukları aşağıda bağlanır).
 const tamperSignals = require('./src/security/tamperSignals.cjs');
 const integrityCheck = require('./src/security/integrityCheck.cjs');
@@ -193,8 +170,6 @@ const engineAuth = require('./src/agents/engineAuth.cjs'); // ADP-597 — abonel
 // LX-SAFESTORAGE-01 — sır arka ucunun TEK boğazı (ölç → hüküm → üç yüzey).
 const secretBackendState = require('./src/security/secretBackendState.cjs');
 const crashWatchdog = require('./src/core/crashWatchdog.cjs'); // ADP-475 — crash instrumentation + render-process-gone recovery core
-const nextServerPolicy = require('./src/config/nextServerPolicy.cjs'); // SMOKE-ISO-01 — Next beklenmedik ölürse: 1 kez kaldır, sonra kapat
-const jarvisWidget = require('./src/voice/jarvisWidget.cjs'); // ADP-816 — taşınabilir ses widget'ı (saf karar katmanı)
 // ─── ADP-584/585/586 — Entegrasyon Merkezi (Dalga 0) ─────────────────────────
 const integrationCatalog = require('./src/mcp/integrationCatalog.cjs'); // ADP-584/588 — servis şablonları (tek kaynak)
 const credentialGate = require('./src/security/requireCredential.cjs'); // ADP-628 — anahtar çözümlemesinin TEK boğazı
@@ -293,21 +268,6 @@ const AUTORESUME_DISABLED = process.env.CREWPANE_DISABLE_AUTORESUME === '1';
 // (ESC yoklaması + reset'te kör gönderim) geri getirir. Varsayılan AÇIK: claude ≥ 2.1.270
 // pane'lerinde motor kendi devam eder, daemon yalnız nöbetçidir.
 const LIMIT_RESUME_02 = process.env.CREWPANE_LIMIT_RESUME_02 !== '0';
-// LIMIT-RESUME-02 — makinedeki claude ikilisinin sürümü (transcript sürümü okunamayan
-// pane için yedek). Bir kez, ASENKRON, önbellekli: main sürecini bloke etmez; cevap
-// gelene dek `null` = "bilinmiyor" (bugünkü yol), yani hiçbir pane'e yanlış mod verilmez.
-let claudeCliVersionCache = null;
-function probeClaudeCliVersion() {
-  try {
-    execFile('claude', ['--version'], { timeout: 8000, windowsHide: true }, (err, stdout) => {
-      if (err) return;
-      const m = String(stdout || '').match(/\d+\.\d+\.\d+/);
-      if (m) claudeCliVersionCache = m[0];
-    });
-  } catch {
-    /* PATH'te claude yok → yedek yok */
-  }
-}
 const AUTOTEST = process.env.CREWPANE_SPIKE_AUTOTEST === '1';
 
 // HATA-14 — TEK FREN, TEK DURUM. `app.quit()` KİBAR bir istektir (ADP-876);
@@ -508,8 +468,6 @@ const {
   getMode: () => MODE,
   isAutoresumeDisabled: () => AUTORESUME_DISABLED,
   limitResume02: LIMIT_RESUME_02,
-  probeClaudeCliVersion: () => probeClaudeCliVersion(),
-  getClaudeCliVersionCache: () => claudeCliVersionCache,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   isPackaged: () => app.isPackaged,
   repoRoot: REPO_ROOT,
@@ -693,9 +651,6 @@ const IS_AUTOMATED_SESSION = isAutomatedSession(process.env);
 const AUTOMATED_SESSION_REASON = automatedSessionReason(process.env);
 // ADP-646 — vendor/müşteri YÜZEY kararı (tek yer)
 const vendorSurface = require('./src/core/vendorSurface.cjs');
-// ADP-614 — katman kataloğu (hangi entitlement CrewPane açar + etiketler).
-// ADP-660 — katman LİMİTİ kararı (Basic ⇄ Pro/Ultra).
-const planLimits = require('./src/config/planLimits.cjs');
 
 // ── ADP-AUTH-BUNDLE — AUTH, PLAN & ANAHTAR SERVİSLERİ PAKETİ (src/features/auth/authServicesBundle.js - Faz 3.6.64)
 const {
@@ -778,7 +733,6 @@ const integrationService = createIntegrationService({
   engineAuth,
   getPtys: () => ptys,
   agentRunner,
-  paneCapabilityMatrix,
 });
 
 
@@ -839,120 +793,76 @@ const {
 });
 
 // ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcMainWiring.js - Faz 3.6.59)
-function _collectWindowWorkspaceDeps() {
+function _collectRuntimeIpcDeps() {
   return {
-    ipcMain,
-    app,
-    shell,
-    clipboard,
-    nativeImage,
-    dialog,
-    screen,
-    BrowserWindow,
     ptys,
-    agentSettings,
     crewpaneHome,
     logLine,
     appWindow,
     appBaseUrl,
     windowManager,
-    crashWatchdog,
     APP_URL_SCHEME,
     APP_URL_PREFIX,
     MODE,
-    authService,
-    rebuildService,
-    planLimitService,
-    workspaceFileService,
-    workspaceRootService,
-    agentWorkspaceRoot,
-    faultService,
     REPO_ROOT,
+    LOG_PATH,
+    agentWorkspaceRoot,
     gitBranchCache,
     GIT_BRANCH_TTL_MS,
-    codeIndexService,
     invalidateGitBranchCache,
-    mediaService,
-    memoryService,
-    secretRedactor,
-  };
-}
-
-function _collectTerminalExecutionDeps() {
-  return {
+    schemeVerdict,
+    IS_AUTOMATED_SESSION,
+    AUTOMATED_SESSION_REASON,
+    secretBackendState,
+    updateCheck,
+    noteQuit,
+    jarvisConv,
+    setAppWindowGuest: (g) => { appWindowGuest = g; },
+    getAppWindowGuest: () => appWindowGuest,
+    // Domain Services
+    authService,
+    authUrlService,
+    planLimitService,
+    apiKeyService,
+    workspaceFileService,
+    workspaceRootService,
+    codeIndexService,
     paneQueryService,
     paneControlService,
     ptySpawnService,
     ptyIsolationService,
     ptyResumeService,
     paneRestoreService,
-    telemetryService,
     paneBudgetService,
     paneTranscriptService,
     paneDispatchService,
     paneAskService,
     resourceGovernorService,
-    agentRunner,
-    engineDelegation,
-    modelDetect,
-  };
-}
-
-function _collectMobileVoiceAndSystemDeps() {
-  return {
+    telemetryService,
     updateService,
     announceService,
     changelogService,
     resetBootService,
-    apiKeyService,
+    doctorService,
+    appLocaleService,
+    backendEnvService,
+    browserService,
+    integrationService,
+    handService,
     mobileService,
     syncService,
-    updateCheck,
-    noteQuit,
-    browserService,
-    setAppWindowGuest: (g) => { appWindowGuest = g; },
-    getAppWindowGuest: () => appWindowGuest,
-    integrationService,
-    spawn,
-    appI18n,
-    handService,
-    jarvisWidget,
-    jarvisVoice,
-    instancePaths,
-    jarvisConv,
-    delegationQueueStore,
+    memoryService,
+    mediaService,
+    faultService,
+    rebuildService,
     teamComposeService,
     delegationSupervisorService,
-    LOG_PATH,
-    credentialGate,
-    vendorSurface,
-    telemetryMod,
-    telemetryChannelMod,
-    schemeVerdict,
-    IS_AUTOMATED_SESSION,
-    AUTOMATED_SESSION_REASON,
-    secretBackendState,
-    authUrlService,
-    crewpaneIdConfig,
-    planLimits,
-    backendEnvService,
-    installReset,
-    resetGate,
-    appLocaleService,
-    paneCapabilityMatrix,
-    engineOffering,
-    engineAuth,
-    doctorService,
+    secretRedactor,
   };
 }
 
 function wireIpc() {
-  const mainIpcWiring = createMainIpcWiring({
-    ..._collectWindowWorkspaceDeps(),
-    ..._collectTerminalExecutionDeps(),
-    ..._collectMobileVoiceAndSystemDeps(),
-  });
-  return mainIpcWiring.wireIpc();
+  return createMainIpcWiring(_collectRuntimeIpcDeps()).wireIpc();
 }
 
 // ---------------------------------------------------------------------------
@@ -961,15 +871,12 @@ function wireIpc() {
 
 const nextServerManager = createNextServerManager({
   app,
-  spawn,
   repoRoot: REPO_ROOT,
   logLine,
   noteQuit,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   crewpaneHome,
   crewpaneEnv,
-  helperReaper,
-  nextServerPolicy,
   mappedProjectRootsForReports: () => ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot),
 });
 
@@ -980,7 +887,6 @@ const nextServerManager = createNextServerManager({
 // ---------------------------------------------------------------------------
 const rebuildService = createRebuildService({
   app,
-  spawn,
   repoRoot: REPO_ROOT,
   logLine,
   relaunchApp: (reason) => authService.relaunchApp(reason),
@@ -1013,15 +919,7 @@ const handService = createHandService({
 
 // ── Pencere Yönetimi (Faz 3.3): BrowserWindow yönetimi src/main/windows altında ──
 windowManager = createWindowManager({
-  BrowserWindow,
-  shell,
-  screen,
-  Notification,
-  app,
-  preloadPath: path.join(__dirname, 'dist', 'preload.js'),
-  supabaseTarget,
   backendEnvService,
-  appI18n,
   applyAppLocale: () => appLocaleService.applyAppLocale(),
   isTest: instancePaths.isTest(),
   crewpaneHome,
@@ -1043,13 +941,10 @@ windowManager = createWindowManager({
   startPtyResumeDaemonOnce: () => ptyResumeService.startPtyResumeDaemonOnce(),
   ptys,
   noteQuit,
-  crashWatchdog,
   keepPanesAliveOnWindowClose: () => paneQueryService.keepPanesAliveOnWindowClose(),
   liveAgentPaneCount: () => paneQueryService.liveAgentPaneCount(),
   killPtysForWindow: (winId) => paneQueryService.killPtysForWindow(winId),
-  quitFunnel,
   armQuitBrake,
-  reportsWatcher,
   activeWorktreePaths: () => ptyIsolationService.activeWorktreePaths(),
   mappedProjectRootsForReports: () => ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot),
   browserGuests: browserService.browserGuests,
@@ -1098,7 +993,6 @@ mobileService = createMobileService({
   secretRedactor,
   currentSessionId: (id) => paneTranscriptService.currentSessionId(id),
   agentRunner,
-  delegationQueueStore,
   jarvisVoice,
   jarvisConv,
   logLine,
