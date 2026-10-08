@@ -201,41 +201,59 @@ function _resolveTerminalDispatchOps(ctx) {
   };
 }
 
+function _resolveTranscriptAndBudgetOps(ctx) {
+  const pbs = ctx.paneBudgetService;
+  const pts = ctx.paneTranscriptService;
+  return {
+    paneBudgetStore: ctx.paneBudgetStore || (pbs ? pbs.paneBudgetStore : null),
+    paneSessionAnchor: ctx.paneSessionAnchor || (pts ? pts.paneSessionAnchor : null),
+    sessionAnchor: ctx.sessionAnchor || (pts ? pts.sessionAnchor : null),
+  };
+}
+
+function _resolvePaneViewAndDispatchOps(ctx) {
+  const pqs = ctx.paneQueryService;
+  const pds = ctx.paneDispatchService;
+  return {
+    dispatchStore: ctx.dispatchStore || (pds ? pds.dispatchStore : null),
+    paneViewState: ctx.paneViewState || (pqs ? pqs.paneViewState : null),
+    paneDraft: ctx.paneDraft || (pqs ? pqs.paneDraft : null),
+    deliverToPane: ctx.deliverToPane || (pds ? pds.deliverToPane : null),
+    dispatchSleep: ctx.dispatchSleep || (pds ? pds.dispatchSleep : null),
+  };
+}
+
 function buildTerminalAndExecutionDeps(ctx) {
   const wm = ctx.windowManager;
-  return {
-    ..._resolveTerminalQueryOps(ctx),
-    ..._resolveTerminalControlOps(ctx),
-    ..._resolveTerminalDispatchOps(ctx),
-    resourceGovernor: ctx.resourceGovernor,
-    agentRunner: ctx.agentRunner,
-    resourceGovernorModule: ctx.resourceGovernorModule,
-    engineDelegation: ctx.engineDelegation,
-    prepareTaskIsolation: ctx.prepareTaskIsolation || (ctx.ptyIsolationService ? (opts) => ctx.ptyIsolationService.prepareTaskIsolation(opts) : null),
-    preflightModelGate: ctx.preflightModelGate,
-    spendGuard: ctx.spendGuard,
-    leaderComposer: ctx.leaderComposer,
-    transcriptProbe: ctx.transcriptProbe,
-    mobileTranscript: ctx.mobileTranscript,
-    tokenUsage: ctx.tokenUsage,
-    paneBudgetStore: ctx.paneBudgetStore,
-    dispatchStore: ctx.dispatchStore,
-    modelDetect: ctx.modelDetect,
-    paneSessionAnchor: ctx.paneSessionAnchor,
-    sessionAnchor: ctx.sessionAnchor,
-    ptyResizeGate: ctx.ptyResizeGate,
-    tmuxWindows: ctx.tmuxWindows,
-    paneViewState: ctx.paneViewState,
-    broadcastPaneView: ctx.broadcastPaneView || ((paneId, r) => (wm ? wm.broadcastPaneView(paneId, r) : null)),
-    paneDraft: ctx.paneDraft,
-    broadcastPaneDraft: ctx.broadcastPaneDraft || ((paneId, t) => (wm ? wm.broadcastPaneDraft(paneId, t) : null)),
-    getPaneAskRuntime: ctx.getPaneAskRuntime || (() => ctx.paneAskRuntime || (ctx.paneAskService ? ctx.paneAskService.paneAskRuntime : null)),
-    getPtys: ctx.getPtys || (() => ctx.ptys),
-    deliverToPane: ctx.deliverToPane,
-    dispatchSleep: ctx.dispatchSleep,
-    livePaneRegistry: ctx.livePaneRegistry,
-    agentEngineMirror: ctx.agentEngineMirror,
-  };
+  return Object.assign(
+    _resolveTerminalQueryOps(ctx),
+    _resolveTerminalControlOps(ctx),
+    _resolveTerminalDispatchOps(ctx),
+    _resolveTranscriptAndBudgetOps(ctx),
+    _resolvePaneViewAndDispatchOps(ctx),
+    {
+      resourceGovernor: ctx.resourceGovernor,
+      agentRunner: ctx.agentRunner,
+      resourceGovernorModule: ctx.resourceGovernorModule,
+      engineDelegation: ctx.engineDelegation,
+      prepareTaskIsolation: ctx.prepareTaskIsolation || (ctx.ptyIsolationService ? (opts) => ctx.ptyIsolationService.prepareTaskIsolation(opts) : null),
+      preflightModelGate: ctx.preflightModelGate,
+      spendGuard: ctx.spendGuard,
+      leaderComposer: ctx.leaderComposer,
+      transcriptProbe: ctx.transcriptProbe,
+      mobileTranscript: ctx.mobileTranscript,
+      tokenUsage: ctx.tokenUsage,
+      modelDetect: ctx.modelDetect,
+      ptyResizeGate: ctx.ptyResizeGate,
+      tmuxWindows: ctx.tmuxWindows,
+      broadcastPaneView: ctx.broadcastPaneView || ((paneId, r) => (wm ? wm.broadcastPaneView(paneId, r) : null)),
+      broadcastPaneDraft: ctx.broadcastPaneDraft || ((paneId, t) => (wm ? wm.broadcastPaneDraft(paneId, t) : null)),
+      getPaneAskRuntime: ctx.getPaneAskRuntime || (() => ctx.paneAskRuntime || (ctx.paneAskService ? ctx.paneAskService.paneAskRuntime : null)),
+      getPtys: ctx.getPtys || (() => ctx.ptys),
+      livePaneRegistry: ctx.livePaneRegistry,
+      agentEngineMirror: ctx.agentEngineMirror,
+    }
+  );
 }
 
 function _buildUpdateAndAnnounceDeps(ctx) {
@@ -409,7 +427,7 @@ function _buildSkillAndSupervisorDeps(ctx) {
     screenCaptureMod: ctx.screenCaptureMod,
     instancePaths: ctx.instancePaths,
     getJarvisConv: () => ctx.jarvisConv,
-    agentxDeliverer: ctx.agentxDeliverer,
+    agentxDeliverer: ctx.agentxDeliverer || (ctx.paneDispatchService ? ctx.paneDispatchService.agentxDeliverer : null),
     agentxBeamMod: ctx.agentxBeamMod,
     agentxDraft: ctx.agentxDraft,
     skillCenter: ctx.skillCenter,

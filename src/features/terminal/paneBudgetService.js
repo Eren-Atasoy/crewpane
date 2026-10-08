@@ -21,6 +21,7 @@ class PaneBudgetService {
     this._spendGuard = spendGuard;
     this._getAppWindow = getAppWindow;
     this._logLine = logLine;
+    this.paneBudgetStore = paneBudgetStore;
   }
 
   paneBudgetDecisionFor(paneId, entry) {

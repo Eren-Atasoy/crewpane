@@ -32,6 +32,7 @@ class PaneAskService {
     Object.assign(this, defaultDeps, deps);
     this.paneAskMirrored = new Set();
     this.runtime = this._createRuntime();
+    this.paneAskRuntime = this.runtime;
     this._wireMirrorResolved();
   }
 

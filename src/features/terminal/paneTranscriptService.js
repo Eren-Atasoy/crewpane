@@ -26,6 +26,7 @@ class PaneTranscriptService {
       listSessionHeads: (cwd, sinceMs) => this._transcriptProbe.listSessionHeads(cwd, undefined, { sinceMs }),
       log: (line) => this._logLine(line),
     });
+    this.paneSessionAnchor = paneSessionAnchor;
   }
 
   currentSessionId(paneId) {

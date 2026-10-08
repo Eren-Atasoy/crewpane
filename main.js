@@ -143,7 +143,6 @@ const installReset = require('./src/security/installReset.cjs'); // RESET-01 —
 const resetGate = require('./src/security/resetGate.cjs'); // RESET-03 — sıfırlamanın KARAR katmanı (saf; birim testli)
 const quitFunnel = require('./src/core/quitFunnel.cjs'); // HATA-14 — tek kapanış hunisi (karar + fren + adım sırası)
 const paneKill = require('./src/terminal/paneKill.cjs'); // TASK-MRDXOGZJDQLJG — quit-aware explicit pane kill
-const resumePtyDaemon = require('./src/terminal/resumePtyDaemon.cjs'); // ADP-limit (ADR-007 Faz 4) — in-app pty auto-resume
 const agentSettings = require('./src/agents/agentSettings.cjs'); // ADP-203 — user settings (~/.crewpane/settings.json)
 const appI18n = require('./i18n/index.cjs'); // ADP-888 — ana sürecin ARAYÜZ DİLİ katmanı (diyalog/bildirim metinleri)
 const updateCheck = require('./src/services/updateCheck.cjs'); // ADP-533 — Faz 1 güncelleme bildirimi (yalnız bildir + tarayıcıda indir)
@@ -173,7 +172,6 @@ const sprintStore = require('./src/agents/sprintStore.cjs'); // ADP-242 — uzun
 const crewpanePaths = require('./src/config/crewpanePaths.cjs'); // ADP-233 — <workspace>/.crewpane/{tasks,results} yol sözleşmesi
 const transcriptProbe = require('./src/services/transcriptProbe.cjs'); // ADP-280 — teslim-doğrulama transcript probu
 const codexRolloutProbe = require('./src/mcp/codexRolloutProbe.cjs'); // ENG-02 — aynı probun codex defteri (rollout) dalı
-const paneTokenBudget = require('./src/terminal/paneTokenBudget.cjs'); // TOKEN-BUDGET-01 — pane sabit yükü (kalibre tahmin)
 const tokenUsage = require('./src/services/tokenUsage.cjs'); // ADP-887 — pane'in jeton/maliyet ölçümü (motor defterleri)
 const tokenCost = require('./src/services/tokenCost.cjs'); // TOK-A/B — fiyat + ölçüm sabitlerinin TEK kaynağı (modelPricing.json)
 // ADP-705 — pane⇄oturum çapası. `/clear` claude'da YENİ bir oturum (yeni uuid, yeni
@@ -802,7 +800,7 @@ const ptyResumeService = createPtyResumeService({
   getAppWindow: () => appWindow,
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
-  enforcePaneBudget: (opts) => enforcePaneBudget(opts),
+  enforcePaneBudget: (opts) => paneBudgetService.enforcePaneBudget(opts),
   respawnOptsFromEntry: (entry, ctx) => paneRestoreService.respawnOptsFromEntry(entry, ctx),
   paneEngineResolver: paneRestoreService.paneEngineResolver,
   spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
@@ -851,9 +849,9 @@ const ptySpawnService = createPtySpawnService({
   settleMemoryUsage: (opts) => settleMemoryUsage(opts),
   scheduleSupervisorSweep: (delayMs) => delegationSupervisorService.scheduleSupervisorSweep(delayMs),
   sendPaneEvent: (win, paneId, channel, payload) => (windowManager ? windowManager.sendPaneEvent(win, paneId, channel, payload) : null),
-  sessionAnchor: { forget: (id) => sessionAnchor.forget(id) },
-  dispatchStore: { clear: (id) => dispatchStore.clear(id) },
-  dispatchApplied: { delete: (id) => dispatchApplied.delete(id) },
+  sessionAnchor: { forget: (id) => paneTranscriptService.sessionAnchor.forget(id) },
+  dispatchStore: { clear: (id) => paneDispatchService.dispatchStore.clear(id) },
+  dispatchApplied: { delete: (id) => paneDispatchService.dispatchApplied.delete(id) },
   leaderRefreshState: { delete: (id) => (paneDispatchService && paneDispatchService.leaderRefreshState ? paneDispatchService.leaderRefreshState.delete(id) : undefined) },
   invalidateGitBranchCache: (dir) => invalidateGitBranchCache(dir),
   isQuitting: () => Boolean(app.isQuitting),
@@ -917,8 +915,8 @@ const delegationSupervisorService = createDelegationSupervisorService({
   resetCommandFor: (cmd) => paneControlService.resetCommandFor(cmd),
   maxTasksPerSession: 10,
   killPane: (id, entry, aid, why) => paneControlService.killPane(id, entry, aid, why),
-  probeTranscriptVerdict: (paneId, needle, opts) => probeTranscriptVerdict(paneId, needle, opts),
-  probeTranscriptVerifiable: (paneId) => probeTranscriptVerifiable(paneId),
+  probeTranscriptVerdict: (paneId, needle, opts) => paneTranscriptService.probeTranscriptVerdict(paneId, needle, opts),
+  probeTranscriptVerifiable: (paneId) => paneTranscriptService.probeTranscriptVerifiable(paneId),
 });
 
 // TEST-ONLY sentetik hata enjeksiyonu — hata sınırının GERÇEK uygulamada tuttuğunu kanıtlamak
@@ -946,16 +944,6 @@ const FAULT_INJECT = String(process.env.CREWPANE_FAULT_INJECT || '').split(',').
 const ptys = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ADP-705 — PANE⇄OTURUM ÇAPASI (bayat `--session-id` düzeltmesi)
-//
-// `entry.sessionId` spawn'da BİZİM verdiğimiz uuid'dir ve TÜM transcript probları
-// (ADP-280 teslim doğrulaması, ADP-306 son-mesaj, okuma modu, mobil defter) ondan
-// dosya yolu türetir. Pane REUSE edilirken paneRecycler `/clear` yazar → claude YENİ
-// oturum açar → id BAYAT olur. Bayat dosyada prompt bulunmaz ve ADP-280 "teslim
-// edilemedi" YALANI üretilirdi. Çapa sıfırlamayı görür, yeni oturumu proje dizininden
-// bulur ve defteri tazeler; bulamazsa `null` döner → prob "bakılamadı" der, YALAN ASLA.
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
 // ADP-705 — PANE⇄OTURUM ÇAPASI & ENG-02 — TESLİM PROBU (src/features/terminal/paneTranscriptService.js - Faz 3.6.43)
 // ─────────────────────────────────────────────────────────────────────────────
 const paneTranscriptService = createPaneTranscriptService({
@@ -967,25 +955,19 @@ const paneTranscriptService = createPaneTranscriptService({
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
 });
-const sessionAnchor = paneTranscriptService.sessionAnchor;
-function currentSessionId(paneId) { return paneTranscriptService.currentSessionId(paneId); }
-function probeTranscriptContains(paneId, needle, o) { return paneTranscriptService.probeTranscriptContains(paneId, needle, o); }
-function probeTranscriptVerdict(paneId, needle, o) { return paneTranscriptService.probeTranscriptVerdict(paneId, needle, o); }
-function probeTranscriptVerifiable(paneId) { return paneTranscriptService.probeTranscriptVerifiable(paneId); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // TOK-C (D-02 v2) — HARCAMA FRENİ VE BÜTÇE SERVİSİ (src/features/terminal/paneBudgetService.js - Faz 3.6.43)
 // ─────────────────────────────────────────────────────────────────────────────
 const paneBudgetService = createPaneBudgetService({
   ptys,
-  currentSessionId: (id) => currentSessionId(id),
+  currentSessionId: (id) => paneTranscriptService.currentSessionId(id),
   paneBudgetStore,
   tokenUsage,
   spendGuard,
   getAppWindow: () => appWindow,
   logLine: (line) => logLine(line),
 });
-function enforcePaneBudget(opts) { return paneBudgetService.enforcePaneBudget(opts); }
 
 /* ───────────────────────────────────────────────────────────────────────────
    TOK-B (D-03) — DAĞITIM POLİTİKASI: "aynı pane'de sürdür" mü "taze oturum" mu
@@ -1013,9 +995,9 @@ const paneDispatchService = createPaneDispatchService({
   tokenUsage,
   tokenCost,
   dispatchPolicy,
-  currentSessionId: (paneId) => currentSessionId(paneId),
+  currentSessionId: (paneId) => paneTranscriptService.currentSessionId(paneId),
   logLine: (line) => logLine(line),
-  enforcePaneBudget: (opts) => enforcePaneBudget(opts),
+  enforcePaneBudget: (opts) => paneBudgetService.enforcePaneBudget(opts),
   spendGuard,
   leaderRefreshPolicy,
   leaderRole,
@@ -1030,14 +1012,8 @@ const paneDispatchService = createPaneDispatchService({
   authorizeTeamScope: (opts) => paneControlService.authorizeTeamScope(opts),
   jarvisWidgetAlive: () => (windowManager ? windowManager.jarvisWidgetAlive() : false),
   labelTaskCodeOf: (label) => paneQueryService.labelTaskCodeOf(label),
-  sessionAnchor,
+  sessionAnchor: paneTranscriptService.sessionAnchor,
 });
-
-const dispatchStore = paneDispatchService.dispatchStore;
-const dispatchApplied = paneDispatchService.dispatchApplied;
-const dispatchSleep = paneDispatchService.dispatchSleep;
-const deliverToPane = paneDispatchService.deliverToPane;
-const agentxDeliverer = paneDispatchService.agentxDeliverer;
 
 // PANE-CAP-01 — ADP-264'ün SABİT canlı-pane tavanı (MAX_LIVE_PANES = 24) KALDIRILDI.
 //
@@ -1358,16 +1334,8 @@ async function bindAccountRoot(reason = 'boot') {
   return res;
 }
 
-function runningPaneSummary() {
-  return authService.runningPaneSummary();
-}
-
 function signOutConfirmCopy(panes) {
   return authService.signOutConfirmCopy(panes);
-}
-
-function closePanesForSignOut() {
-  return authService.closePanesForSignOut();
 }
 
 function relaunchApp(reason) {
@@ -1693,7 +1661,6 @@ function _buildWindowAndWorkspaceDeps() {
     memoryRecall,
     secretRedactor,
     memoryTaskBlock,
-    currentSessionId,
     paneContextScope,
     engineMemoryScope,
     clipboardHistoryCore,
@@ -1720,26 +1687,12 @@ function _buildTerminalAndExecutionIpcDeps() {
     preflightModelGate,
     spendGuard,
     leaderComposer,
-    probeTranscriptContains,
     transcriptProbe,
     mobileTranscript,
     tokenUsage,
-    paneTokenBudget,
-    paneBudgetStore,
-    dispatchStore,
     modelDetect,
-    paneAskRuntime,
-    paneSessionAnchor,
-    sessionAnchor,
     ptyResizeGate,
     tmuxWindows,
-    paneViewState,
-    paneDraft,
-    deliverToPane,
-    dispatchSleep,
-    runningPaneSummary,
-    closePanesForSignOut,
-    resumePtyDaemon,
     livePaneRegistry,
     agentEngineMirror,
   };
@@ -1787,7 +1740,6 @@ function _buildMobileAndVoiceIpcDeps() {
     screenCaptureMod,
     instancePaths,
     jarvisConv,
-    agentxDeliverer,
     agentxBeamMod,
     agentxDraft,
     skillCenter,
@@ -2028,7 +1980,7 @@ const paneAskService = createPaneAskService({
   cleanPaneTail: (buf, max) => delegationBridgeMod.cleanPaneTail(buf, max),
   BrowserWindow,
   ptys,
-  deliverToPane,
+  deliverToPane: (p, t, o) => paneDispatchService.deliverToPane(p, t, o),
   getJarvisConv: () => jarvisConv,
   appI18n,
   logLine,
@@ -2047,7 +1999,7 @@ mobileService = createMobileService({
   delegationBridgeMod,
   secretRedactor,
   mobileTranscript,
-  currentSessionId,
+  currentSessionId: (id) => paneTranscriptService.currentSessionId(id),
   agentRunner,
   delegationQueueStore,
   mobileOffice,
