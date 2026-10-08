@@ -51,6 +51,7 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
+const { createPaneRestoreService } = require('./src/features/terminal');
 let windowManager = null;
 let mobileService = null;
 
@@ -118,7 +119,6 @@ const engineLeadership = require('./src/agents/engineLeadership.cjs'); // ENG-19
 const enginePlanned = require('./src/agents/enginePlanned.cjs'); // ENG-HONEST-CARD-01 — "yolda" etiketinin tek kaynağı (planlı board kartı haritası)
 const engineDelegation = require('./src/agents/engineDelegation.cjs'); // ENG-17/ENG-21 — delegasyon vatandaşlığı ("bu motora İŞ VERİLEBİLİR Mİ")
 const engineOffering = require('./src/agents/engineOffering.cjs'); // ENG-21 — "sunulsun mu" hükmü (migration seed aynası, drift testli)
-const paneSessionsJournal = require('./src/terminal/paneSessionsJournal.cjs'); // ADP-734 Kapı 3 — silinmeyen oturum defteri
 const modelDetect = require('./src/agents/modelDetect.cjs'); // ADP-526 — pane model chip (K1 spawn-anı + K2 çıktı teyidi)
 const providers = require('./src/agents/providers.cjs'); // ADP-580 — codex custom AI providers (Groq/DeepSeek/Kimi)
 const modelCatalog = require('./src/agents/modelCatalog.cjs'); // AGENT-MODEL-01 — motor başına model kataloğu (tek kaynak)
@@ -745,13 +745,6 @@ function capabilityRegistry() {
 function crewpaneHome() {
   return process.env.CREWPANE_HOME || os.homedir();
 }
-let panesRestored = false; // restore runs once per process (first window load)
-/**
- * PLAN-FIX-01 (F-4) — plan tavanı yüzünden AÇILMAYAN restore pane'lerinin SÜREÇ
- * ÖMÜRLÜ sayacı. Log satırı tek başına kanıt olarak zayıftır (kaynaktan koşan
- * ikinci bir kopya aynı dosyayı döndürebilir); bu sayaç ürünün KENDİ durumudur.
- */
-let restoreSkippedByPlan = 0;
 
 // ADP-limit (ADR-007 Faz 4) — in-app pty auto-resume. Default ON + LIVE
 // ([[autopilot-auto-resume]]; the ADP-192 default-on/kill-switch precedent).
@@ -1052,6 +1045,20 @@ const telemetryService = createTelemetryService({
   resolveCredential: (service) => credentialGate.resolveCredential(service, { rootDir: REPO_ROOT }),
   engineRegistry,
   safeStorage: require('electron').safeStorage,
+});
+
+// ── ADP-192/734/761/905 — PANE GERİ YÜKLEME VE KURTARMA SERVİSİ (src/features/terminal/paneRestoreService.js - Faz 3.6.20)
+const paneRestoreService = createPaneRestoreService({
+  crewpaneHome: () => crewpaneHome(),
+  logLine: (line) => logLine(line),
+  reportModuleFault: (fault) => reportModuleFault(fault),
+  planDenial: (feature, current, opts) => planDenial(feature, current, opts),
+  spawnPty: (win, opts) => spawnPty(win, opts),
+  getAppWindow: () => appWindow,
+  ptys,
+  isRestoreDisabled: () => RESTORE_DISABLED,
+  isAppProbe: () => APP_PROBE,
+  getMode: () => MODE,
 });
 
 function analyticsNow() {
@@ -3994,7 +4001,7 @@ const authService = createAuthService({
     mobilePlanDenial: (opts) => mobilePlanDenial(opts),
     designPlanDenial: (opts) => designPlanDenial(opts),
     BrowserWindow,
-    getRestoreSkippedByPlan: () => restoreSkippedByPlan,
+    getRestoreSkippedByPlan: () => paneRestoreService.getRestoreSkippedByPlan(),
     getSupervisorAdvanceBlocked: () => supervisorAdvanceBlocked,
   },
 });
@@ -5582,7 +5589,7 @@ windowManager = createWindowManager({
   setAppWindow: (w) => { appWindow = w; },
   getAppBaseUrl: () => appBaseUrl,
   setAppBaseUrl: (u) => { appBaseUrl = u; },
-  setPanesRestored: (val) => { panesRestored = val; },
+  setPanesRestored: (val) => { paneRestoreService.setPanesRestored(val); },
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   logLine,
   rebindOrphanPanes,
@@ -7409,481 +7416,22 @@ function killAllPtys() {
  * and the pty resume daemon's respawn (queue entries — engine/cwd/agentId/
  * sessionId only; the optional fields fall through as undefined/null).
  */
-// ═══ HATA-12-B — TEK MOTOR KAYNAĞI (üç restore yolu) ═════════════════════════
-// HATA-12 hükmü çağırana emanetti ve iki çağıran onu vermiyordu (DISC-TRIAGE-03 §4.6:
-// `acceptRecoverablePanes` ve pty resume daemon'ın `respawnPane`'i). Artık motoru
-// ÇÖZÜMLEYİCİ okur; unutulması yapısal olarak mümkün değil.
-// `CREWPANE_ENGINE_DRIFT_OFF=1` → hüküm üretilmez (kaçış/kontrol kolu: kusurun
-// kendisi geri gelir; e2e'de "düzeltmeyi sök" ölçümü bununla yapılır).
-const paneEngineResolver = agentEngineMirror.createResolver({
-  homedir: () => crewpaneHome(),
-  log: (line) => logLine(line),
-  disabled: () => process.env.CREWPANE_ENGINE_DRIFT_OFF === '1',
-});
+const paneEngineResolver = paneRestoreService.paneEngineResolver;
 
 function respawnOptsFromEntry(entry, ctx = {}) {
-  const opts = {
-    command: entry.engine,
-    cwd: entry.cwd || undefined,
-    agentId: entry.agentId || null,
-    // PANE-RESTORE-DUP-01 — PANE'İN KALICI KİMLİĞİ GERİ YÜKLEMEDE TAŞINIR. Yeni pane
-    // yeni bir `paneId` (koltuk numarası) alır ama AYNI defter satırını günceller;
-    // bu alan olmadan restore edilen çıplak motor pane'i her açılışta İKİNCİ bir satır
-    // yazıyordu (ölçüldü: 3 pane → 4 açılışta 24).
-    restoreKey: entry.restoreKey || undefined,
-    department: entry.department || null,
-    label: entry.label || null,
-    role: entry.role || undefined,
-    plain: entry.plain === true,
-    browserCapable: entry.browserCapable === true,
-    disallowSubagent: entry.disallowSubagent === true,
-    systemPrompt: entry.systemPrompt || undefined,
-    sessionId: entry.sessionId || undefined,
-    // ADP-565 — resume on the SAME model the pane was launched with (--model is a
-    // per-launch flag, not conversation state, so it must be re-passed every boot).
-    model: entry.model || undefined,
-    // ADP-595 — ditto for the codex custom provider (`-c model_provider=…`).
-    provider: entry.provider || undefined,
-    resume: true,
-    // ADP-386 — önceki oturumun son ekran satırları: spawnPty replay buffer'ını
-    // bununla tohumlar → restore edilen pane, engine sessizken de içerik gösterir.
-    screenTail: Array.isArray(entry.screenTail) ? entry.screenTail : undefined,
-  };
-  // HATA-12 / HATA-12-B — MOTOR SÜRÜKLENMESİ. `entry.engine` pane SPAWN EDİLİRKEN
-  // yazılan motordur; kullanıcı o pane açıkken (ya da pane limitte düştükten sonra)
-  // ajanın motorunu değiştirmiş olabilir. Hüküm ARTIK ÇAĞIRANA SORULMAZ: çözümleyici
-  // ajanın güncel motorunu kendi okur. Sürüklenme yoksa çıktı bugünküyle BİT-BİT
-  // aynıdır; ayrıştığında pane GÜNCEL motorla ve TEMİZ doğar — eski motorun
-  // oturumu/modeli/sağlayıcısı/ekranı taşınmaz (gerekçe: applyEngineDrift).
-  return paneEngineResolver.applyTo(opts, entry, ctx.where || 'restore');
-}
-// ═══════════════════════════════════════════════════════════════════════════
-// ADP-734 Kapı 2 — "KURTARILABİLİR PANE" TEKLİFİ (sessizce atma, SOR)
-// ═══════════════════════════════════════════════════════════════════════════
-// İki tetikleyicisi var: (1) açılışta bulunan ama BAYAT bir kayıt, (2) çalışırken
-// defterin beklenenden AZ pane ile yazılması. İkisinde de davranış aynı: kaydı
-// DİSKE yaz (kalıcı, incelenebilir), log'a bas, pencereye haber ver. Otomatik pane
-// AÇMAZ — kullanıcı/lider karar verir. `panes:restoreRecoverable` IPC'si teklifi
-// uygular (UI düğmesi Bumblebee'nin işi; sözleşme burada hazır).
-const RECOVERABLE_FILE = 'live-panes.recoverable.json';
-let pendingRecoverable = null;
-
-// ═══ PANE-RESTORE-DUP-01 — İKİ SAYI, İKİ AYRI İŞ ════════════════════════════
-// `BARE_RESTORE_ASK_THRESHOLD` — bu kadar ÇIPLAK motor pane'inden fazlası otomatik
-//   AÇILMAZ, sorulur (ajanlı pane'ler muaf). 12 = kartın verdiği değer; makul bir
-//   ekranda aynı anda duran pane sayısının üstü. 0 → kapı kapalı (kaçış kolu).
-// `LEDGER_BLOAT_WARN` — defter bu kadar satırı geçtiyse ÜRÜNDE tespit için Sentry'ye
-//   UYARI düşer (hata değil): kullanıcı şikâyet etmeden önce görelim. Eren'in
-//   vakasında sayı 192'ydi ve tek uyarı satırı bile yoktu.
-const BARE_RESTORE_ASK_THRESHOLD = Number.isFinite(Number(process.env.CREWPANE_BARE_RESTORE_ASK))
-  ? Number(process.env.CREWPANE_BARE_RESTORE_ASK)
-  : 12;
-const LEDGER_BLOAT_WARN = 40;
-
-/**
- * PANE-RESTORE-DUP-01 (5) — DEFTER ŞİŞMESİ TELEMETRİSİ. Yeni bir hata yolu AÇILMAZ:
- * mevcut TEK musluktan (`reportModuleFault` → OBS-02) `level:'warning'` ile geçer,
- * yani aynı olay bildirim merkezinde de görünür. Yalnız EŞİĞİ AŞAN açılışta basılır
- * (her açılışta değil) — gürültü, uyarıyı işe yaramaz kılar.
- */
-function reportLedgerBloat(before, after) {
-  if (!Number.isFinite(before) || before <= LEDGER_BLOAT_WARN) return;
-  reportModuleFault({
-    module: 'pane',
-    label: 'live-panes',
-    level: 'warning',
-    message:
-      `live-panes defteri ${before} kayıt (eşik ${LEDGER_BLOAT_WARN}) — ` +
-      `tekilleştirmeden sonra ${after}`,
-    location: 'restoreLivePanes',
-    stopped: false,
-    fatal: false,
-  });
+  return paneRestoreService.respawnOptsFromEntry(entry, ctx);
 }
 
 function offerRecoverablePanes(win, entries, meta = {}) {
-  const list = Array.isArray(entries) ? entries.filter(Boolean) : [];
-  if (!list.length) return null;
-  pendingRecoverable = { at: Date.now(), ...meta, entries: list };
-  const file = path.join(livePaneRegistry.crewpaneDir(crewpaneHome()), RECOVERABLE_FILE);
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(pendingRecoverable, null, 2));
-  } catch { /* teklif diske yazılamasa da log + IPC ayakta */ }
-  logLine(
-    `restore: ${list.length} pane KURTARILABİLİR (otomatik açılmadı, sebep=${meta.reason || '-'}): ` +
-      list.map((e) => `${e.agentId ?? '-'}=${e.sessionId ?? '-'}`).join(', ') +
-      ` · teklif=${file}`,
-  );
-  try {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('panes:recoverable', {
-        count: list.length,
-        reason: meta.reason || null,
-        source: meta.source || null,
-        agents: list.map((e) => ({
-          agentId: e.agentId ?? null,
-          department: e.department ?? null,
-          // ENG-05 — motor bilinmiyorsa `null` gider, 'claude' DEĞİL: teklif kartı
-          // kullanıcıya olmayan bir motoru vaat etmesin (kabul edilse de açılmaz).
-          engine: e.engine ?? null,
-          sessionId: e.sessionId ?? null,
-        })),
-      });
-    }
-  } catch { /* pencere yoksa dosya + log yeterli */ }
-  return pendingRecoverable;
+  return paneRestoreService.offerRecoverablePanes(win, entries, meta);
 }
 
-/** Teklifi UYGULA — bekleyen kurtarılabilir pane'leri gerçekten aç. */
 function acceptRecoverablePanes(win) {
-  let offer = pendingRecoverable;
-  if (!offer) {
-    try {
-      offer = JSON.parse(
-        fs.readFileSync(path.join(livePaneRegistry.crewpaneDir(crewpaneHome()), RECOVERABLE_FILE), 'utf8'),
-      );
-    } catch { offer = null; }
-  }
-  const entries = offer && Array.isArray(offer.entries) ? offer.entries : [];
-  if (!entries.length) return { ok: false, restored: 0, error: 'kurtarılabilir kayıt yok' };
-  // ADP-761 — "zaten canlı ajanı atla" kontrolünün kopyası KALDIRILDI: tek kapı
-  // `spawnPty` içinde (`dedupeSpawnForAgent`) → reuse'da `reused:true` döner.
-  let restored = 0;
-  // PLAN-FIX-01 (F-4) — plan tavanına takılan kayıtlar KAYBOLMAZ: teklif bir sonraki
-  // sefere onlarla ayakta kalır (kullanıcı bir ajanı kapatınca kaldığı yerden açar).
-  const planSkipped = [];
-  for (const entry of entries) {
-    try {
-      const res = spawnPty(win || appWindow, { ...respawnOptsFromEntry(entry, { where: 'teklif' }), spawnIntent: 'restore' });
-      if (res && res.planLimited) { planSkipped.push(entry); restoreSkippedByPlan += 1; continue; }
-      if (res && res.reused) continue;
-      restored += 1;
-    } catch (e) {
-      logLine(`restore(offer): respawn failed agent=${entry.agentId ?? '-'}: ${e.message}`);
-    }
-  }
-  // ADP-761 — teklif KABUL edildi = kaynak tüketildi. Yabancı kökteki dosya emekliye
-  // ayrılmazsa aynı bayat kayıtlar her açılışta yeniden teklif edilir (ölümsüz defter).
-  const offerSource = offer && offer.source;
-  if (restored && offerSource && offerSource.file) {
-    const activeRoot = livePaneRegistry.crewpaneDir(crewpaneHome());
-    if (offerSource.root !== activeRoot) {
-      const retired = livePaneRegistry.retireConsumedSource(offerSource.file);
-      logLine(`restore(offer): kaynak emekliye ayrıldı ${offerSource.file}${retired ? ` → ${retired}` : ' (BAŞARISIZ)'}`);
-    }
-  }
-  // PLAN-FIX-01 (F-4) — kısıtlanan restore SESSİZ OLMAZ ve teklifi TÜKETMEZ.
-  // Teklif KULLANICI EYLEMİDİR (kartta "geri getir"e bastı) → nudge GÖSTERİLİR.
-  if (planSkipped.length) {
-    pendingRecoverable = { ...(offer || {}), entries: planSkipped };
-    logLine(
-      `restore(offer): plan tavanı — ${planSkipped.length} pane açılmadı (teklif duruyor): `
-        + planSkipped.map((e) => `${e.agentId ?? '-'}=${e.sessionId ?? '-'}`).join(', '),
-    );
-    planDenial('agents', ptys.size, { variant: 'restore', context: { pending: planSkipped.length } });
-  } else {
-    pendingRecoverable = null;
-  }
-  logLine(`restore(offer): ${restored}/${entries.length} pane açıldı`);
-  return { ok: true, restored, total: entries.length, planSkipped: planSkipped.length };
+  return paneRestoreService.acceptRecoverablePanes(win);
 }
 
 function restoreLivePanes(win) {
-  if (panesRestored || RESTORE_DISABLED || APP_PROBE || MODE === 'spike') return;
-  panesRestored = true;
-  // PANE-RESTORE-DUP-01 (3) — ŞİŞMİŞ DEFTERİN GÖÇÜ. Fix ileriye dönüktür; kullanıcının
-  // diskinde DURAN kopyalar (Eren'in dev profili: 192 kayıt) temizlenmezse düzeltmenin
-  // İLK açılışı yine 192 pty doğurur. Yedekli + idempotent: kopya yoksa dosyaya
-  // dokunulmaz. Restore'un GERİ KALANINI asla bloklamaz (best-effort).
-  try {
-    const compact = livePaneRegistry.compactRegistry(crewpaneHome());
-    if (compact.changed) {
-      logLine(
-        `restore: defter tekilleştirildi ${compact.before} → ${compact.after} kayıt ` +
-          `(${compact.removed} kopya düştü; yedek=${compact.backup || 'ALINAMADI'})`,
-      );
-    }
-    reportLedgerBloat(compact.before, compact.after);
-  } catch (e) {
-    logLine(`restore: defter tekilleştirilemedi: ${e.message}`);
-  }
-  let snapshot;
-  try {
-    snapshot = livePaneRegistry.restoreSnapshot(crewpaneHome());
-  } catch (e) {
-    logLine(`restore: snapshot read failed: ${e.message}`);
-    return;
-  }
-  // TASK-MRDXOGZJDQLJG + ADP-734 Kapı 1 — the registry may come up EMPTY although
-  // agents were running: the 22:50 self-update wipe, OR (ADP-732) a data-root
-  // migration that moved the ledger somewhere this build does not look. So the
-  // fallback is no longer "this root's quit snapshot" — it is EVERY data root on
-  // this machine (instance root + accounts/*), registry AND quit snapshot, freshest
-  // first. The chosen source is always LOGGED: a silent empty ledger is what made
-  // 7 live agent sessions vanish from the screen without a single error line.
-  let found = null;
-  try { found = livePaneRegistry.discoverRecoverable(crewpaneHome()); } catch { found = null; }
-  let fromFallback = false;
-  // ADP-761 — keşif YABANCI bir kökten (aktif kök değil) beslendiyse o dosya
-  // tüketildikten sonra emekliye ayrılmalı; yoksa aynı ölü kayıtlar her açılışta
-  // yeniden "ek" olarak katılır (ölümsüz defter → aynı ajana ikinci pane).
-  let consumedForeign = null;
-  const activeRootNow = livePaneRegistry.crewpaneDir(crewpaneHome());
-  // ═══ PANE-RESTORE-DUP-01 — KÖK NEDENİN KAPATILDIĞI YER ═══════════════════
-  // ÖLÇÜLEN DAVRANIŞ (e2e-BEFORE-fix.txt): 3 çıplak pane 4 açılışta 24 oldu, log
-  //   `restore: kaynak=snapshot kök=…/accounts/local (12 pane, …) → +12 ek`
-  //   `restore: 24/24 agent pane(s) resumed`
-  // İKİ AYRI HATA vardı, ikisi de burada:
-  //   (1) `extra` filtresi `!e.agentId ||` ile BAŞLIYORDU: agentId'siz her kayıt
-  //       KOŞULSUZ "ek" sayılıyordu. Kimlik artık `identityKey` (restoreKey →
-  //       agentId → motor|etiket|cwd), yani çıplak pane de "zaten biliniyor"
-  //       diyebiliyor.
-  //   (2) Kaynak, AKTİF KÖKÜN KENDİ quit-snapshot'ı olabiliyordu — yani az önce
-  //       okuduğumuz defterin BAYT KOPYASI. Kendi kopyanı kendine "ek" diye
-  //       eklemek listeyi her açılışta İKİYE KATLAR. Kapı 1'in amacı BAŞKA bir
-  //       kökten (hesap göçü / sürüm geri dönüşü) kaybı kurtarmaktı; defter
-  //       DOLUYKEN kendi kökünün kopyası bir kurtarma değil, bir çoğaltmadır.
-  if (found && !found.stale && !(snapshot.length && found.source.root === activeRootNow)) {
-    const known = new Set(snapshot.map((e) => livePaneRegistry.identityKey(e)));
-    const extra = found.entries.filter((e) => !known.has(livePaneRegistry.identityKey(e)));
-    if (!snapshot.length) {
-      snapshot = found.entries;
-      fromFallback = true;
-    } else if (extra.length) {
-      // Defter DOLU ama keşif daha fazlasını biliyor (kısmen boşalmış defter):
-      // birleştir — defterdeki kayıt kazanır, eksikler keşiften tamamlanır.
-      snapshot = snapshot.concat(extra);
-    }
-    if (fromFallback || extra.length) {
-      // Eski satır KORUNUR: "quit snapshot'a düşüldü" ifadesi hem operatörün hem de
-      // TASK-MRDXOGZJDQLJG e2e'sinin aradığı kanıt cümlesidir.
-      if (fromFallback && found.source.kind === 'snapshot') {
-        logLine(`restore: fell back to quit snapshot (${snapshot.length} pane(s))`);
-      }
-      logLine(
-        `restore: kaynak=${found.source.kind} kök=${found.source.root} ` +
-          `(${found.source.count} pane, ${new Date(found.source.at).toISOString()}) → ${fromFallback ? 'tamamı' : `+${extra.length} ek`}`,
-      );
-      // Aktif kök = clearAll'ın boşalttığı kök. Kaynak BAŞKA bir kökse (hesap göçü /
-      // sürüm geri dönüşü artığı) o dosyayı biz tüketiyoruz → aşağıda emekliye ayrılır.
-      if (found.source.root !== activeRootNow) consumedForeign = found.source;
-    }
-  }
-  if (!snapshot.length) {
-    // ADP-734 Kapı 2 — BAYAT KAYIT ARTIK SESSİZCE ATILMAZ. ADP-732'de 23 dakikalık
-    // gecikme, 7 oturumluk kusursuz bir yedeği çöpe attırdı (SNAPSHOT_MAX_AGE_MS).
-    // Otomatik açmıyoruz (o kadar eskisini diriltmek yanlış olabilir) — TEKLİF ediyoruz.
-    if (found && found.stale) {
-      offerRecoverablePanes(win, found.entries, {
-        reason: 'stale-snapshot',
-        source: found.source,
-      });
-      return;
-    }
-    logLine('restore: no live agent panes to resume');
-    // ADP-734 Kapı 3 — defter boş ama JOURNAL kimin hangi oturumda olduğunu bilir.
-    try {
-      const known = paneSessionsJournal.recoverSessions(crewpaneHome());
-      if (known.length) {
-        logLine(
-          `restore: journal ${known.length} ajan oturumu biliyor (kurtarma için): ` +
-            known.map((k) => `${k.agentId}=${k.sessionId}`).join(', '),
-        );
-      }
-    } catch { /* teşhis best-effort */ }
-    return;
-  }
-  // ═══ PANE-RESTORE-DUP-01 (2) — ÜST SINIR GÜVENLİĞİ: ENGEL DEĞİL, SORU ═══════
-  // Çoğaltma kapatıldı ama defter BAŞKA bir yoldan da kalabalıklaşabilir (kullanıcı
-  // gerçekten 30 motor pane'i açtı, ya da bu fix'ten ÖNCEKİ bir sürüm şişirdi ve
-  // kayıtların hepsi meşru görünüyor). Böyle bir listeyi SESSİZCE açmak Eren'in
-  // yaşadığı tabloyu (202 alt süreç, 3,4 GB) tekrar üretir. Kural:
-  //   • AJANLI pane'ler HER ZAMAN otomatik geri gelir — çalışan iş bekletilmez.
-  //   • ÇIPLAK motor pane'i eşiği aşarsa AÇILMAZ, TEKLİF EDİLİR (kart + dosya + log).
-  //     Kayıtları KAYBOLMAZ: `clearAll` sonrası çakışmayan bir anahtarla geri yazılır
-  //     (PLAN-FIX-01'in `plan-hold:` deseniyle aynı gerekçe).
-  const askHeld = [];
-  if (BARE_RESTORE_ASK_THRESHOLD > 0) {
-    const bare = snapshot.filter((e) => !e.agentId);
-    if (bare.length > BARE_RESTORE_ASK_THRESHOLD) {
-      askHeld.push(...bare);
-      snapshot = snapshot.filter((e) => e.agentId);
-      offerRecoverablePanes(win, askHeld, { reason: 'bare-pane-threshold' });
-      logLine(
-        `restore: ${askHeld.length} çıplak motor pane'i OTOMATİK AÇILMADI (eşik=${BARE_RESTORE_ASK_THRESHOLD}) — ` +
-          'kullanıcıya soruldu; ajanlı pane\'ler normal geri yüklenir',
-      );
-    }
-  }
-
-  // Consume the snapshot: clear the stale (old-paneId) entries; each successful
-  // re-spawn re-records itself under its NEW paneId with the SAME sessionId, so a
-  // later restart resumes again (self-healing).
-  // TASK-MRDXOGZJDQLJG — write-ahead first: clearAll..re-record used to be an
-  // unrecoverable consume window (a respawn failure or a crash here lost every
-  // session for good). Skipped when we are ALREADY restoring from the snapshot —
-  // snapshotting the empty registry would clobber it.
-  if (!fromFallback) {
-    try { livePaneRegistry.writeQuitSnapshot(crewpaneHome()); } catch { /* best-effort */ }
-  }
-  try { livePaneRegistry.clearAll(crewpaneHome()); } catch { /* best-effort */ }
-  // ADP-761 — YABANCI kökten tükettiysek o dosyayı da tüketilmiş SAY: yeniden
-  // adlandırılır (silinmez — incelenebilir kalır). Kayıtlar kaybolmaz: her respawn
-  // kendini AKTİF köke yeni paneId'siyle yazar (self-healing zinciri korunur).
-  if (consumedForeign) {
-    const retired = livePaneRegistry.retireConsumedSource(consumedForeign.file);
-    logLine(
-      retired
-        ? `restore: yabancı kök tüketildi → emekliye ayrıldı ${consumedForeign.file} → ${retired}`
-        : `restore: yabancı kök tüketildi ama emekliye AYRILAMADI (${consumedForeign.file}) — bir sonraki açılışta yeniden keşfedilebilir`,
-    );
-  }
-
-  // Double-spawn guard (ADP-133 pattern): never resurrect an agent that is already
-  // live in this process (e.g. the renderer also opened it).
-  // ADP-761 — bu kontrolün KENDİ kopyası KALDIRILDI: karar artık `spawnPty`'nin
-  // içindeki tek kapıda (`dedupeSpawnForAgent`). Zaten canlı bir ajan için çağrı
-  // `reused:true` döner; hem defterdeki İKİ AYNI ajan kaydı (birleştirilmiş yabancı
-  // defterin ürettiği hâl) hem de renderer'ın paralel açtığı pane aynı yolla ele alınır.
-  // HATA-12-B — ayna okuması BURADAN KALKTI: motoru artık `paneEngineResolver` okur
-  // (tek kaynak, mtime damgalı önbellek) ve hükmü `respawnOptsFromEntry` uygular.
-  // Bu döngü bir açılışta 20+ kayıt gezebilir; damga değişmediği sürece dosya bir kez
-  // okunur — eski "döngü öncesi tek okuma" kazancı korunur, ama kalan iki restore
-  // yolu da aynı kaynağı kullanır.
-  const restored = [];
-  let alreadyLive = 0;
-  // PLAN-FIX-01 (F-4) — plan tavanı yüzünden AÇILMAYAN kayıtlar. Döngü İÇİNDE
-  // deftere geri yazılmazlar: `paneId` her açılışta SIFIRDAN sayılır (pane-1, pane-2…),
-  // yani bu turda doğan pane'ler eski kayıtların ANAHTARINI ezerdi (ölçüldü: defter
-  // 5 yerine 3 kaldı). Toplanır, döngü bitince ÇAKIŞMAYAN bir anahtarla yazılırlar.
-  const heldByPlan = [];
-  for (const entry of snapshot) {
-    // ENG-05 — motoru BİLİNMEYEN kayıt (defterde `engine:null`) restore EDİLMEZ ve bu
-    // sessiz kalmaz. Eskiden böyle bir kayıt claude'a düşürülüp claude ile açılırdı —
-    // yani yanlış ikiliye yanlış oturum. Doğru davranış: açma, ama kaydı gören
-    // operatöre söyle (defter satırı duruyor, elle açılabilir).
-    if (!entry.engine) {
-      logLine(
-        `restore: MOTOR BİLİNMİYOR → atlandı agent=${entry.agentId ?? '-'} pane=${entry.paneId ?? '-'} ` +
-          `(engine=null; claude varsayılmadı — kayıt defterde duruyor)`,
-      );
-      continue;
-    }
-    // ═══ HATA-12 — DEFTERİ AJANIN GÜNCEL MOTORUYLA KARŞILAŞTIR ══════════════
-    // ÖLÇÜLEN KUSUR (ödeme yapmış müşteri, Discord 02.09): kullanıcı ekip liderinin
-    // motorunu claude→codex yaptı; kayıt değişti ama YENİDEN BAŞLATMAK da kurtarmadı,
-    // çünkü burası defterin yazdığı motoru + eski oturumu KOŞULSUZ diriltiyordu.
-    // Ayrıştıysa: SESSİZCE yanlış motorla açma (bugünkü davranış = kusurun ta kendisi);
-    // güncel motorla TEMİZ spawn et ve ölçümü tek satır logla — HATA-12-B'den sonra
-    // karşılaştırmayı da logu da `respawnOptsFromEntry` (çözümleyici) yapar.
-    // resume:true + a valid sessionId → `--resume`; an invalid/missing id falls back
-    // to a fresh identityful spawn inside buildSpawn (ADP-192 broken-session graceful).
-    const opts = { ...respawnOptsFromEntry(entry, { where: 'yeniden-başlatma' }), spawnIntent: 'restore' };
-    try {
-      const res = spawnPty(win, opts);
-      // PLAN-FIX-01 (F-4) — tavana takıldı: pane AÇILMAZ ama KAYIT KAYBOLMAZ.
-      // Yukarıdaki `clearAll()` defteri boşalttı ve yalnız yeniden doğan pane'ler
-      // kendilerini geri yazıyor; bu satır olmadan "açılmadı" hükmü sessizce
-      // "kaydı sil"e dönüşür ve kullanıcı bir ajanı kapatsa bile geri getiremezdi.
-      // Kayıt ESKİ paneId'siyle geri yazılır (canlı bir pane'e ait değil, bir DEFTER
-      // satırıdır) — bir sonraki açılışta yine aday olur.
-      if (res && res.planLimited) {
-        heldByPlan.push(entry);
-        restoreSkippedByPlan += 1;
-        continue;
-      }
-      if (res && res.reused) {
-        alreadyLive += 1;
-        // ADP-905 — KRİTİK: yukarıdaki `clearAll()` defteri boşalttı ve YALNIZ yeniden
-        // doğan pane'ler kendilerini geri yazar. Restore artık süreç içinde İKİNCİ kez
-        // koşabildiği için (pencere kapat/aç), yaşayan pane'in kaydı bu yolda sessizce
-        // SİLİNİRDİ: ajan ekranda canlı görünür ama bir sonraki gerçek restart onu
-        // restore edemezdi. Kayıt kendi alanlarıyla CANLI paneId altına geri yazılır.
-        try {
-          livePaneRegistry.recordPane(res.paneId, entry, crewpaneHome());
-        } catch (e) {
-          logLine(`restore: canlı pane defteri geri yazılamadı paneId=${res.paneId}: ${e.message}`);
-        }
-        logLine(`restore: skip already-live agent=${entry.agentId ?? '-'} (pane ${res.paneId} reuse)`);
-        continue;
-      }
-      // HATA-12 — RAPORLANAN MOTOR/KİP ARTIK GERÇEKTEN SPAWN EDİLENDİR. Bu iki değer
-      // `entry.*`ten okunuyordu; motor sürüklendiğinde `entry.engine`/`entry.sessionId`
-      // ESKİ motorun alanlarıdır ⇒ pane CODEX doğarken hem log hem de renderer'a giden
-      // "geri yüklendi" listesi "claude / resume" diyordu (ölçüldü: spike-log 05.09).
-      // Yanlış teşhis üreten bir log, olmayan bir hatayı aratır — kaynak `opts`tur.
-      const spawnedEngine = opts.command;
-      const resumed = opts.resume === true && spawnedEngine === 'claude' && agentRunner.isUuid(opts.sessionId);
-      restored.push({
-        agentId: entry.agentId,
-        department: entry.department,
-        paneId: res.paneId,
-        engine: spawnedEngine,
-        resumed,
-      });
-      logLine(
-        `restore: respawned agent=${entry.agentId ?? '-'} dept=${entry.department ?? '-'} ` +
-          `engine=${spawnedEngine} mode=${resumed ? 'resume' : 'fresh'} paneId=${res.paneId}`,
-      );
-    } catch (e) {
-      logLine(`restore: respawn failed agent=${entry.agentId ?? '-'}: ${e.message}`);
-    }
-  }
-  if ((restored.length || alreadyLive) && !win.isDestroyed()) {
-    // Surface it to the renderer (a toast / the ADP-042 notification bell already
-    // shows the panes as they re-appear via pty:list). Harmless if no listener.
-    // ADP-905 F3 — `survived`: pencere kapanıp açıldığında ÖLMEDEN yaşamaya devam eden
-    // ajan sayısı. Kullanıcının korkusu ("hepsi gitti") yalnız restore edilenlerle
-    // giderilemez: asıl haber, hiçbirinin ölmemiş olmasıdır.
-    win.webContents.send('panes:restored', {
-      count: restored.length,
-      agents: restored,
-      survived: alreadyLive,
-    });
-  }
-  logLine(`restore: ${restored.length}/${snapshot.length} agent pane(s) resumed (already-live=${alreadyLive})`);
-  // PLAN-FIX-01 (F-4) — KISITLANAN RESTORE SESSİZ OLMAZ, ama AÇILIŞTA DUVAR DA OLMAZ.
-  // BL-02 kuralı: kullanıcı bir şey İSTEMEDEN açılan ekranda yükseltme duvarı yoktur
-  // → `notify:false`. Kanıt log'da kalır; kullanıcı Ayarlar'daki kullanım sayacında
-  // (`plan:get`) canlı/tavan farkını zaten görür.
-  // PANE-RESTORE-DUP-01 — eşikte BEKLETİLEN çıplak pane'lerin defter satırları geri
-  // yazılır (yukarıdaki `clearAll()` defteri boşalttı). Anahtar canlı bir pane'inkiyle
-  // çakışamaz; kayıt bir pane'e değil bir DEFTER SATIRINA aittir.
-  if (askHeld.length > 0) {
-    let held = 0;
-    for (const entry of askHeld) {
-      try {
-        livePaneRegistry.recordPane(`ask-hold:${livePaneRegistry.identityKey(entry)}`, entry, crewpaneHome());
-        held += 1;
-      } catch (e) {
-        logLine(`restore: eşik — kayıt geri yazılamadı pane=${entry.label ?? '-'}: ${e.message}`);
-      }
-    }
-    logLine(`restore: eşik — ${askHeld.length} çıplak pane bekletildi (${held} kaydı defterde duruyor)`);
-  }
-  if (heldByPlan.length > 0) {
-    // KAYIT KAYBOLMAZ. Yukarıdaki `clearAll()` defteri boşalttı ve yalnız yeniden
-    // doğan pane'ler kendilerini geri yazıyor; bu blok olmadan "açılmadı" hükmü
-    // sessizce "kaydı sil"e dönüşürdü — kullanıcı bir ajanı kapatsa bile geri
-    // getiremezdi. Anahtar CANLI bir pane'inkiyle çakışamayacak biçimde türetilir
-    // (`pane-N` sayacı her açılışta sıfırlanır); kayıt canlı bir pane'e değil,
-    // bir DEFTER SATIRINA aittir ve bir sonraki açılışta yine aday olur.
-    let held = 0;
-    for (const entry of heldByPlan) {
-      const key = `plan-hold:${entry.agentId || entry.sessionId || `${held}`}`;
-      try {
-        livePaneRegistry.recordPane(key, entry, crewpaneHome());
-        held += 1;
-      } catch (e) {
-        logLine(`restore: plan tavanı — kayıt geri yazılamadı agent=${entry.agentId ?? '-'}: ${e.message}`);
-      }
-    }
-    logLine(
-      `restore: plan tavanı — ${heldByPlan.length} pane açılmadı (${held} kaydı defterde duruyor; `
-        + `bir ajanı kapatınca elle açılabilir)`,
-    );
-  }
+  return paneRestoreService.restoreLivePanes(win);
 }
 
 // ---------------------------------------------------------------------------
