@@ -20,11 +20,15 @@ function registerSystemIpc(deps) {
 const { createCrashWatchdogService } = require('./crashWatchdogService');
 const { createFaultService, obsSurfaceFor } = require('./faultService');
 const { createTelemetryService, ANALYTICS_FUNNEL_EVENT, analyticsEngineOf } = require('./telemetryService');
+const { createAnnounceService } = require('./announceService');
+const { createChangelogService } = require('./changelogService');
 
 module.exports = {
   createCrashWatchdogService,
   createFaultService,
   createTelemetryService,
+  createAnnounceService,
+  createChangelogService,
   ANALYTICS_FUNNEL_EVENT,
   analyticsEngineOf,
   obsSurfaceFor,

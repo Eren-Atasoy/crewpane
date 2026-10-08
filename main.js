@@ -984,7 +984,12 @@ const stdioGuards = stdioGuard.installStdioGuards({
 logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
 // ── ADP-335 — MODÜL HATA SINIRI & OBS-02 HATA TAKİBİ (src/features/system/faultService.js - Faz 3.6.10)
-const { createFaultService, createTelemetryService } = require('./src/features/system');
+const {
+  createFaultService,
+  createTelemetryService,
+  createAnnounceService,
+  createChangelogService,
+} = require('./src/features/system');
 // ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
 const { createUpdateService } = require('./src/features/update');
 
@@ -998,6 +1003,25 @@ const updateService = createUpdateService({
   logLine,
   getSeatGate: () => seatGate,
   heartbeat: () => heartbeat(),
+});
+
+// ── ADP-675 — UYGULAMA-İÇİ DUYURU SERVİSİ (src/features/system/announceService.js - Faz 3.6.15a)
+const announceService = createAnnounceService({
+  app,
+  BrowserWindow,
+  instancePaths,
+  agentSettings,
+  announcements,
+  currentUpdateChannel: () => updateService.currentUpdateChannel(),
+  logLine,
+});
+
+// ── A-10 — UYGULAMA İÇİ "YENİLİKLER" SERVİSİ (src/features/system/changelogService.js - Faz 3.6.15b)
+const changelogService = createChangelogService({
+  BrowserWindow,
+  instancePaths,
+  changelogFeed,
+  logLine,
 });
 
 // ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
@@ -5198,11 +5222,11 @@ function wireIpc() {
     clipboardImageRoute,
     saveTempImage,
     announcements,
-    announceStateForRenderer,
-    runAnnounceCheck,
-    pushAnnounceState,
-    announceHiddenThisSession,
-    getAnnounceState: () => announceState,
+    announceStateForRenderer: () => announceService.announceStateForRenderer(),
+    runAnnounceCheck: (trigger) => announceService.runAnnounceCheck(trigger),
+    pushAnnounceState: () => announceService.pushAnnounceState(),
+    announceHiddenThisSession: announceService.announceHiddenThisSession,
+    getAnnounceState: () => announceService.getAnnounceState(),
     openPopoutWindow,
     closePopoutWindow,
     listPopoutPanes,
@@ -5487,9 +5511,9 @@ function wireIpc() {
     firstRunDoctor,
     hookScanHome,
     relaunchApp,
-    changelogStateForRenderer,
-    runChangelogCheck,
-    getChangelogState: () => changelogState,
+    changelogStateForRenderer: () => changelogService.changelogStateForRenderer(),
+    runChangelogCheck: (trigger) => changelogService.runChangelogCheck(trigger),
+    getChangelogState: () => changelogService.getChangelogState(),
     broadcastClipChanged,
     clipboardHistoryCore,
     engineKeyStore: () => engineKeyStore(),
@@ -6255,228 +6279,17 @@ function createSpikeWindow() { return windowManager.createSpikeWindow(); }
 // Her iki modda: açılışta + ~6 saatte bir kontrol; ağ/limit hatası SESSİZ geçilir
 // (bildirim yok, çökme yok); ✕ = sürüm-bazlı kalıcı dismiss. `update:*` IPC yüzeyi
 // iki modda AYNI — renderer mode+phase'e göre buton etiketini seçer.
-function currentUpdateChannel() {
-  return updateService.currentUpdateChannel();
-}
 
 function scheduleUpdateChecks() {
   updateService.scheduleUpdateChecks();
 }
 
-// ---------------------------------------------------------------------------
-// ADP-675 — UYGULAMA-İÇİ DUYURU (announcements). Güncelleme kontrolüyle AYNI iskelet:
-// main çeker → durumu tutar → renderer'a push'lar; ağ hatası SESSİZ (çökme yok).
-// Fark: burada içerik SUNUCUDAN gelen METİNDİR → announcements.cjs onu düşman girdi
-// gibi normalize eder ve aksiyon URL'ini yalnız https'e daraltır.
-//
-// Kalıcı durum settings.json'da (renderer localStorage'ı restart'ı atlatmaz —
-// random-port origin, ADP-437 dersi):
-//   announcementsRead      { [id]: epoch }  → okundu (bir daha şerit YOK)
-// Oturumluk (diske YAZILMAZ): şeridin ✕'i = "şimdilik gizle"; app yeniden açılınca
-// kritik duyuru GERİ GELİR — okunmadıkça kullanıcıyı kaçırmayalım.
-// Çevrimdışı: son başarılı feed <crewpaneHome>/announcements-cache.json'a yazılır
-// ve açılışta ondan servis edilir (ağ yokken de duyuru görünür).
-// ---------------------------------------------------------------------------
-let announceState = {
-  checked: false,       // en az bir BAŞARILI çekim oldu mu (ağ hatası bunu true yapmaz)
-  fromCache: false,     // gösterilen liste diskteki son kopyadan mı geliyor
-  lastCheckedAt: null,
-  items: [],            // normalize edilmiş TÜM feed (hedef filtresi görünümde uygulanır)
-};
-/** Oturumluk gizleme (şeridin ✕'i) — kalıcı DEĞİL, bilinçli. */
-const announceHiddenThisSession = new Set();
-
-function announceCachePath() {
-  // ADP-703 — GLOBAL duyuru feed'inin çevrimdışı kopyası: kullanıcıya özel değil → cihaz kökü.
-  return path.join(instancePaths.instanceHome(), 'announcements-cache.json');
-}
-
-/** Son başarılı feed'i diske yaz (çevrimdışı açılış için). Hata sessiz. */
-function writeAnnounceCache(items) {
-  try {
-    fs.mkdirSync(instancePaths.instanceHome(), { recursive: true });
-    fs.writeFileSync(announceCachePath(), JSON.stringify({ savedAt: Date.now(), items }), 'utf8');
-  } catch { /* best-effort — önbellek yazılamazsa yalnız çevrimdışı zenginlik kaybolur */ }
-}
-
-/** Diskteki kopyayı oku; yoksa/bozuksa boş liste (normalize TEKRAR uygulanır). */
-function readAnnounceCache() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(announceCachePath(), 'utf8'));
-    return announcements.normalizeFeed(raw && raw.items ? raw.items : raw);
-  } catch {
-    return [];
-  }
-}
-
-/**
- * ADP-716 — duyuru dili. CrewPane'in kendi arayüzü TR; duyuru feed'i ise TR+EN
- * taşıyabilir. İşletim sistemi dili EN ise EN metni gösteririz, çeviri yoksa TABAN
- * (TR) metne düşeriz — duyuru hiçbir dilde BOŞ görünmez.
- */
-function announceLocale() {
-  try {
-    return announcements.normalizeLocale(app.getLocale());
-  } catch {
-    return announcements.BASE_LOCALE;
-  }
-}
-
-/** Renderer görünümü: hedefe uyanlar + okundu haritası + oturumluk gizleme. */
-function announceStateForRenderer() {
-  const s = agentSettings.readSettings();
-  const read = s.announcementsRead && typeof s.announcementsRead === 'object' ? s.announcementsRead : {};
-  const visible = announcements.selectAnnouncements(announceState.items, {
-    app: announcements.APP_ID,
-    version: app.getVersion(),
-    channel: currentUpdateChannel(),
-    now: Date.now(),
-  });
-  const locale = announceLocale();
-  return {
-    checked: announceState.checked,
-    fromCache: announceState.fromCache,
-    lastCheckedAt: announceState.lastCheckedAt,
-    currentVersion: app.getVersion(),
-    locale,
-    // Dil BURADA çözülür: renderer'a tek düz metin gider (i18n bloğu UI'a sızmaz).
-    items: visible.map((a) => announcements.localize(a, locale)).map((a) => ({
-      ...a,
-      read: Object.prototype.hasOwnProperty.call(read, a.id),
-      hidden: announceHiddenThisSession.has(a.id),
-    })),
-  };
-}
-
-function pushAnnounceState() {
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed()) w.webContents.send('announce:state', announceStateForRenderer());
-    } catch { /* best-effort */ }
-  }
-}
-
-/** Feed'i çek. HER hata yolu sessiz; başarısız koşu MEVCUT listeyi kirletmez. */
-async function runAnnounceCheck(trigger) {
-  const url = process.env.CREWPANE_ANNOUNCE_FEED_URL || announcements.FEED_URL;
-  const res = await announcements.fetchFeed({ url });
-  if (res.ok) {
-    announceState = { checked: true, fromCache: false, lastCheckedAt: Date.now(), items: res.items };
-    writeAnnounceCache(res.items);
-    logLine(`announce(${trigger}): ${res.items.length} duyuru alındı`);
-    pushAnnounceState();
-  } else {
-    logLine(`announce(${trigger}): sessiz geçildi (${res.reason})`);
-  }
-  return announceStateForRenderer();
-}
-
-let announceChecksScheduled = false;
 function scheduleAnnounceChecks() {
-  if (announceChecksScheduled) return;
-  announceChecksScheduled = true;
-  // ÇEVRİMDIŞI ÖNCE: ağ beklemeden diskteki son kopyayı göster (uçakta da duyuru var).
-  const cached = readAnnounceCache();
-  if (cached.length) {
-    announceState = { ...announceState, fromCache: true, items: cached };
-    logLine(`announce(cache): ${cached.length} duyuru diskten yüklendi`);
-  }
-  // Test instance'ında feed dikişi yoksa OTOMATİK çekim YOK (e2e filosu GitHub'a
-  // vurmasın — updateCheck ile aynı disiplin).
-  if (instancePaths.instanceId() === 'test' && !process.env.CREWPANE_ANNOUNCE_FEED_URL) return;
-  setTimeout(() => { runAnnounceCheck('auto').catch(() => {}); }, 3000);
-  const timer = setInterval(() => { runAnnounceCheck('auto').catch(() => {}); }, announcements.CHECK_INTERVAL_MS);
-  timer.unref?.();
+  announceService.scheduleAnnounceChecks();
 }
 
-// A-10 — UYGULAMA İÇİ "YENİLİKLER" (changelog). announce ile AYNI iskelet (main
-// çeker → cache eder → renderer'a servis eder), daha basit içerik: hedefli
-// dağıtım/i18n/okundu-defteri YOK — panel yalnız son N kaydı gösterir.
-// Çevrimdışı: son başarılı feed <crewpaneHome>/changelog-cache.json'a yazılır ve
-// açılışta ondan servis edilir (ADP-703 ile aynı gerekçe: içerik kullanıcıya değil
-// ÜRÜNE ait → cihaz kökü, kullanıcı klasörü değil).
-// ---------------------------------------------------------------------------
-let changelogState = {
-  checked: false,     // en az bir BAŞARILI çekim oldu mu (ağ hatası bunu true yapmaz)
-  fromCache: false,   // gösterilen liste diskteki son kopyadan mı geliyor
-  lastCheckedAt: null,
-  recentCount: null,       // site'nin countRecent() değeri — panel kendi sayımını YAPMAZ
-  recentWindowDays: null,
-  items: [],
-};
-
-function changelogCachePath() {
-  return path.join(instancePaths.instanceHome(), 'changelog-cache.json');
-}
-
-/** Son başarılı feed'i diske yaz (çevrimdışı açılış için). Hata sessiz. */
-function writeChangelogCache(state) {
-  try {
-    fs.mkdirSync(instancePaths.instanceHome(), { recursive: true });
-    fs.writeFileSync(changelogCachePath(), JSON.stringify({ savedAt: Date.now(), ...state }), 'utf8');
-  } catch { /* best-effort — önbellek yazılamazsa yalnız çevrimdışı zenginlik kaybolur */ }
-}
-
-/** Diskteki kopyayı oku; yoksa/bozuksa boş sonuç (normalize TEKRAR uygulanır). */
-function readChangelogCache() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(changelogCachePath(), 'utf8'));
-    return changelogFeed.normalizeFeed({ entries: raw.items, recentCount: raw.recentCount, recentWindowDays: raw.recentWindowDays });
-  } catch {
-    return { items: [], recentCount: null, recentWindowDays: null };
-  }
-}
-
-function changelogStateForRenderer() {
-  return { ...changelogState };
-}
-
-function pushChangelogState() {
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed()) w.webContents.send('changelog:state', changelogStateForRenderer());
-    } catch { /* best-effort */ }
-  }
-}
-
-/** Feed'i çek. HER hata yolu sessiz; başarısız koşu MEVCUT listeyi kirletmez. */
-async function runChangelogCheck(trigger) {
-  const url = process.env.CREWPANE_CHANGELOG_FEED_URL || changelogFeed.FEED_URL;
-  const res = await changelogFeed.fetchFeed({ url });
-  if (res.ok) {
-    changelogState = {
-      checked: true,
-      fromCache: false,
-      lastCheckedAt: Date.now(),
-      recentCount: res.recentCount,
-      recentWindowDays: res.recentWindowDays,
-      items: res.items,
-    };
-    writeChangelogCache(changelogState);
-    logLine(`changelog(${trigger}): ${res.items.length} kayıt alındı`);
-    pushChangelogState();
-  } else {
-    logLine(`changelog(${trigger}): sessiz geçildi (${res.reason})`);
-  }
-  return changelogStateForRenderer();
-}
-
-let changelogChecksScheduled = false;
 function scheduleChangelogChecks() {
-  if (changelogChecksScheduled) return;
-  changelogChecksScheduled = true;
-  // ÇEVRİMDIŞI ÖNCE: ağ beklemeden diskteki son kopyayı göster.
-  const cached = readChangelogCache();
-  if (cached.items.length) {
-    changelogState = { ...changelogState, fromCache: true, ...cached };
-    logLine(`changelog(cache): ${cached.items.length} kayıt diskten yüklendi`);
-  }
-  // Test instance'ında feed dikişi yoksa OTOMATİK çekim YOK (e2e filosu crewpane.dev'a
-  // vurmasın — updateCheck/announce ile aynı disiplin).
-  if (instancePaths.instanceId() === 'test' && !process.env.CREWPANE_CHANGELOG_FEED_URL) return;
-  setTimeout(() => { runChangelogCheck('auto').catch(() => {}); }, 3000);
-  const timer = setInterval(() => { runChangelogCheck('auto').catch(() => {}); }, changelogFeed.CHECK_INTERVAL_MS);
-  timer.unref?.();
+  changelogService.scheduleChangelogChecks();
 }
 
 // ADP-900 — HAFIZA İNDEKSİ İLK AÇILIŞTA KENDİLİĞİNDEN KURULUR.
