@@ -1986,7 +1986,13 @@ function relaunchForAccountChange(nextKey, reason) {
 //   • BL-01 köprü `/sprint` → dalga tavanı (REDDETMEZ, dalgayı KISITLAR + söyler)
 
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
-const { createIntegrationService, createBrowserService, createWorkspaceFileService, createCodeIndexService } = require('./src/features/services');
+const {
+  createIntegrationService,
+  createBrowserService,
+  createWorkspaceFileService,
+  createCodeIndexService,
+  createWorkspaceRootService,
+} = require('./src/features/services');
 
 const integrationService = createIntegrationService({
   instancePaths,
@@ -2109,216 +2115,44 @@ const FILE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB — editor opens source files, n
 // ADP-232-C — agentWorkspaceRoot may be NULL (packaged + first run not completed). No
 // root → no default active root; every resolver below guards on it and denies with
 // a clear reason instead of throwing/mis-rooting into the bundle.
-const activeRoots = new Set(agentWorkspaceRoot ? [agentWorkspaceRoot] : []);
-
-// ADP-232-B — roots kept alive ONLY because open panes / running workers were
-// spawned there. A live workspace switch grandfathers the previous root here: it
-// stays in `activeRoots` (so those panes' file/git access still resolves) and its
-// results dir keeps being watched by that pane's window until the pane closes. A
-// grandfathered root is never the DEFAULT base for new relative paths — that is
-// always the current `agentWorkspaceRoot`.
-const grandfatheredRoots = new Set();
-
-/**
- * ADP-232-B — switch the active workspace root LIVE (no app restart). Validates +
- * persists the same way the first-run gate does (workspaceOnboarding.commitWorkspaceRoot:
- * realpath + is-a-dir + not-inside-app-bundle + settings.workspaceRoot write), then
- * applies it in-process:
- *   • the PREVIOUS root is grandfathered (stays in activeRoots) so already-open panes
- *     and in-flight workers keep resolving their files/git under it;
- *   • the NEW root becomes the current base (spawn cwd, relative-path base, memory/
- *     results dirs, git diff) for every subsequent call;
- *   • the active window's reports watcher is rebuilt against the new root;
- *   • a `workspace:changed` event tells the renderer to re-root its tree, reports,
- *     memory graph and Jarvis context.
- * The embedded Next server env (CREWPANE_WORKSPACE_ROOT) is process-lifetime and is
- * NOT re-pointed — see its comment at the top; the desktop file/results surfaces do
- * not depend on it (they go through this main-side root).
- */
-function validateWorkspacePlan(rawRoot, log) {
-  const planGate = workspacePlanDenial(rawRoot);
-  if (!planGate) return null;
-  log(`workspace:switch REDDEDİLDİ (plan): ${rawRoot} — ${planGate.tier} tavan=${planGate.limit}`);
-  return {
-    ok: false,
-    reason: 'plan_limit',
-    error: planGate.message,
-    title: planGate.title,
-    limit: planGate.limit,
-    current: planGate.current,
-    tier: planGate.tier,
-    requiredTier: planGate.requiredTier,
-    action: 'upgrade',
-  };
-}
-
-function broadcastWorkspaceSwitch(resRoot, previous, grandfathered) {
-  for (const w of BrowserWindow.getAllWindows()) {
-    try { w._attachReportsWatcher?.(); } catch { /* window tearing down */ }
-  }
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed()) {
-        w.webContents.send('workspace:changed', {
-          root: resRoot,
-          previous: previous ?? null,
-          grandfathered: [...grandfathered],
-          at: Date.now(),
-        });
-      }
-    } catch { /* best-effort */ }
-  }
-}
-
-function switchWorkspaceRoot(rawRoot) {
-  const forbiddenPrefix = app.isPackaged ? process.resourcesPath : null;
-  const planGate = validateWorkspacePlan(rawRoot, logLine);
-  if (planGate) return planGate;
-
-  const res = workspaceOnboarding.commitWorkspaceRoot(rawRoot, { forbiddenPrefix });
-  if (!res.ok) {
-    logLine(`workspace:switch REJECT ${rawRoot} → ${res.reason}`);
-    return res;
-  }
-  rememberWorkspaceRoot(res.root);
-  if (res.persisted === false) {
-    logLine(`workspace:switch ${res.root} — DİSKE YAZILAMADI (${res.persistError}); seçim yalnız bu oturumda geçerli`);
-  }
-  const transition = workspaceSwitch.applyWorkspaceSwitch({
-    current: agentWorkspaceRoot,
-    activeRoots,
-    grandfathered: grandfatheredRoots,
-    next: res.root,
-  });
-  const previous = transition.previous;
-  if (!transition.changed) {
-    logLine(`workspace:switch no-op (already ${res.root})`);
-    return { ok: true, root: res.root, previous, changed: false, persisted: res.persisted !== false, persistError: res.persistError ?? null };
-  }
-  agentWorkspaceRoot = transition.current;
-  seedBuiltinSkills('workspace-switch');
-  syncSkillEngineViews('workspace-switch');
-  invalidateGitBranchCache();
-  broadcastWorkspaceSwitch(res.root, previous, grandfatheredRoots);
-  logLine(`workspace:switch ${previous ?? '-'} → ${res.root} (grandfathered ${grandfatheredRoots.size})`);
-  return {
-    ok: true,
-    root: res.root,
-    previous: previous ?? null,
-    changed: true,
-    grandfathered: [...grandfatheredRoots],
-    persisted: res.persisted !== false,
-    persistError: res.persistError ?? null,
-  };
-}
-
-/**
- * ADP-852 v3 — P0: HESAP KÖKÜ BAĞLANDIKTAN SONRA ÇALIŞMA ALANINI YENİDEN ÇÖZ.
- *
- * KÖK NEDEN (ölçüldü, repro-R1): `agentWorkspaceRoot` yukarıda MODÜL YÜKLENİRKEN
- * çözülür. O an `process.env.CREWPANE_ACCOUNT` HENÜZ YAZILMAMIŞTIR — pin'i
- * `bindAccountRoot('boot')` yazar (aşağıda, `app.whenReady` içinde). Dolayısıyla boot
- * okuması HESAPSIZ köke (`~/.crewpane/settings.json`) gider; kullanıcının gerçek
- * ayarı ise hesap kökünde (`~/.crewpane/accounts/<key>/settings.json`) yaşar
- * (oraya ADP-703 `claimLegacyData` TAŞIMIŞTIR — yani instance kökünde artık YOKTUR).
- * Sonuç: `agentWorkspaceRoot = null` olarak DONAR ve bir daha sorulmaz.
- *
- * Kullanıcının gördüğü çelişki tam olarak buydu: Ayarlar→Genel ham ayarı okuduğu için
- * klasörü DOLU gösteriyor, Sistem Durumu donmuş `null`'u okuduğu için KIRMIZI
- * "Çalışma klasörü seçilmedi" diyor — ve hiçbir ekran bunu düzeltmenin yolunu vermiyor.
- *
- * `bindAccountRoot` zaten `agentSettings.invalidateCache()` çağırıyor (ADP-716); eksik
- * olan tek şey, o taze ayardan çözülen kökü BU SÜREÇTE benimsemekti. ADP-852'nin
- * kendi dersi burada tekrar ediyor: düzeltmeyi relaunch'a bırakma, aynı süreçte uygula.
- */
-function reresolveWorkspaceRootAfterAccountBind() {
-  const fallback = app.isPackaged || FORCE_FIRST_RUN ? null : REPO_ROOT;
-  const status = agentSettings.configuredWorkspaceRootStatus();
-  const next = status.root || fallback;
-  if (!next || next === agentWorkspaceRoot) {
-    // Kullanılabilir kök YOK: sebebi logla (sessiz kalma) — doctor da aynı hükmü gösterir.
-    if (!agentWorkspaceRoot && status.configured) {
-      logLine(`workspace: seçili kök KULLANILAMIYOR (${status.reason}${status.code ? `/${status.code}` : ''}): ${status.configured}`);
-    }
-    return;
-  }
-  const transition = workspaceSwitch.applyWorkspaceSwitch({
-    current: agentWorkspaceRoot,
-    activeRoots,
-    grandfathered: grandfatheredRoots,
-    next,
-  });
-  if (!transition.changed) return;
-  agentWorkspaceRoot = transition.current;
-  invalidateGitBranchCache(); // B-02 (§3) — kök değişti, dal cache'i bayat
-  logLine(`workspace: hesap bağlandıktan sonra yeniden çözüldü → ${agentWorkspaceRoot} (kaynak=${status.source})`);
-}
-
-/**
- * SKL-B0 — MOTOR GÖRÜNÜMLERİNİ EŞİTLE (tetik; fiilin kendisi skillEngineView'da).
- *
- * KÖK NEDEN (ölçüldü, SKILL-LIBRARY-DESIGN §6.2): `reconcileEngineViews` YALNIZ
- * yayın/geri-alma fiilinden çağrılıyordu. Motor defteri ENG-13/ENG-14 ile büyüyünce
- * (gemini · qwen · droid) o fiil bir daha koşmadı ⇒ üç motorun skill dizini HİÇ
- * oluşmadı ve pane'leri yayındaki skilleri GÖRMEDİ (`gemini skills list` →
- * "No skills discovered."). Defter büyümesi bir YAYIN OLAYI DEĞİLDİR; bu yüzden
- * tetik çalışma alanının HAZIR OLDUĞU ana bağlanır, yayına değil.
- *
- * İki çağrı noktası:
- *   • boot             — hesap bağlandıktan SONRA (kök artık kesin)
- *   • workspace-switch — kök değişti, YENİ kökün motor dizinleri hiç kurulmamış olabilir
- *
- * Uygulama sürümü bir SÜREÇ İÇİNDE değişemez (güncelleme yeniden başlatma ister),
- * dolayısıyla "sürüm değişince de koşsun" koşulunu açılış koşusu KAPSAR — sürüm
- * damgası log satırındadır, yani hangi sürümde koştuğu tahmin değil kayıttır.
- */
-/**
- * SKL-B6 — DAHİLİ SKILL'LERİ KUR (tetik; fiilin kendisi `builtinSkills.cjs`te).
- *
- * NEDEN AÇILIŞTA: yeni indiren/satın alan kullanıcı uygulamayı ilk açtığında
- * skill'leri HAZIR bulmalı — "kataloğu aç, tek tek kur" bir kurulum adımı olurdu ve
- * ürünün ilk beş dakikası bunu taşımaz. İdempotenttir ve DURUMDAN türer (ilk-açılış
- * bayrağı YOK): kurulu olanı yeniden yazmaz, kullanıcının düzenlediği kopyaya
- * DOKUNMAZ, kullanıcının kaldırdığını GERİ KURMAZ (`optOut` defteri).
- *
- * Sürüm yükseltmesi de aynı yoldan geçer: yeni skill kurulur, el değmemiş kopya
- * tazelenir, çatal korunur ve "güncelleme bekliyor" olarak raporlanır.
- *
- * ASLA FIRLATMAZ: tohumlama bir açılış adımıdır; düşerse uygulama açılmaya devam eder.
- */
-function seedBuiltinSkills(reason) {
-  try {
-    return builtinSkills.ensureInstalled({
-      workspaceRoot: agentWorkspaceRoot,
-      reviewedBy: 'builtin-catalog',
-      log: (line) => logLine(`builtin-skills[${reason}] ${line.replace(/^builtin-skills /, '')}`),
-    });
-  } catch (err) {
-    logLine(`builtin-skills[${reason}] tetik hatası: ${err.message}`);
-    return { ran: false, reason: 'error', error: err.message, installed: [], updated: [], preserved: [], pending: [], conflicts: [], failed: [] };
-  }
-}
-
-function syncSkillEngineViews(reason) {
-  try {
-    return skillEngineSync.syncEngineViews({
-      workspaceRoot: agentWorkspaceRoot,
-      appVersion: app.getVersion(),
-      reason,
-      log: (line) => logLine(line),
-    });
-  } catch (err) {
-    // Eşitleme bir açılış adımıdır: düşerse uygulama açılmaya DEVAM eder.
-    logLine(`skill-views[${reason}] tetik hatası: ${err.message}`);
-    return { ran: false, reason: 'error', error: err.message, report: null, summary: null };
-  }
-}
-
 const {
   gitBranchCache,
   GIT_BRANCH_TTL_MS,
   invalidateGitBranchCache,
 } = require('./src/shared/utils');
+
+// ── ADP-103/232-B/232-C/852 — ÇALIŞMA ALANI KÖK VE GEÇİŞ SERVİSİ (src/features/services/workspaceRootService.js - Faz 3.6.38)
+const workspaceRootService = createWorkspaceRootService({
+  app,
+  BrowserWindow,
+  workspaceOnboarding,
+  workspaceSwitch,
+  agentSettings,
+  builtinSkills,
+  skillEngineSync,
+  invalidateGitBranchCache,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  setAgentWorkspaceRoot: (val) => { agentWorkspaceRoot = val; },
+  workspacePlanDenial,
+  rememberWorkspaceRoot,
+  logLine,
+  repoRoot: REPO_ROOT,
+  forceFirstRun: FORCE_FIRST_RUN,
+});
+
+const activeRoots = workspaceRootService.activeRoots;
+function switchWorkspaceRoot(rawRoot) {
+  return workspaceRootService.switchWorkspaceRoot(rawRoot);
+}
+function reresolveWorkspaceRootAfterAccountBind() {
+  return workspaceRootService.reresolveWorkspaceRootAfterAccountBind();
+}
+function seedBuiltinSkills(reason) {
+  return workspaceRootService.seedBuiltinSkills(reason);
+}
+function syncSkillEngineViews(reason) {
+  return workspaceRootService.syncSkillEngineViews(reason);
+}
 
 // ── ADP-103/108/109/437 — ÇALIŞMA ALANI DOSYA VE KALICILIK SERVİSİ (src/features/services/workspaceFileService.js - Faz 3.6.27)
 const workspaceFileService = createWorkspaceFileService({
