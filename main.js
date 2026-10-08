@@ -689,31 +689,43 @@ const RESTORE_DISABLED = process.env.CREWPANE_DISABLE_RESTORE === '1';
 //   • gelen her kayıt ürünün KENDİ şemasından geçer (`validateRegistry`) — geçmeyen
 //     kayıt YÜKLENMEZ (fail-closed): test kendi hayalini değil ürünün sözleşmesini
 //     doğrular,
-//   • gerçek motor kayıtlarının ÜSTÜNE yazmaz, YANINA eklenir.
-function capabilityRegistry() {
-  const env = process.env;
-  if (env.CREWPANE_FAKE_ENGINE_DESCRIPTORS !== '1') return engineRegistry;
-  let raw = null;
-  try { raw = JSON.parse(String(env.CREWPANE_FAKE_ENGINE_DESCRIPTORS_JSON || '{}')); } catch { return engineRegistry; }
-  if (!raw || typeof raw !== 'object') return engineRegistry;
-  const map = {};
-  for (const id of engineRegistry.engineIds()) map[id] = engineRegistry.getEngine(id);
+function parseFakeDescriptors(env) {
+  if (env.CREWPANE_FAKE_ENGINE_DESCRIPTORS !== '1') return null;
+  try {
+    const raw = JSON.parse(String(env.CREWPANE_FAKE_ENGINE_DESCRIPTORS_JSON || '{}'));
+    return (raw && typeof raw === 'object') ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeFakeDescriptors(baseMap, raw) {
   let added = 0;
   for (const [id, d] of Object.entries(raw)) {
-    if (!d || typeof d !== 'object' || map[id]) continue; // gerçek kaydı EZMEZ
+    if (!d || typeof d !== 'object' || baseMap[id]) continue; // gerçek kaydı EZMEZ
     const verdict = engineRegistry.validateRegistry({ [id]: d });
     if (!verdict || verdict.ok !== true) {
       const errs = (verdict && verdict.errors && verdict.errors[id]) || [];
       logLine(`engine:capabilityMatrix fake descriptor REDDEDİLDİ id=${id} errors=${errs.length}: ${errs.slice(0, 3).join(' · ')}`);
       continue;
     }
-    map[id] = d;
+    baseMap[id] = d;
     added += 1;
   }
+  return added;
+}
+
+function capabilityRegistry() {
+  const raw = parseFakeDescriptors(process.env);
+  if (!raw) return engineRegistry;
+  const map = {};
+  for (const id of engineRegistry.engineIds()) map[id] = engineRegistry.getEngine(id);
+  const added = mergeFakeDescriptors(map, raw);
   if (!added) return engineRegistry;
   logLine(`engine:capabilityMatrix fake descriptors loaded count=${added}`);
   return engineRegistry.createRegistry(map);
 }
+
 
 function crewpaneHome() {
   return process.env.CREWPANE_HOME || os.homedir();
@@ -3191,28 +3203,52 @@ const grandfatheredRoots = new Set();
  * NOT re-pointed — see its comment at the top; the desktop file/results surfaces do
  * not depend on it (they go through this main-side root).
  */
+function validateWorkspacePlan(rawRoot, log) {
+  const planGate = workspacePlanDenial(rawRoot);
+  if (!planGate) return null;
+  log(`workspace:switch REDDEDİLDİ (plan): ${rawRoot} — ${planGate.tier} tavan=${planGate.limit}`);
+  return {
+    ok: false,
+    reason: 'plan_limit',
+    error: planGate.message,
+    title: planGate.title,
+    limit: planGate.limit,
+    current: planGate.current,
+    tier: planGate.tier,
+    requiredTier: planGate.requiredTier,
+    action: 'upgrade',
+  };
+}
+
+function broadcastWorkspaceSwitch(resRoot, previous, grandfathered) {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w._attachReportsWatcher?.(); } catch { /* window tearing down */ }
+  }
+  for (const w of BrowserWindow.getAllWindows()) {
+    try {
+      if (!w.isDestroyed()) {
+        w.webContents.send('workspace:changed', {
+          root: resRoot,
+          previous: previous ?? null,
+          grandfathered: [...grandfathered],
+          at: Date.now(),
+        });
+      }
+    } catch { /* best-effort */ }
+  }
+}
+
 function switchWorkspaceRoot(rawRoot) {
   const forbiddenPrefix = app.isPackaged ? process.resourcesPath : null;
-  // BL-01 — paket tavanı, kök DEĞİŞTİRİLMEDEN önce. Bilinen bir köke dönüş buradan
-  // sessizce geçer (workspacePlanDenial'ın 1. kuralı); yalnız YENİ bir klasörü
-  // çalışma alanı yapmak tavana takılır ve kullanıcı nudge'ı EKRANDA görür.
-  const planGate = workspacePlanDenial(rawRoot);
-  if (planGate) {
-    logLine(`workspace:switch REDDEDİLDİ (plan): ${rawRoot} — ${planGate.tier} tavan=${planGate.limit}`);
-    return { ok: false, reason: 'plan_limit', error: planGate.message, title: planGate.title,
-      limit: planGate.limit, current: planGate.current, tier: planGate.tier,
-      requiredTier: planGate.requiredTier, action: 'upgrade' };
-  }
+  const planGate = validateWorkspacePlan(rawRoot, logLine);
+  if (planGate) return planGate;
+
   const res = workspaceOnboarding.commitWorkspaceRoot(rawRoot, { forbiddenPrefix });
   if (!res.ok) {
     logLine(`workspace:switch REJECT ${rawRoot} → ${res.reason}`);
     return res;
   }
-  rememberWorkspaceRoot(res.root); // BL-01 — artık bilinen bir alan (sayımın tabanı)
-  // ADP-946 — SEÇİM DİSKE İNMEDİYSE SESSİZ KALMA. Canlı geçiş yine yapılır (bu
-  // oturumda çalışır), ama "yeniden açılışta duracak" İDDİASI artık ölçülmüş bir
-  // hükme dayanır. Windows'ta kalıcı EPERM'de kullanıcı eskiden hiçbir uyarı
-  // görmeden ilk-açılış kapısına geri dönüyordu.
+  rememberWorkspaceRoot(res.root);
   if (res.persisted === false) {
     logLine(`workspace:switch ${res.root} — DİSKE YAZILAMADI (${res.persistError}); seçim yalnız bu oturumda geçerli`);
   }
@@ -3228,33 +3264,10 @@ function switchWorkspaceRoot(rawRoot) {
     return { ok: true, root: res.root, previous, changed: false, persisted: res.persisted !== false, persistError: res.persistError ?? null };
   }
   agentWorkspaceRoot = transition.current;
-  // SKL-B6 — YENİ çalışma alanı ilk kez açılıyor olabilir: dahili skill'ler oraya da
-  // kurulur (kanonik depo workspace başınadır — tasarım §2.2 Ç-2).
   seedBuiltinSkills('workspace-switch');
-  // SKL-B0 — YENİ kökün motor dizinleri hiç kurulmamış olabilir (kurulum bir yayın
-  // fiiline bağlıydı, kök değişimine değil): kök benimsendiği anda eşitle.
   syncSkillEngineViews('workspace-switch');
-  // B-02 (§3) — kök değişti: dal cache'inin anahtarı MUTLAK YOL, yani eski
-  // köke ait girdiler yeni kökün pane'lerine yanlış dal veremez ama BAYAT da
-  // kalırlar (root-guard sonucu dahil). Tek olayda tamamen düşürülür.
   invalidateGitBranchCache();
-  // Rebuild every live window's reports watcher against the new root.
-  for (const w of BrowserWindow.getAllWindows()) {
-    try { w._attachReportsWatcher?.(); } catch { /* window tearing down */ }
-  }
-  // Tell the renderer(s) to re-root tree / reports / memory / Jarvis context.
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed()) {
-        w.webContents.send('workspace:changed', {
-          root: res.root,
-          previous: previous ?? null,
-          grandfathered: [...grandfatheredRoots],
-          at: Date.now(),
-        });
-      }
-    } catch { /* best-effort */ }
-  }
+  broadcastWorkspaceSwitch(res.root, previous, grandfatheredRoots);
   logLine(`workspace:switch ${previous ?? '-'} → ${res.root} (grandfathered ${grandfatheredRoots.size})`);
   return {
     ok: true,
@@ -3262,8 +3275,6 @@ function switchWorkspaceRoot(rawRoot) {
     previous: previous ?? null,
     changed: true,
     grandfathered: [...grandfatheredRoots],
-    // ADP-946 — renderer bunu görüp "seçim bu oturumda geçerli ama diske
-    // yazılamadı" uyarısını basabilsin; sessiz başarı iddiası biter.
     persisted: res.persisted !== false,
     persistError: res.persistError ?? null,
   };
