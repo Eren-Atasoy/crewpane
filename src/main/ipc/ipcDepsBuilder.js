@@ -92,7 +92,7 @@ function buildWorkspaceAndStorageDeps(ctx) {
     withinActiveRoots: ctx.withinActiveRoots || ((abs) => (wsRoots ? wsRoots.withinActiveRoots(abs) : true)),
     getAgentWorkspaceRoot: ctx.getAgentWorkspaceRoot || (() => ctx.agentWorkspaceRoot),
     getWorkspaceRoot: ctx.getWorkspaceRoot || (() => ctx.agentWorkspaceRoot),
-    supervisorFor: ctx.supervisorFor,
+    supervisorFor: typeof ctx.supervisorFor === 'function' ? ctx.supervisorFor : ((name) => (ctx.faultService ? ctx.faultService.supervisorFor(name) : null)),
     feedbackBridge: (typeof ctx.feedbackBridge === 'function' ? ctx.feedbackBridge : () => (ctx.mediaService ? ctx.mediaService.feedbackBridge() : null)),
     workspacePlanDenial: ctx.workspacePlanDenial || ((root) => (ctx.planLimitService ? ctx.planLimitService.workspacePlanDenial(root) : null)),
     workspaceOnboarding: ctx.workspaceOnboarding,
@@ -239,9 +239,9 @@ function buildTerminalAndExecutionDeps(ctx) {
     _resolveTranscriptAndBudgetOps(ctx),
     _resolvePaneViewAndDispatchOps(ctx),
     {
-      resourceGovernor: ctx.resourceGovernor,
+      resourceGovernor: ctx.resourceGovernor || (() => (ctx.resourceGovernorService ? ctx.resourceGovernorService.resourceGovernor() : null)),
       agentRunner: ctx.agentRunner,
-      resourceGovernorModule: ctx.resourceGovernorModule,
+      resourceGovernorModule: ctx.resourceGovernorModule || (ctx.resourceGovernorService ? ctx.resourceGovernorService.resourceGovernorModule : null),
       engineDelegation: ctx.engineDelegation,
       prepareTaskIsolation: ctx.prepareTaskIsolation || (ctx.ptyIsolationService ? (opts) => ctx.ptyIsolationService.prepareTaskIsolation(opts) : null),
       preflightModelGate: ctx.preflightModelGate || (ctx.ptyIsolationService ? (opts, trusted) => ctx.ptyIsolationService.preflightModelGate(opts, trusted) : null),
@@ -485,13 +485,37 @@ function _resolveSystemTelemetryAndFaultOps(ctx) {
   };
 }
 
+function _resolveSystemAuthAndUrlOps(ctx) {
+  return {
+    getSeatGate: () => (typeof ctx.getSeatGate === 'function' ? ctx.getSeatGate() : (ctx.authService ? ctx.authService.getSeatGate() : ctx.seatGate)),
+    signOutConfirmCopy: typeof ctx.signOutConfirmCopy === 'function' ? ctx.signOutConfirmCopy : ((p) => (ctx.authService ? ctx.authService.signOutConfirmCopy(p) : '')),
+    relaunchForAccountChange: typeof ctx.relaunchForAccountChange === 'function' ? ctx.relaunchForAccountChange : ((k, r) => (ctx.authService ? ctx.authService.relaunchForAccountChange(k, r) : null)),
+    handleAuthUrl: typeof ctx.handleAuthUrl === 'function' ? ctx.handleAuthUrl : ((u) => (ctx.authUrlService ? ctx.authUrlService.handleAuthUrl(u) : null)),
+    appDbTokenFor: typeof ctx.appDbTokenFor === 'function' ? ctx.appDbTokenFor : ((action) => (ctx.backendEnvService ? ctx.backendEnvService.appDbTokenFor(action) : null)),
+  };
+}
+
+function _resolveEngineAndDoctorOps(ctx) {
+  const api = ctx.apiKeyService;
+  return {
+    runDoctorNow: typeof ctx.runDoctorNow === 'function' ? ctx.runDoctorNow : (() => (ctx.doctorService ? ctx.doctorService.runDoctorNow() : null)),
+    hookScanHome: typeof ctx.hookScanHome === 'function' ? ctx.hookScanHome : (() => (ctx.doctorService ? ctx.doctorService.hookScanHome() : null)),
+    verifyAppApiKey: ctx.verifyAppApiKey || ((svc) => (api ? api.verifyAppApiKey(svc) : false)),
+    aiProvidersPayload: ctx.aiProvidersPayload || ((s) => (api ? api.aiProvidersPayload(s) : {})),
+    engineModelCatalogPayload: ctx.engineModelCatalogPayload || (() => (api ? api.engineModelCatalogPayload() : {})),
+    appApiKeysPayload: ctx.appApiKeysPayload || (() => (api ? api.appApiKeysPayload() : {})),
+    engineKeyStore: () => (ctx.engineKeyStore ? ctx.engineKeyStore() : (ctx.integrationService ? ctx.integrationService.engineKeyStore() : null)),
+  };
+}
+
 function buildSystemAuthAndEngineDeps(ctx) {
   const rb = ctx.resetBootService;
   const upd = ctx.updateService;
   const chg = ctx.changelogService;
-  const api = ctx.apiKeyService;
   return {
     ..._resolveSystemTelemetryAndFaultOps(ctx),
+    ..._resolveSystemAuthAndUrlOps(ctx),
+    ..._resolveEngineAndDoctorOps(ctx),
     getLogPath: () => ctx.LOG_PATH,
     analyticsSchema: ctx.analyticsSchema,
     credentialGate: ctx.credentialGate,
@@ -500,22 +524,16 @@ function buildSystemAuthAndEngineDeps(ctx) {
     telemetryMod: ctx.telemetryMod,
     provisionStoreMod: ctx.provisionStoreMod,
     telemetryChannelMod: ctx.telemetryChannelMod,
-    getSeatGate: () => (typeof ctx.getSeatGate === 'function' ? ctx.getSeatGate() : (ctx.authService ? ctx.authService.getSeatGate() : ctx.seatGate)),
     gateOverrides: ctx.gateOverrides,
-    signOutConfirmCopy: typeof ctx.signOutConfirmCopy === 'function' ? ctx.signOutConfirmCopy : ((p) => (ctx.authService ? ctx.authService.signOutConfirmCopy(p) : '')),
     accountScope: ctx.accountScope,
-    relaunchForAccountChange: typeof ctx.relaunchForAccountChange === 'function' ? ctx.relaunchForAccountChange : ((k, r) => (ctx.authService ? ctx.authService.relaunchForAccountChange(k, r) : null)),
     schemeOwnership: ctx.schemeOwnership,
     getSchemeVerdict: () => ctx.schemeVerdict,
     setSchemeVerdict: (v) => { ctx.schemeVerdict = v; },
     isAutomatedSession: ctx.isAutomatedSession ?? ctx.IS_AUTOMATED_SESSION,
     automatedSessionReason: ctx.automatedSessionReason ?? ctx.AUTOMATED_SESSION_REASON,
     secretBackendState: ctx.secretBackendState,
-    handleAuthUrl: typeof ctx.handleAuthUrl === 'function' ? ctx.handleAuthUrl : ((u) => (ctx.authUrlService ? ctx.authUrlService.handleAuthUrl(u) : null)),
     crewpaneIdConfig: ctx.crewpaneIdConfig,
-    verifyAppApiKey: ctx.verifyAppApiKey || ((svc) => (api ? api.verifyAppApiKey(svc) : false)),
     planLimits: ctx.planLimits,
-    appDbTokenFor: ctx.appDbTokenFor,
     resetContext: (log) => (rb ? rb.resetContext(log) : null),
     installReset: ctx.installReset,
     resetGate: ctx.resetGate,
@@ -524,9 +542,6 @@ function buildSystemAuthAndEngineDeps(ctx) {
     handOverlayContract: ctx.handOverlayContract,
     updateChannel: ctx.updateChannel,
     currentUpdateChannel: () => (upd ? upd.currentUpdateChannel() : 'auto'),
-    aiProvidersPayload: ctx.aiProvidersPayload || ((s) => (api ? api.aiProvidersPayload(s) : {})),
-    engineModelCatalogPayload: ctx.engineModelCatalogPayload || (() => (api ? api.engineModelCatalogPayload() : {})),
-    appApiKeysPayload: ctx.appApiKeysPayload || (() => (api ? api.appApiKeysPayload() : {})),
     engineCatalog: ctx.engineCatalog,
     teamScope: ctx.teamScope,
     browserTrustMod: ctx.browserTrustMod,
@@ -546,13 +561,10 @@ function buildSystemAuthAndEngineDeps(ctx) {
     limitDetect: ctx.limitDetect,
     getResetBootNotice: () => (rb ? rb.getResetBootNotice() : null),
     demoSitePath: ctx.demoSitePath,
-    runDoctorNow: ctx.runDoctorNow,
     firstRunDoctor: ctx.firstRunDoctor,
-    hookScanHome: ctx.hookScanHome,
     changelogStateForRenderer: () => (chg ? chg.changelogStateForRenderer() : {}),
     runChangelogCheck: (trigger) => (chg ? chg.runChangelogCheck(trigger) : null),
     getChangelogState: () => (chg ? chg.getChangelogState() : { items: [] }),
-    engineKeyStore: () => (ctx.engineKeyStore ? ctx.engineKeyStore() : (ctx.integrationService ? ctx.integrationService.engineKeyStore() : null)),
     engineLoginLedger: ctx.engineLoginLedger,
     planCatalog: ctx.planCatalog,
   };

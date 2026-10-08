@@ -238,11 +238,8 @@ const integrityService = createIntegrityService({
   resourcesPath: process.resourcesPath || null,
   logLine: (line) => logLine(line),
   analyticsNow: () => telemetryService.analyticsNow(),
-  obsReporterNow: () => obsReporterNow(),
+  obsReporterNow: () => (typeof faultService !== 'undefined' && faultService ? faultService.obsReporterNow() : null),
 });
-function integrityReportOnce() {
-  return integrityService.integrityReportOnce();
-}
 const analyticsSchema = require('./telemetry/analyticsSchema.cjs');
 // INT-OBS-01 — tek jetondan otomatik kurulum (org bul → proje aç → anahtar çek →
 // kanal başına yaz → doğrulama olayı) + sonucun şifreli defteri.
@@ -385,33 +382,7 @@ const backendEnvService = createBackendEnvService({
   dialog,
 });
 
-function publicSupabaseEnv() {
-  return backendEnvService.publicSupabaseEnv();
-}
-function appDbIdentityMode() {
-  return backendEnvService.appDbIdentityMode();
-}
-function appDbTokenFor(action) {
-  return backendEnvService.appDbTokenFor(action);
-}
-const mobileAppDbToken = () => backendEnvService.mobileAppDbToken();
-function envLayerView() {
-  return backendEnvService.envLayerView();
-}
-function logEnvBannerAndGuard() {
-  return backendEnvService.logEnvBannerAndGuard();
-}
-function rendererSupabaseTarget() {
-  return backendEnvService.rendererSupabaseTarget();
-}
-
-function hookScanHome() {
-  return doctorService.hookScanHome();
-}
-
-function runDoctorNow() {
-  return doctorService.runDoctorNow();
-}
+// BackendEnv and Doctor routines directly dispatched via backendEnvService and doctorService
 
 // ADP-192 — restart-resume. Auto re-spawn the running agent panes on the next
 // launch (unattended — see [[autopilot-auto-resume]]). Kill-switch: set
@@ -617,7 +588,7 @@ const stdioGuards = stdioGuard.installStdioGuards({
   // ve log açılır. Pencere YOKSA (açılıştan önce) diyalog kalır: orada sessizlik = kullanıcı
   // hiçbir şey göremeden ölmüş bir uygulama demek.
   onFatal: (err) => {
-    reportModuleFault({
+    faultService.reportModuleFault({
       module: 'main',
       label: 'uncaughtException',
       message: String((err && err.message) || err),
@@ -722,9 +693,9 @@ const doctorService = createDoctorService({
   instancePaths,
   os,
   getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  getRendererSupabaseTarget: () => rendererSupabaseTarget(),
-  getEnvLayerView: () => envLayerView(),
-  getIdentityMode: () => appDbIdentityMode().mode,
+  getRendererSupabaseTarget: () => backendEnvService.rendererSupabaseTarget(),
+  getEnvLayerView: () => backendEnvService.envLayerView(),
+  getIdentityMode: () => backendEnvService.appDbIdentityMode().mode,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   getWorkspaceStatus: () => agentSettings.configuredWorkspaceRootStatus(),
   getSecretBackend: () => secretBackendState.secretBackendState(),
@@ -733,7 +704,7 @@ const doctorService = createDoctorService({
 
 // ── ADP-307/900/727 — BAŞLANGIÇ SÜPÜRGE VE BAKIM SERVİSİ (src/features/system/startupSweepService.js - Faz 3.6.18)
 const startupSweepService = createStartupSweepService({
-  getPublicSupabaseEnv: () => publicSupabaseEnv(),
+  getPublicSupabaseEnv: () => backendEnvService.publicSupabaseEnv(),
   agentSettings,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   getMemoryIndexer: () => memoryService.memoryIndexer(),
@@ -753,7 +724,7 @@ const startupGate = createStartupGate({
   resetGate,
   resetBootService,
   resetT: (k) => resetBootService.resetT(k),
-  logEnvBannerAndGuard: () => logEnvBannerAndGuard(),
+  logEnvBannerAndGuard: () => backendEnvService.logEnvBannerAndGuard(),
   applyAppLocale: () => appLocaleService.applyAppLocale(),
   initLog: () => initLog(),
   logLine: (line) => logLine(line),
@@ -775,8 +746,8 @@ const telemetryService = createTelemetryService({
   crewpaneEnv,
   logLine,
   getSeatGate: () => (typeof authService !== 'undefined' && authService ? authService.getSeatGate() : null),
-  appDbTokenFor: (action) => appDbTokenFor(action),
-  rendererSupabaseTarget: () => rendererSupabaseTarget(),
+  appDbTokenFor: (action) => backendEnvService.appDbTokenFor(action),
+  rendererSupabaseTarget: () => backendEnvService.rendererSupabaseTarget(),
   currentUpdateChannel: () => updateService.currentUpdateChannel(),
   isAutoUpdaterActive: () => updateService.isAutoUpdaterActive(),
   resolveCredential: (service) => credentialGate.resolveCredential(service, { rootDir: REPO_ROOT }),
@@ -788,7 +759,7 @@ const telemetryService = createTelemetryService({
 const paneRestoreService = createPaneRestoreService({
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
-  reportModuleFault: (fault) => reportModuleFault(fault),
+  reportModuleFault: (fault) => (typeof faultService !== 'undefined' && faultService ? faultService.reportModuleFault(fault) : null),
   planDenial: (feature, current, opts) => planLimitService.planDenial(feature, current, opts),
   spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
   getAppWindow: () => appWindow,
@@ -847,9 +818,9 @@ const ptySpawnService = createPtySpawnService({
   integrationResolverOrNull: () => integrationService.integrationResolverOrNull(),
   codeIndexResolverOrNull: () => codeIndexService.codeIndexResolverOrNull(),
   getDelegationBridge: () => (delegationBridgeService ? delegationBridgeService.getBridge() : null),
-  publicSupabaseEnv: () => publicSupabaseEnv(),
+  publicSupabaseEnv: () => backendEnvService.publicSupabaseEnv(),
   engineKeyStore: () => integrationService.engineKeyStore(),
-  reportModuleFault: (fault) => reportModuleFault(fault),
+  reportModuleFault: (fault) => (typeof faultService !== 'undefined' && faultService ? faultService.reportModuleFault(fault) : null),
   settleMemoryUsage: (opts) => memoryService.settleMemoryUsage(opts),
   scheduleSupervisorSweep: (delayMs) => delegationSupervisorService.scheduleSupervisorSweep(delayMs),
   sendPaneEvent: (win, paneId, channel, payload) => (windowManager ? windowManager.sendPaneEvent(win, paneId, channel, payload) : null),
@@ -894,15 +865,7 @@ const faultService = createFaultService({
   appRoot: path.resolve(__dirname, '..'),
 });
 
-function obsReporterNow() {
-  return faultService.obsReporterNow();
-}
-function reportModuleFault(fault, extra) {
-  return faultService.reportModuleFault(fault, extra);
-}
-function supervisorFor(name) {
-  return faultService.supervisorFor(name);
-}
+// Fault and supervisor routines directly dispatched via faultService
 
 // ── ADP-659/660/667/672/838 — DELEGASYON SUPERVISOR SERVİSİ (src/features/agents/delegationSupervisorService.js - Faz 3.6.22)
 const delegationSupervisorService = createDelegationSupervisorService({
@@ -911,10 +874,10 @@ const delegationSupervisorService = createDelegationSupervisorService({
   logLine: (line) => logLine(line),
   getAppWindow: () => appWindow,
   planDenial: (feat, count, opts) => planLimitService.planDenial(feat, count, opts),
-  supervisorFor: (name) => supervisorFor(name),
+  supervisorFor: (name) => faultService.supervisorFor(name),
   resolveWorkerNotifyPath: (dept) => ptyResumeService.resolveWorkerNotifyPath(dept),
-  rendererSupabaseTarget: () => rendererSupabaseTarget(),
-  appDbTokenFor: (action) => appDbTokenFor(action),
+  rendererSupabaseTarget: () => backendEnvService.rendererSupabaseTarget(),
+  appDbTokenFor: (action) => backendEnvService.appDbTokenFor(action),
   telemetryBump: (key, by, props) => telemetryService.telemetryBump(key, by, props),
   resetCommandFor: (cmd) => paneControlService.resetCommandFor(cmd),
   maxTasksPerSession: 10,
@@ -1032,46 +995,13 @@ const paneDispatchService = createPaneDispatchService({
 // kart görür ("yine de aç / bitmiş pane'leri kapat / bekle") ve "yine de aç" HER
 // ZAMAN vardır (Eren 02.09: "hiçbir limit olmaması gerekiyor"). Bekçi Ayarlar'dan
 // tamamen kapatılabilir; ölçüm yapılamazsa fail-open.
-const resourceGovernorModule = require('./src/terminal/resourceGovernor.cjs');
-let _resourceGovernor = null;
-let _resourceGovernorTimer = null;
-
-/** Kaynak bekçisi tekili (TEMBEL — ayar okuması app hazır olmadan güvenilmez). */
-function resourceGovernor() {
-  if (_resourceGovernor) return _resourceGovernor;
-  let settings;
-  try {
-    settings = agentSettings.readSettings().resourceGovernor;
-  } catch {
-    settings = undefined; // ayar okunamadı → modül varsayılanları (fail-open ruhu)
-  }
-  if (!settings) {
-    settings = { enabled: false, warnFreePct: 1, criticalFreePct: 0 };
-  }
-  _resourceGovernor = resourceGovernorModule.createGovernor({
-    settings,
-    log: (line) => logLine(line),
-    onChange: (state) => {
-      if (appWindow && !appWindow.isDestroyed()) {
-        try { appWindow.webContents.send('resource:pressure', state); } catch { /* pencere gitti */ }
-      }
-    },
-  });
-  return _resourceGovernor;
-}
-
-/** Örneklemeyi başlat (idempotent). Zamanlayıcı `unref` — çıkışı geciktirmez. */
-function startResourceGovernorSampling() {
-  if (_resourceGovernorTimer) return;
-  const gov = resourceGovernor();
-  const period = Math.max(1000, Number(gov.state().settings.sampleMs) || 5000);
-  try { gov.sample(); } catch (err) { logLine(`resourceGovernor ilk ölçüm patladı: ${err.message}`); }
-  _resourceGovernorTimer = setInterval(() => {
-    try { gov.sample(); } catch (err) { logLine(`resourceGovernor ölçüm patladı: ${err.message}`); }
-  }, period);
-  if (_resourceGovernorTimer.unref) _resourceGovernorTimer.unref();
-  logLine(`resourceGovernor: örnekleme başladı (${period} ms)`);
-}
+// ── ADP-264 — KAYNAK BEKÇİSİ SERVİSİ (src/features/system/resourceGovernorService.js - Faz 3.6.58)
+const { createResourceGovernorService } = require('./src/features/system');
+const resourceGovernorService = createResourceGovernorService({
+  agentSettings,
+  getAppWindow: () => appWindow,
+  logLine,
+});
 
 // ADP-050 — the live app window (IPC target for the delegation bridge) + the
 // started bridge handle ({ port, token, stop, info }). One window in this app.
@@ -1117,7 +1047,7 @@ const crashWatchdogService = createCrashWatchdogService({
   BrowserWindow,
   ptys,
   logLine,
-  resourceGovernor: () => resourceGovernor(),
+  resourceGovernor: () => resourceGovernorService.resourceGovernor(),
   crashWatchdog,
 });
 
@@ -1208,7 +1138,7 @@ const authService = createAuthService({
   logLine,
   getAppWindow: () => appWindow,
   pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
-  integrityReportOnce: () => integrityReportOnce(),
+  integrityReportOnce: () => integrityService.integrityReportOnce(),
   ptys,
   persistScreenTails: () => paneQueryService.persistScreenTails(),
   livePaneRegistry,
@@ -1217,7 +1147,7 @@ const authService = createAuthService({
   noteQuit: (r) => noteQuit(r),
   armQuitBrake: (r) => armQuitBrake(r),
   agentSettings,
-  getResourceGovernor: () => _resourceGovernor,
+  getResourceGovernor: () => resourceGovernorService.resourceGovernor(),
   appI18n,
   testSeamDeps: {
     updateCheck,
@@ -1471,7 +1401,7 @@ function _buildWindowAndWorkspaceDeps() {
     workspaceFileService,
     workspaceRootService,
     agentWorkspaceRoot,
-    supervisorFor,
+    faultService,
     workspaceOnboarding,
     worktreeStore,
     projectRepos,
@@ -1515,9 +1445,8 @@ function _buildTerminalAndExecutionIpcDeps() {
     paneTranscriptService,
     paneDispatchService,
     paneAskService,
-    resourceGovernor,
+    resourceGovernorService,
     agentRunner,
-    resourceGovernorModule,
     engineDelegation,
     spendGuard,
     leaderComposer,
@@ -1610,7 +1539,7 @@ function _buildSystemAndEngineIpcDeps() {
     authUrlService,
     crewpaneIdConfig,
     planLimits,
-    appDbTokenFor,
+    backendEnvService,
     installReset,
     resetGate,
     leaderRefreshPolicy,
@@ -1633,9 +1562,8 @@ function _buildSystemAndEngineIpcDeps() {
     engineSwitch,
     limitDetect,
     demoSitePath,
-    runDoctorNow,
+    doctorService,
     firstRunDoctor,
-    hookScanHome,
     engineLoginLedger,
     planCatalog,
     telemetryService,
@@ -1717,7 +1645,7 @@ windowManager = createWindowManager({
   app,
   preloadPath: path.join(__dirname, 'dist', 'preload.js'),
   supabaseTarget,
-  rendererSupabaseTarget,
+  backendEnvService,
   appI18n,
   applyAppLocale: () => appLocaleService.applyAppLocale(),
   isTest: instancePaths.isTest(),
@@ -1811,8 +1739,8 @@ mobileService = createMobileService({
   app,
   ptys,
   getAppWindow: () => appWindow,
-  rendererSupabaseTarget,
-  getMobileAppDbToken: () => mobileAppDbToken(),
+  rendererSupabaseTarget: () => backendEnvService.rendererSupabaseTarget(),
+  getMobileAppDbToken: () => backendEnvService.mobileAppDbToken(),
   planDenial: (f, c, o) => planLimitService.planDenial(f, c, o),
   delegationBridgeMod,
   secretRedactor,
@@ -1859,10 +1787,10 @@ const syncService = createSyncService({
   agentSettings,
   getBoundAccount: () => authService.getBoundAccount(),
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-  publicSupabaseEnv,
+  publicSupabaseEnv: () => backendEnvService.publicSupabaseEnv(),
   accountScope,
   getSeatGate: () => authService.getSeatGate(),
-  appDbTokenFor,
+  appDbTokenFor: (action) => backendEnvService.appDbTokenFor(action),
   memoryIndexDerive,
   pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
   logLine,
@@ -1972,7 +1900,7 @@ const delegationBridgeService = createDelegationBridgeService({
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   mobileService,
   notifyLog,
-  appDbTokenFor: (source) => appDbTokenFor(source),
+  appDbTokenFor: (source) => backendEnvService.appDbTokenFor(source),
   integrationsStatusFor: (req) => integrationService.integrationsStatusFor(req),
   seatDenial: (action) => authService.seatDenial(action),
   planWaveLimit: (requested) => planLimitService.planWaveLimit(requested),
@@ -2017,7 +1945,7 @@ app.whenReady().then(async () => {
     authUrlService,
     workspaceRootService,
     wireIpc,
-    startResourceGovernorSampling,
+    resourceGovernorService,
     windowManager,
     BrowserWindow,
     autotest: AUTOTEST,
@@ -2033,16 +1961,14 @@ app.whenReady().then(async () => {
     memoryService,
     jarvisVoice,
     notifyScreenshotsMovedOnce,
-    runDoctorNow,
     doctorService,
     telemetryMod,
     agentSettings,
     telemetryService,
-    obsReporterNow,
+    faultService,
     telemetryChannelMod,
     tamperSignals,
     faultInject: FAULT_INJECT,
-    supervisorFor,
     externalUrl: process.env.CREWPANE_EXTERNAL_URL,
     mode: MODE,
     delegationBridgeService,

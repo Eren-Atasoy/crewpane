@@ -14,7 +14,10 @@ function createSharedWebPreferences(deps) {
     rendererSupabaseTarget,
     appI18n,
     applyAppLocale,
+    backendEnvService,
   } = deps;
+
+  const resolveTarget = rendererSupabaseTarget || (() => (backendEnvService ? backendEnvService.rendererSupabaseTarget() : null));
 
   return {
     preload: preloadPath,
@@ -23,7 +26,7 @@ function createSharedWebPreferences(deps) {
     sandbox: true,
     backgroundThrottling: false,
     additionalArguments: [
-      supabaseTarget.encodeArgv(rendererSupabaseTarget()),
+      supabaseTarget.encodeArgv(resolveTarget()),
       appI18n.encodeArgv(applyAppLocale()),
     ],
   };

@@ -175,6 +175,19 @@ function _normalizeWorkspaceAndAuthServices(d) {
   }
 }
 
+function _normalizeDoctorAndGovernorServices(d) {
+  if (d.doctorService && !d.runDoctorNow) {
+    d.runDoctorNow = () => d.doctorService.runDoctorNow();
+  }
+  if (d.resourceGovernorService && !d.startResourceGovernorSampling) {
+    d.startResourceGovernorSampling = () => d.resourceGovernorService.startResourceGovernorSampling();
+  }
+  if (d.faultService) {
+    if (!d.obsReporterNow) d.obsReporterNow = () => d.faultService.obsReporterNow();
+    if (!d.supervisorFor) d.supervisorFor = (name) => d.faultService.supervisorFor(name);
+  }
+}
+
 function _normalizeBootDeps(deps) {
   const d = Object.assign({}, deps);
   _normalizeUpdateRoutines(d);
@@ -183,6 +196,7 @@ function _normalizeBootDeps(deps) {
   _normalizeTelemetryAndRestoreRoutines(d);
   _normalizeBridgeAndServerServices(d);
   _normalizeWorkspaceAndAuthServices(d);
+  _normalizeDoctorAndGovernorServices(d);
   return d;
 }
 

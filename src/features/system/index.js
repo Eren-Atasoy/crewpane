@@ -28,6 +28,7 @@ const { createDoctorService } = require('./doctorService');
 const { createStartupSweepService } = require('./startupSweepService');
 const { createAppLocaleService, AppLocaleService } = require('./appLocaleService');
 const { createRebuildService, RebuildService } = require('./rebuildService');
+const { createResourceGovernorService } = require('./resourceGovernorService');
 
 module.exports = {
   createCrashWatchdogService,
@@ -43,6 +44,7 @@ module.exports = {
   AppLocaleService,
   createRebuildService,
   RebuildService,
+  createResourceGovernorService,
   ANALYTICS_FUNNEL_EVENT,
   analyticsEngineOf,
   obsSurfaceFor,
