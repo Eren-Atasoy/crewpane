@@ -71,7 +71,7 @@ const {
 } = require('./src/features/services');
 const { registerMemoryIpc } = require('./src/features/memory');
 const { registerHandIpc } = require('./src/features/hand');
-const { registerSyncIpc, registerPrefsIpc } = require('./src/features/sync');
+const { registerSyncIpc, registerPrefsIpc, createSyncService } = require('./src/features/sync');
 const { registerMobileIpc, createMobileService } = require('./src/features/mobile');
 const {
   registerEngineIpc,
@@ -10550,144 +10550,30 @@ function mobileKillSwitch() { return mobileService.mobileKillSwitch(); }
 // (`bindAccountRoot`) — bu yüzden nesne LAZY kurulur ve kök değişince yeniden
 // doğar. Kök yoksa `null` döner: "hesap bağlı değil" ile "özellik kapalı" iki
 // ayrı hâldir ve karıştırılmaz.
-let _prefsProjector = null;
-let _prefsProjectorRoot = null;
-
-function prefsProjector() {
-  const root = (boundAccount && boundAccount.root) || null;
-  if (!root) { _prefsProjector = null; _prefsProjectorRoot = null; return null; }
-  if (_prefsProjector && _prefsProjectorRoot === root) return _prefsProjector;
-  try {
-    _prefsProjector = prefsProjectorFactory.createPrefsProjector({
-      dir: root,
-      deviceId: (boundAccount && boundAccount.deviceId) || null,
-      readSettings: () => agentSettings.readSettings(),
-      writeSettings: (patch) => agentSettings.writeSettings(patch),
-      // İKİ KAPI: bulut senkronu kapalıysa projeksiyon üretmenin bir alıcısı yok;
-      // `prefsSyncEnabled` ise özelliğin KENDİ geri alma koludur.
-      getEnabled: () => {
-        const st = agentSettings.readSettings();
-        return st.cloudSyncEnabled === true && st.prefsSyncEnabled !== false;
-      },
-      log: (l) => logLine(l),
-    });
-    _prefsProjectorRoot = root;
-  } catch (err) {
-    logLine(`[prefs] projektör kurulamadı: ${err.message}`);
-    _prefsProjector = null;
-    _prefsProjectorRoot = null;
-  }
-  return _prefsProjector;
-}
-
-/** Yerel ayar değişti → projeksiyonu tazele (senkron izleyicisi gerisini yapar). */
-function prefsProjectNow(reason) {
-  const p = prefsProjector();
-  if (!p) return;
-  try {
-    const r = p.projectSettings();
-    if (r && r.ok && r.changed && r.changed.length) {
-      logLine(`[prefs] projeksiyon güncellendi (${reason}): ${r.changed.join(', ')}`);
-    }
-  } catch (err) { logLine(`[prefs] projeksiyon hatası: ${err.message}`); }
-}
-
-/**
- * Uzak doküman diske indi → beyaz listeli anahtarları YEREL DURUMA uygula ve
- * renderer'a haber ver.
- *
- * ⚠️ `transformIncoming` yazımdan ÖNCE koşar; uygulama yazımdan SONRA olmak
- * zorunda. Bu yüzden kanca yalnız İŞARET koyar, iş `setImmediate` ile bir sonraki
- * tur'a bırakılır (motor o ana kadar `applyBytes`i bitirmiş olur).
- */
-let _prefsApplyQueued = false;
-function prefsApplySoon() {
-  if (_prefsApplyQueued) return;
-  _prefsApplyQueued = true;
-  setImmediate(() => {
-    _prefsApplyQueued = false;
-    const p = prefsProjector();
-    if (!p) return;
-    let applied = [];
-    try {
-      const r = p.applyToSettings();
-      applied = (r && r.applied) || [];
-    } catch (err) { logLine(`[prefs] uygulama hatası: ${err.message}`); return; }
-    // Dil değiştiyse ADP-888'in üç tüketicisi de tazelenir (main diyalogları +
-    // açık pencereler + bundan sonra doğacaklar) — restart GEREKMEZ.
-    if (applied.includes('locale')) { try { broadcastLocale(); } catch { /* dil yayını kritik değil */ } }
-    // Renderer YALNIZ "değişti" sinyalini alır; değerleri `prefs:pull` ile çeker
-    // (ADP-712 deseni: gövde IPC'de dolaşmaz).
-    try {
-      const payload = { applied, at: new Date().toISOString() };
-      if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('prefs:changed', payload);
-      for (const w of popoutWindows.values()) {
-        if (w && !w.isDestroyed()) w.webContents.send('prefs:changed', payload);
-      }
-    } catch { /* pencere kapanmış olabilir */ }
-  });
-}
-
-const syncRuntime = syncBoot.createSyncRuntime({
-  getEnabled: () => agentSettings.readSettings().cloudSyncEnabled === true,
-  getRoots: () => ({
-    workspaceRoot: agentWorkspaceRoot || null,
-    accountRoot: (boundAccount && boundAccount.root) || null,
-  }),
-  getTarget: () => {
-    const env = publicSupabaseEnv();
-    // SYNC-CLOUD-01 — HEDEF ÜÇ PARÇADIR, İKİ DEĞİL. `{url,key}` ile yetinmek
-    // BUG-R2'nin ölçtüğü arızanın ta kendisiydi: bulut projede tablolar `app`
-    // şemasındadır ve satırlar `company_id` ile kiracıya bağlıdır.
-    //   • schema eksikse    → PostgREST `public`e bakar (PGRST205, hiçbir şey gitmez)
-    //   • companyId eksikse → istemci `company_id=is.null` süzer; satırlar (trigger
-    //     doldurduğu için) DOLU gelir ⇒ okuma HER ZAMAN 0 satır, ikinci cihaz boş kalır
-    // İkisi de ADP-621/ADP-703'ün zaten çözdüğü değerler; burada yalnız İLETİLİR.
-    let companyId = null;
-    try {
-      const meta = (boundAccount && boundAccount.root) ? accountScope.readAccountMeta(boundAccount.root) : null;
-      companyId = (meta && typeof meta.companyId === 'string' && meta.companyId.trim()) ? meta.companyId.trim() : null;
-    } catch { companyId = null; }
-    return {
-      url: env.NEXT_PUBLIC_CREWPANE_SUPABASE_URL,
-      key: env.NEXT_PUBLIC_CREWPANE_SUPABASE_ANON_KEY,
-      schema: env.NEXT_PUBLIC_CREWPANE_SUPABASE_SCHEMA || null,
-      companyId,
-    };
-  },
-  getPlanSnapshot: () => (seatGate ? seatGate.state() : null),
-  getDeviceId: () => (boundAccount && boundAccount.deviceId) || null,
-  // Jeton ASENKRON çözülür, istemci SENKRON okur (syncBoot kutu deseni).
-  getToken: () => appDbTokenFor('sync:cloud'),
-  deriveIndexes: memoryIndexDerive.createDeriveIndexesHook({
-    roots: () => ({
-      workspaceRoot: agentWorkspaceRoot || null,
-      accountRoot: (boundAccount && boundAccount.root) || null,
-    }),
-    // İNDİRİLEN dosyadan sonra indeks GERÇEKTEN yazılır — gölge faz değil.
-    write: true,
-    log: (l) => logLine(l),
-  }),
-  // SYNC-F1-7 — gelen tercih dokümanı DİSKE YAZILMADAN ÖNCE anahtar bazında
-  // birleşir; yazımdan sonra uygulanır. Kanca yalnız `prefs` sınıfına bakar:
-  // hafıza/skill dosyaları BİT-BİT eskisi gibi taşınır.
-  transformIncoming: ({ class: cls, buf }) => {
-    if (cls !== 'prefs') return null;
-    const p = prefsProjector();
-    if (!p) return null;
-    const merged = p.mergeIncoming(buf);
-    prefsApplySoon();
-    return merged;
-  },
-  // Ret SESSİZ kalmaz: aynı `plan:limit` kanalı, yükseltme kartı BL-03'teki tek yerde.
-  onPlanDenied: (denial) => pushPlanLimit(denial),
-  log: (l) => logLine(l),
+const syncService = createSyncService({
+  agentSettings,
+  getBoundAccount: () => boundAccount,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  publicSupabaseEnv,
+  accountScope,
+  getSeatGate: () => seatGate,
+  appDbTokenFor,
+  memoryIndexDerive,
+  pushPlanLimit,
+  logLine,
+  broadcastLocale,
+  getAppWindow: () => appWindow,
+  getPopoutWindows: () => popoutWindows,
+  prefsProjectorFactory,
+  syncBoot,
+  syncSurface,
 });
-const syncIpcSurface = syncSurface.createSyncIpc({
-  getEngine: () => syncRuntime.getEngine(),
-  getSetup: () => syncRuntime.describe(),
-  log: (l) => logLine(l),
-});
+
+const syncRuntime = syncService.syncRuntime;
+const syncIpcSurface = syncService.syncIpcSurface;
+function prefsProjector() { return syncService.prefsProjector(); }
+function prefsProjectNow(reason) { return syncService.prefsProjectNow(reason); }
+function prefsApplySoon() { return syncService.prefsApplySoon(); }
 
 /** Tercih/kök/hedef değişti → motoru yeniden çöz (kapanışta ANINDA söker). */
 // ── SYNC-F1-7 — TERCİH IPC'Sİ (renderer ekseni: localStorage) ────────────────
