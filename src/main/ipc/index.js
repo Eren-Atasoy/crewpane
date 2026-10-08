@@ -11,6 +11,7 @@ const {
   buildMobileAndSkillDeps,
   buildSystemAuthAndEngineDeps,
 } = require('./ipcDepsBuilder');
+const { createMainIpcWiring } = require('./ipcMainWiring');
 
 module.exports = {
   createIpcRouter,
@@ -25,4 +26,5 @@ module.exports = {
   buildTerminalAndExecutionDeps,
   buildMobileAndSkillDeps,
   buildSystemAuthAndEngineDeps,
+  createMainIpcWiring,
 };

@@ -33,7 +33,7 @@ const appDbIdentity = require('./src/config/appDbIdentity.cjs'); // ADP-622 — 
 const mixedTargetGuard = require('./src/config/mixedTargetGuard.cjs'); // ENV-01 — kimlik ↔ app DB karışımının reddi
 const crewpaneEnv = require('./src/config/crewpaneEnv.cjs'); // ADP-244 Faz 3 — env ikizleri (tek türetme noktası)
 const envProfileModule = require('./src/config/envProfile.cjs');
-const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
+const { crewpaneIdConfig } = require('./src/config/crewpaneId.cjs');
 const singleInstanceLock = require('./src/core/singleInstanceLock.cjs');
 const { renameWithRetrySync } = require('./platform/atomicWrite.cjs');
 const safeStorageIdentity = require('./src/security/safeStorageIdentity.cjs');
@@ -47,7 +47,7 @@ const { runBootstrap } = require('./src/main/bootstrap/index.js');
 const { registerPrefsIpc, createSyncService } = require('./src/features/sync');
 const { createMemoryService } = require('./src/features/memory');
 const { createMobileService } = require('./src/features/mobile');
-const { wireIpc: wireAppIpc, assembleIpcDeps } = require('./src/main/ipc');
+const { createMainIpcWiring } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
@@ -65,7 +65,7 @@ const {
   PANE_ASK_MIRROR_MAX,
   REFRESH_SUBMIT_GAP_MS,
 } = require('./src/features/terminal');
-const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
+const { createDelegationSupervisorService } = require('./src/features/agents');
 const { createJarvisConversationService } = require('./src/features/voice');
 const { createBackendEnvService } = require('./src/features/services');
 let windowManager = null;
@@ -125,18 +125,12 @@ const agentRunner = require('./src/agents/agentRunner.js');
 const delegationBridgeMod = require('./src/agents/delegationBridge.js');
 const browserCdp = require('./src/services/browserCdp.js'); // ADP-095 — headed automation (CDP)
 const browserGateMod = require('./src/security/browserGate.cjs'); // ADP-341 — risk kapısı (izin + audit + DURDUR)
-const browserTrustMod = require('./src/security/browserTrust.cjs'); // ADP-343 — yerleşik güven/yasak listeleri (Ayarlar salt-okunur gösterir)
 const demoSitePath = require('./src/config/demoSitePath.cjs'); // DEMO-04 — tanıtım turunun örnek sitesinin yol boğazı
 const jarvisVoice = require('./src/voice/jarvisVoice.js'); // ADP-121 (ADR-009) — voice core (STT/brain/TTS)
-const grokVoice = require('./src/voice/grokVoice.cjs'); // ADP-827 (Faz 7) — Grok Voice SEÇENEĞİ (ücretli, opt-in)
-const tmuxWindows = require('./src/terminal/tmuxWindows.cjs'); // ADP-136 — department → tmux window auto-switch
 const livePaneRegistry = require('./src/agents/livePaneRegistry.cjs'); // ADP-192 — restart-resume registry
-const agentEngineMirror = require('./src/agents/agentEngineMirror.cjs'); // HATA-12 — ajanın GÜNCEL motoru + sürüklenme hükmü
 const engineCoerce = require('./src/agents/engineCoerce.cjs'); // ENG-05 — motor değeri kapısı (bilinmeyen → null + log)
 const engineRegistry = require('./src/agents/engineRegistry.cjs'); // ENG-04/07 — motor descriptor defteri (reset komutu + yetenek beyanı)
 const paneCapabilityMatrix = require('./src/terminal/paneCapabilityMatrix.cjs'); // ENG-10 — descriptor beyanı → kullanıcı-yüzü yetenek matrisi (rozetler)
-const engineLeadership = require('./src/agents/engineLeadership.cjs'); // ENG-19 — lider-uygunluk (yetenek matrisinden TÜRETİLİR, motor adına bakmaz)
-const enginePlanned = require('./src/agents/enginePlanned.cjs'); // ENG-HONEST-CARD-01 — "yolda" etiketinin tek kaynağı (planlı board kartı haritası)
 const engineDelegation = require('./src/agents/engineDelegation.cjs'); // ENG-17/ENG-21 — delegasyon vatandaşlığı ("bu motora İŞ VERİLEBİLİR Mİ")
 const engineOffering = require('./src/agents/engineOffering.cjs'); // ENG-21 — "sunulsun mu" hükmü (migration seed aynası, drift testli)
 const modelDetect = require('./src/agents/modelDetect.cjs'); // ADP-526 — pane model chip (K1 spawn-anı + K2 çıktı teyidi)
@@ -156,25 +150,8 @@ const announcements = require('./src/services/announcements.cjs'); // ADP-675 �
 const changelogFeed = require('./src/services/changelogFeed.cjs'); // A-10 — uygulama-içi "Yenilikler" paneli (crewpane.dev/changelog.json)
 const updateChannel = require('./src/services/updateChannel.cjs'); // ADP-620 — yayın kanalı (stable=müşteri | beta=önce biz)
 const reportsWatcher = require('./src/services/reportsWatcher.cjs'); // ADP-298 — rapor dizinleri değişince renderer'a olay
-const memoryGraph = require('./src/memory/memoryGraph.cjs'); // ADP-243 — in-app Memory view graph provider
-const skillCenter = require('./src/agents/skillCenter.cjs'); // SK-03 — Skill Merkezi'nin SALT OKUNUR liste/detay katmanı
-const skillApprove = require('./src/agents/skillApprove.cjs'); // SK-04 — taslak→yayın (insan onayı; TEK mutasyon noktası)
-const skillAuthor = require('./src/agents/skillAuthor.cjs'); // SK-05 — kullanıcının yazma ucu (yeni/düzenle → HER ZAMAN taslak)
-const skillEngineView = require('./src/agents/skillEngineView.cjs'); // SK-03 — motor görünümü + kapı nöbetçisi (R8/T6)
 const skillEngineSync = require('./src/agents/skillEngineSync.cjs'); // SKL-B0 — eşitleme TETİĞİ (açılış/kök değişimi/elle) + durum özeti
-const skillVersions = require('./src/agents/skillVersions.cjs'); // SK-08 — yayın geçmişi (kim/ne zaman/ne değişti)
-const skillShare = require('./src/agents/skillShare.cjs'); // SK-08 — dışa/içe aktarım (içe aktarım HER ZAMAN taslağa)
-const skillGuard = require('./src/agents/skillGuard.cjs'); // SK-08 — onay damgası denetimi + yazma-yolu nöbetçisi
 const builtinSkills = require('./src/agents/builtinSkills.cjs'); // SKL-B6 — gömülü katalog → kanonik depo KURULUM boğazı
-const memoryEmbedInstall = require('./src/memory/memoryEmbedInstall.cjs'); // ADP-900 — ONAYLI gömme motoru kurulumu
-const memoryEmbedder = require('./src/memory/memoryEmbedder.cjs'); // ADP-870 — gömme motorunun kullanılabilirlik raporu
-const memoryRecall = require('./src/memory/memoryRecall.cjs'); // ADP-862 — arama UCU (kaynak+alıntı, maskeli, uydurmasız) + bağlam seçici
-const memoryTaskBlock = require('./src/memory/memoryTaskBlock.cjs'); // D-07 — AŞAMA B: göreve-göre seçki (sorgu = iş metni)
-const engineMemoryScope = require('./src/agents/engineMemoryScope.cjs'); // MEM-SCOPE-01 — MOTORUN indeksi için aynı iki aşama
-const paneContextScope = require('./src/terminal/paneContextScope.cjs'); // MEM-SCOPE-01 — motorun hafıza indeksinin yolu (tek kaynak)
-const codeIntel = require('./src/services/codeIntel.cjs'); // ADP-206 — editor git-diff + file list + grep
-const localSprites = require('./src/agents/localSprites.cjs'); // ADP-736 — ~/.crewpane/sprites (paket-dışı kişisel avatarlar)
-const sprintStore = require('./src/agents/sprintStore.cjs'); // ADP-242 — uzun-sprint run kalıcılığı (sprint-runs/)
 const crewpanePaths = require('./src/config/crewpanePaths.cjs'); // ADP-233 — <workspace>/.crewpane/{tasks,results} yol sözleşmesi
 const transcriptProbe = require('./src/services/transcriptProbe.cjs'); // ADP-280 — teslim-doğrulama transcript probu
 const codexRolloutProbe = require('./src/mcp/codexRolloutProbe.cjs'); // ENG-02 — aynı probun codex defteri (rollout) dalı
@@ -190,23 +167,18 @@ const taskCodeMod = require('./src/agents/taskCode.cjs');
 const worktreeStore = require('./src/services/worktreeStore.cjs');
 const worktreeService = require('./src/services/worktreeService.cjs');
 const projectRepos = require('./src/config/projectRepos.cjs');
-const branchName = require('./src/config/branchName.cjs'); // GIT-BB-CLOUD-01 — varsayılan dal doğrulaması (git ref grameri)
 const codeIndexStore = require('./src/services/codeIndex.cjs'); // CIDX-1 — kod indeksi ayarı (şema + ikili keşfi + tazelik)
-const codeIndexHealth = require('./src/services/codeIndexHealth.cjs'); // CODEINDEX-PROOF-01 — sağlık: araca SOR, deftere güvenme
 const mergeService = require('./src/services/mergeService.cjs');
 const delegationQueueStore = require('./src/agents/delegationQueueStore.cjs'); // QUEUE-PERSIST — kuyruk+paused kalıcılığı
 // ADP-659 — OTOPILOT SÜREKLİLİĞİ: uçuştaki delegasyonların MAIN-side kalıcı gözcüsü.
 // Renderer'ın motoru (delegation.ts) efemerdir — reload/crash'te tüm nöbetleri ölür ve
 // uçuştaki alt-görev hiçbir yerde kalıcı DEĞİLDİR (queue store yalnız queued+paused tutar).
 // Bu ikili o boşluğu kapatır: defter diskte, tespit main'de, kuyruk lider olmadan ilerler.
-const delegationSupervisorStore = require('./src/agents/delegationSupervisorStore.cjs');
 // SUP-UI-01 — KUYRUK PANELİ. Yeni defter YOK: üç mevcut defteri (queue/supervisor/
 // resume) + canlı pane listesini TEK tabloya çeviren SAF çekirdek. Metin taşımaz,
 // yalnız kod döndürür (cümleyi renderer i18n'den kurar).
-const queueBoard = require('./src/agents/queueBoard.cjs');
 // SUP-UI-01 — limit-devam kuyruğunun deposu (ADP-087). Panel bu defteri de OKUR;
 // yazan taraf hâlâ resume daemon'ıdır (bu dosyada tek çağrı `loadQueue`/`queuePath`).
-const resumeQueueStore = require('./src/terminal/resumeQueue.cjs');
 // ADP-715/845 — TELEMETRİ. İki ayrı iş, TEK opt-out kapısı:
 //   telemetry.cjs → hata takibi (Sentry). ADP-845 K1: DSN/SDK YOK, yani bugün
 //     `{enabled:false}` döner — ama kablo ARTIK DOĞRU DOSYADA. (ADP-805 §2.2'de
@@ -240,10 +212,8 @@ const integrityService = createIntegrityService({
   analyticsNow: () => telemetryService.analyticsNow(),
   obsReporterNow: () => (typeof faultService !== 'undefined' && faultService ? faultService.obsReporterNow() : null),
 });
-const analyticsSchema = require('./telemetry/analyticsSchema.cjs');
 // INT-OBS-01 — tek jetondan otomatik kurulum (org bul → proje aç → anahtar çek →
 // kanal başına yaz → doğrulama olayı) + sonucun şifreli defteri.
-const provisionStoreMod = require('./telemetry/provisionStore.cjs');
 // ADP-692 — enjeksiyon kapısı (insan varlığı + composer hükmü); `pty:writeGuarded` bunu
 // main'de, yazımla AYNI senkron blokta koşturur → araya tuş basımı GİREMEZ.
 const leaderComposer = require('./src/agents/leaderComposer.cjs');
@@ -260,14 +230,9 @@ const leaderRole = require('./src/agents/leaderRole.cjs');
 const { createDeliverPrompt } = require('./src/agents/deliverPrompt.cjs');
 // AXP-03 — Agent X'ten ajana prompt teslimi + makbuz (deliverToPane + transcript probu üstüne).
 const agentxDeliverMod = require('./src/agents/agentxDeliver.cjs');
-const agentxBeamMod = require('./src/agents/agentxBeam.cjs');
 const paneAskMod = require('./src/terminal/paneAsk.cjs'); // ASK-CARD-01 — liderin karar sorusu → kart + "cevap bekliyor"
-const inputSim = require('./src/services/inputSim.cjs'); // ADP-265 — Jarvis input-sim çekirdeği (şema+sınır+rate-limit)
-const screenCaptureMod = require('./src/services/screenCapture.cjs'); // ADP-817 — screen.capture çekirdeği (şema+yakalama+dürüst hata)
 const stdioGuard = require('./src/core/stdioGuard.cjs'); // ADP-303 — EPIPE/dead-stream guard (no crash dialog)
 const notifyLog = require('./src/services/notifyLog.cjs'); // ADP-538 — in-app worker completion → .agent-notifications DONE/FAIL satırı
-const evidencePathMod = require('./src/services/evidencePath.cjs'); // ADP-735 — kanıt yolu: çok-adaylı kök çözümü (worker alt-projeye yazar)
-const resultRootMod = require('./src/services/resultRoot.cjs'); // RES-IDX-01 — sonuç kökü görevin PROJESİNDEN (prompt + supervisor aynı cevabı alır)
 const moduleGuard = require('./src/agents/moduleGuard.cjs'); // ADP-335 — modül hata sınırı (bir bug uygulamayı çökertmesin)
 const paneControl = require('./src/terminal/paneControl.cjs'); // ADP-303 — lider pane kontrolü (kapsam + öz-koruma)
 const teamScope = require('./src/agents/teamScope.cjs'); // ADP-717 — takım kapsamı: delege + yönetim TEK karar
@@ -275,14 +240,7 @@ const teamComposeCore = require('./src/agents/teamCompose.cjs'); // TC-01 — ta
 const workspaceOnboarding = require('./src/agents/workspaceOnboarding.cjs'); // ADP-232-C — ilk-açılış "çalışma alanı seç" çekirdeği
 const workspaceSwitch = require('./src/agents/workspaceSwitch.cjs'); // ADP-232-B — canlı çalışma alanı geçişi (grandfather) çekirdeği
 const engineCheck = require('./src/agents/engineCheck.cjs'); // ADP-463-B — setup sihirbazı motor/CLI probu (uyarı-only)
-const ptyResizeGate = require('./src/terminal/ptyResizeGate.cjs'); // WIN-FIRSTRUN-01 K3 — ölü pty'ye resize gitmez (PROD-48)
 const engineAuth = require('./src/agents/engineAuth.cjs'); // ADP-597 — abonelikle giriş (claude/codex oturumu Ayarlar'dan)
-const engineProfiles = require('./src/agents/engineProfiles.cjs'); // ADP-936 — AI motoru HESAP profilleri (çok-hesap geçişi)
-const engineSwitch = require('./src/agents/engineSwitch.cjs'); // ACCT-FIX-01 — limit defteri okuma ("Bu hesaba geç" listesi: hangi pane limitte)
-const limitDetect = require('./src/terminal/limitDetect.cjs'); // ACCT-FIX-01 — pane ekranında limit var mı (aynı algılayıcı, resume daemon ile)
-const engineLoginLedger = require('./src/agents/engineLoginLedger.cjs'); // ENG-F4-01 — "burada giriş yapıldı" kaydı (durum komutu olmayan motorlar)
-const engineCatalog = require('./src/agents/engineCatalog.cjs'); // ADP-915 — yetenek→motor kaydı + "fatura kime çıkar" anlık görüntüsü
-const presetAdvisor = require('./src/agents/presetAdvisor.cjs'); // B-06 — onboarding şablon önerisi (model + katalog doğrulaması)
 const firstRunDoctor = require('./src/agents/firstRunDoctor.cjs'); // ADP-625 — ilk açılış sağlık kontrolü (ADP-616 §5.4)
 // LX-SAFESTORAGE-01 — sır arka ucunun TEK boğazı (ölç → hüküm → üç yüzey).
 const secretBackendState = require('./src/security/secretBackendState.cjs');
@@ -290,27 +248,22 @@ const crashWatchdog = require('./src/core/crashWatchdog.cjs'); // ADP-475 — cr
 const crashJournal = require('./src/core/crashJournal.cjs'); // CRASH-R1 — kapanış defteri (sebep + zaman + sinyal), açılışta geri okunur
 const nextServerPolicy = require('./src/config/nextServerPolicy.cjs'); // SMOKE-ISO-01 — Next beklenmedik ölürse: 1 kez kaldır, sonra kapat
 const jarvisWidget = require('./src/voice/jarvisWidget.cjs'); // ADP-816 — taşınabilir ses widget'ı (saf karar katmanı)
-const handOverlayContract = require('./src/hand/handOverlayContract.cjs'); // HAND-A1 — el kontrolü overlay sözleşmesi (saf karar katmanı)
 const paneBudgetStore = require('./src/terminal/paneBudgetStore.cjs'); // TOK-C — pane bütçesi + otomatik duraklatma defteri
 const spendGuard = require('./src/security/spendGuard.cjs'); // TOK-C (D-02 v2) — "bu yazım parayı harcar mı, bütçe izin veriyor mu"
 const dispatchPolicy = require('./src/agents/dispatchPolicy.cjs'); // TOK-B (D-03) — "sürdür mü, taze oturum mu" kararının SAF çekirdeği
 const paneViewState = require('./src/terminal/paneViewState.cjs'); // ADP-712 — pane görünüm durumu (okunabilir mod) pencereler arası tek gerçek
 const paneDraft = require('./src/terminal/paneDraft.cjs'); // ADP-786 — gönderilmemiş prompt taslağı pencereler/mod arası tek gerçek
-const agentxDraft = require('./src/agents/agentxDraft.cjs'); // AXP-02 — Agent X iş taslağı (duraksama göndermez, teyit sesli) — paneDraft kardeşi
-const clipboardHistoryCore = require('./src/services/clipboardHistory.cjs'); // ADP-935 — pano geçmişi çekirdeği (gizlilik kapısı + halka tampon)
 const tempImageStore = require('./src/services/tempImageStore.cjs'); // WIN-IMG-01 — ajana giden geçici görsellerin OTURUM-kapsamlı ömrü (TTL yarışı yok)
 const attachmentStoreMod = require('./src/services/attachmentStore.cjs'); // BOARD-IMG-2 — görev kartı ekleri: içerik-adresli, KALICI depo (TTL yok)
 // FDBK-01 — uygulama içi geri bildirim formunun main ucu: maskelenmiş log kesiti +
 // AgentShot son çekimleri. Salt-okunur ve dar kapsamlı (bkz. feedbackBridge.cjs).
 const feedbackBridgeMod = require('./src/services/feedbackBridge.cjs');
-const clipboardImageRoute = require('./src/services/clipboardImageRoute.cjs'); // WIN-IMG-01 — pano görüntüsü pane'e nasıl iner (PLATFORM × motor)
 // ─── ADP-584/585/586 — Entegrasyon Merkezi (Dalga 0) ─────────────────────────
 const integrationCatalog = require('./src/mcp/integrationCatalog.cjs'); // ADP-584/588 — servis şablonları (tek kaynak)
 const credentialGate = require('./src/security/requireCredential.cjs'); // ADP-628 — anahtar çözümlemesinin TEK boğazı
 // MCP-COST-01 — MCP cocuk sureclerinin envanteri + yetim bicmesi (ORPHAN-ELECTRON-01
 // cekirdegini CAGIRIR, yeniden yazmaz) ve "otomatik acilmasin" isareti.
 const mcpProcess = require('./src/mcp/mcpProcess.cjs');
-const integrationAutostart = require('./src/mcp/integrationAutostart.cjs');
 const { createSecretRedactor } = require('./src/security/secretRedactor.cjs'); // ADP-586 — log/ekran/notify maskeleme
 
 // ADP-586 — SIR MASKELEME DEFTERİ. Süreç ömrü boyunca tek örnek; `logLine`, pane
@@ -1111,7 +1064,6 @@ const AUTOMATED_SESSION_REASON = automatedSessionReason(process.env);
 // ADP-646 — vendor/müşteri YÜZEY kararı (tek yer)
 const vendorSurface = require('./src/core/vendorSurface.cjs');
 // ADP-614 — katman kataloğu (hangi entitlement CrewPane açar + etiketler).
-const planCatalog = require('./src/config/planCatalog.cjs');
 // ADP-660 — katman LİMİTİ kararı (Basic ⇄ Pro/Ultra).
 const planLimits = require('./src/config/planLimits.cjs');
 // ADP-703 — HESAP-KAPSAMLI YEREL DEPO (bağlama / geçiş)
@@ -1372,9 +1324,8 @@ const apiKeyService = createApiKeyService({
   logLine: (line) => logLine(line),
 });
 
-// ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcDepsBuilder.js - Faz 3.6.45)
-// ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcDepsBuilder.js - Faz 3.6.45)
-function _buildWindowAndWorkspaceDeps() {
+// ── ADP-IPC-WIRE — IPC BAĞLANTI & BAĞIMLILIK DERLEYİCİSİ (src/main/ipc/ipcMainWiring.js - Faz 3.6.59)
+function _collectWindowWorkspaceDeps() {
   return {
     ipcMain,
     app,
@@ -1408,31 +1359,18 @@ function _buildWindowAndWorkspaceDeps() {
     mergeService,
     worktreeService,
     REPO_ROOT,
-    codeIntel,
     gitBranchCache,
     GIT_BRANCH_TTL_MS,
-    branchName,
     codeIndexStore,
-    codeIndexHealth,
     codeIndexService,
     invalidateGitBranchCache,
-    clipboardImageRoute,
-    localSprites,
     mediaService,
     memoryService,
-    memoryGraph,
-    memoryEmbedder,
-    memoryEmbedInstall,
-    memoryRecall,
     secretRedactor,
-    memoryTaskBlock,
-    paneContextScope,
-    engineMemoryScope,
-    clipboardHistoryCore,
   };
 }
 
-function _buildTerminalAndExecutionIpcDeps() {
+function _collectTerminalExecutionDeps() {
   return {
     paneQueryService,
     paneControlService,
@@ -1454,14 +1392,11 @@ function _buildTerminalAndExecutionIpcDeps() {
     mobileTranscript,
     tokenUsage,
     modelDetect,
-    ptyResizeGate,
-    tmuxWindows,
     livePaneRegistry,
-    agentEngineMirror,
   };
 }
 
-function _buildMobileAndVoiceIpcDeps() {
+function _collectMobileVoiceAndSystemDeps() {
   return {
     updateService,
     announceService,
@@ -1478,58 +1413,25 @@ function _buildMobileAndVoiceIpcDeps() {
     getAppWindowGuest: () => appWindowGuest,
     integrationService,
     mcpProcess,
-    integrationAutostart,
-    sprintStore,
-    resultRootMod,
-    evidencePathMod,
     spawn,
     appI18n,
     handService,
     mobileDeviceStore,
-    mobileProbe,
-    authService,
     jarvisWidget,
     jarvisVoice,
-    grokVoice,
-    inputSim,
-    screenCaptureMod,
     instancePaths,
     jarvisConv,
-    agentxBeamMod,
-    agentxDraft,
-    skillCenter,
     skillEngineSync,
-    skillApprove,
-    skillAuthor,
-    skillVersions,
-    skillShare,
     builtinSkills,
-    skillGuard,
-    skillEngineView,
     delegationQueueStore,
-    delegationSupervisorStore,
-    resumeQueueStore,
-    queueBoard,
-    supervisorFingerprint,
     teamComposeCore,
     teamComposeService,
     delegationSupervisorService,
-    telemetryService,
-    paneDispatchService,
-  };
-}
-
-function _buildSystemAndEngineIpcDeps() {
-  return {
     LOG_PATH,
-    analyticsSchema,
     credentialGate,
     vendorSurface,
     telemetryMod,
-    provisionStoreMod,
     telemetryChannelMod,
-    authService,
-    gateOverrides,
     accountScope,
     schemeOwnership,
     schemeVerdict,
@@ -1543,41 +1445,27 @@ function _buildSystemAndEngineIpcDeps() {
     installReset,
     resetGate,
     leaderRefreshPolicy,
-    handOverlayContract,
     updateChannel,
-    engineCatalog,
     teamScope,
-    browserTrustMod,
     appLocaleService,
-    syncService,
-    presetAdvisor,
     engineCheck,
     capabilityRegistry,
     paneCapabilityMatrix,
     engineOffering,
-    engineLeadership,
-    enginePlanned,
     engineAuth,
-    engineProfiles,
-    engineSwitch,
-    limitDetect,
     demoSitePath,
     doctorService,
     firstRunDoctor,
-    engineLoginLedger,
-    planCatalog,
-    telemetryService,
-    faultService,
   };
 }
 
 function wireIpc() {
-  wireAppIpc(assembleIpcDeps({
-    ..._buildWindowAndWorkspaceDeps(),
-    ..._buildTerminalAndExecutionIpcDeps(),
-    ..._buildMobileAndVoiceIpcDeps(),
-    ..._buildSystemAndEngineIpcDeps(),
-  }));
+  const mainIpcWiring = createMainIpcWiring({
+    ..._collectWindowWorkspaceDeps(),
+    ..._collectTerminalExecutionDeps(),
+    ..._collectMobileVoiceAndSystemDeps(),
+  });
+  return mainIpcWiring.wireIpc();
 }
 
 // ---------------------------------------------------------------------------
@@ -1703,8 +1591,6 @@ windowManager = createWindowManager({
 // ─────────────────────────────────────────────────────────────────────────────
 const mobileGatewayMod = require('./src/mobile/mobileGateway.js');
 const mobileDeviceStore = require('./src/mobile/mobileDeviceStore.cjs');
-// MOB-UX-M1 (M1-b) — sihirbazın ölçüm ucu (gateway KAPALIYKEN de cevap verir).
-const mobileProbe = require('./src/mobile/mobileProbe.cjs');
 const mobileOffice = require('./src/mobile/mobileOffice.cjs'); // ADP-334 — ofis MAIN'de derlenir
 const mobileReports = require('./src/mobile/mobileReports.cjs'); // ADP-364 — raporlar MAIN'de (INDEX.md)
 const mobileTranscript = require('./src/mobile/mobileTranscript.cjs'); // ADP-368 — okuma modu (claude oturum JSONL'i)
