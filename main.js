@@ -49,6 +49,9 @@ const {
   registerSystemIpc,
   registerDiagnosticsIpc,
   registerTelemetryIpc,
+  registerMediaIpc,
+  registerSettingsIpc,
+  registerAppIpc,
 } = require('./src/features/system');
 const { registerPopoutIpc } = require('./src/features/popout');
 const { registerDesignIpc } = require('./src/features/design');
@@ -68,7 +71,7 @@ const {
 } = require('./src/features/services');
 const { registerMemoryIpc } = require('./src/features/memory');
 const { registerHandIpc } = require('./src/features/hand');
-const { registerSyncIpc } = require('./src/features/sync');
+const { registerSyncIpc, registerPrefsIpc } = require('./src/features/sync');
 const { registerMobileIpc } = require('./src/features/mobile');
 const {
   registerEngineIpc,
@@ -6754,33 +6757,18 @@ function wireIpc() {
     broadcastAgentxDraftConfirmed,
   });
 
-  // ADP-035 — multimodal prompt image attach. The renderer (sandboxed, no fs)
-  // sends an image blob's bytes; main writes it to a temp file and returns the
-  // PATH. The prompt box injects that path into the prompt → the CLI opens it
-  // (UX-UI-V2 §5: path injection, NOT base64 to an API). Bounded (size +
-  // image-only). WIN-IMG-01: ömür OTURUM boyudur, TTL yok.
-  ipcMain.handle('image:saveTemp', (_event, payload) => saveTempImage(payload));
-
-  // WIN-IMG-01 — SESSİZ BAŞARISIZLIK YASAĞI. Gönderimden HEMEN ÖNCE "bu görseller
-  // hâlâ diskte mi?" sorusunu main cevaplar; eksikse kullanıcı GÖRÜR (bugün ajan
-  // "erişemiyorum" deyip kendi yorumunu yapıyordu, kullanıcı sebebi bilmiyordu).
-  // Yalnız KENDİ görsel kökümüzdeki yollara bakar → renderer'a genel bir dosya
-  // varlık-oracle'ı AÇILMAZ (kökün dışı `foreign` olarak döner, "eksik" değil).
-  ipcMain.handle('image:verify', (_event, paths) => imageStore.verify(Array.isArray(paths) ? paths : []));
-
-  // BOARD-IMG-3 — GÖREV KARTI EKLERİ. Renderer baytları (sürükle-bırak / ⌘V) ya da
-  // bir dosya YOLUNU (native drop, ADP-143 fileDropApi) verir; main doğrular, diske
-  // içerik-adresli yazar ve SATIRIN ALANLARINI döndürür. INSERT'i renderer kendi
-  // supabase istemcisiyle yapar (kimlik + schema orada zaten çözülü).
-  ipcMain.handle('attachment:ingest', (_event, payload) => ingestTaskAttachment(payload));
-  // Tam çözünürlük OKUMA: renderer'a fs açılmaz, data-URI döner (localSprites deseni).
-  // Baytlar bu cihazda yoksa dürüst `{ok:false, reason:'missing'}` → UI "kaynak: <cihaz>"
-  // mesajını yazabilsin (sessizce boş kare göstermek yasak).
-  ipcMain.handle('attachment:read', (_event, relPath) => attachmentStore().readDataUrl(relPath));
-  ipcMain.handle('attachment:hasBytes', (_event, relPath) => ({ ok: true, present: attachmentStore().hasBytes(relPath) }));
-  // Baytları diskten sil — SATIRI silmez (o mantıksaldır, renderer `deleted_at` yazar).
-  // İki adım bilerek ayrı: "karttan kaldır" ile "diskten de sil" farklı kararlardır.
-  ipcMain.handle('attachment:removeBytes', (_event, relPath) => attachmentStore().removeBytes(relPath));
+  // ADP-035, BOARD-IMG-3, ADP-694, ADP-894 — MEDIA & CLIPBOARD IPC (Faz 3.5 — Sıra 11)
+  registerMediaIpc({
+    ipcMain,
+    saveTempImage,
+    imageStore,
+    ingestTaskAttachment,
+    attachmentStore,
+    clipboard,
+    ptys,
+    clipboardImageRoute,
+    logLine,
+  });
 
   // ── Skills IPC Yüzeyi (Faz 3.5 — Sıra 8) ───────────────────────────────────
   registerSkillsIpc({
@@ -6868,32 +6856,7 @@ function wireIpc() {
     provisionStoreMod,
     telemetryChannelMod,
   });
-  // ─── TOUR-02-A — "İlk 10 Dakika" görev günlüğünün KALICILIĞI ───────────────
-  // Main DUMB IO'dur: iki HAM kaydı okur, birleşmiş kaydı iki yüzeye yazar.
-  // LWW birleştirme renderer'da (src/app/lib/onboardingQuests.ts mergeProgress),
-  // TEK yerde ve birim testli — ikinci bir birleştirme kopyası "iki gerçek"
-  // sınıfını bedavaya açardı. Hiçbir yol fırlatmaz: bir ilerleme kaydı ürünü
-  // düşüremez.
-  ipcMain.handle('onboarding:load', () => {
-    try { return { ok: true, ...onboardingStore.load() }; }
-    catch { return { ok: false, local: null, portable: null }; }
-  });
-  ipcMain.handle('onboarding:save', (_event, progress) => {
-    try { return onboardingStore.save(progress); }
-    catch (err) { return { ok: false, error: String((err && err.code) || 'internal') }; }
-  });
-  // TOUR-02-C — bağlamsal ipuçlarının kaydı (hangi ipucu gösterildi, hangi tetik
-  // kaç kez görüldü). AYNI sözleşme: main DUMB IO'dur, iki HAM kaydı verir ve
-  // birleşmiş kaydı yazar; LWW renderer'da (`onboardingTips.mergeTips`, birim
-  // testli). Gövde yalnız kapalı küme id'leri, sayaçlar ve damgalardır.
-  ipcMain.handle('onboarding:tips:load', () => {
-    try { return { ok: true, ...onboardingStore.loadTips() }; }
-    catch { return { ok: false, local: null, portable: null }; }
-  });
-  ipcMain.handle('onboarding:tips:save', (_event, tips) => {
-    try { return onboardingStore.saveTips(tips); }
-    catch (err) { return { ok: false, error: String((err && err.code) || 'internal') }; }
-  });
+
 
   // ─── ADP-390 (G9) — CrewPane hesabı yüzeyi (Ayarlar → Hesap) ────────────────
   // Renderer'a SIR GİTMEZ: yalnız durum (e-posta, lisans, seat, ürünler). Access
@@ -6938,135 +6901,7 @@ function wireIpc() {
     crewpaneIdConfig,
   });
 
-  // ─── RESET-03 — KURULUMU SIFIRLA ───────────────────────────────────────────
-  //
-  // İKİ KANAL, TEK KARAR YERİ. `reset:plan` KURU koşumdur (hiçbir şey silmez);
-  // `reset:request` yıkıcı olandır ve onayı MAIN doğrular.
-  //
-  // ⚠️ RENDERER'A GÜVENİLMEZ. Onay sözcüğünün doğruluğu burada ölçülür (dil
-  // main'de bilinir), yük `resetGate.sanitizeRequest` boğazından geçer ve
-  // `execute`a level + keepLogs DIŞINDA hiçbir alan gitmez — özellikle YOL.
-  // Hedefleri `installReset` zaten kendisi türetir (RESET-01 §2c).
-  ipcMain.handle('reset:plan', async (_e, opts) => {
-    const level = opts && opts.level === 'session' ? 'session' : 'full';
-    try {
-      const { deps } = resetContext((m) => logLine(`[reset] ${m}`));
-      const plan = await installReset.plan({ ...deps, level });
-      const panes = runningPaneSummary();
-      // Yol adı UI'A GİTMEZ: hedefler `kind` + bayt olarak taşınır, `keeps`
-      // i18n ANAHTARIDIR. Cümleyi renderer kendi sözlüğünden kurar.
-      return {
-        ok: true,
-        level: plan.level,
-        bytesTotal: plan.bytesTotal, // null = "hesaplanamadı" (0 DEĞİL)
-        targets: plan.targets.map((t) => ({ kind: t.kind, bytes: t.bytes, entries: t.entries })),
-        keeps: plan.keeps,
-        warnings: plan.warnings,
-        confirmWord: resetGate.expectedConfirmWord(appI18n.getLocale()),
-        panes,
-        ...signOutConfirmCopy(panes),
-      };
-    } catch (e) {
-      logLine(`[reset] plan hatası (${(e && e.code) || 'ERR'})`);
-      return { ok: false, reason: (e && e.code) || 'plan_failed' };
-    }
-  });
 
-  // SIRA (RESET-01 §10.2 + kart §1): pane'leri kapat → kirayı bırak →
-  // cihazı hesaptan çıkar (karar A) → çıkış → TELEMETRİ (silmeden ÖNCE) →
-  // işaretçi → Chromium depoları → yeniden başlat. Kullanıcı dosyalarının
-  // silinmesi BU SÜREÇTE OLMAZ; yeni süreç açılışta yapar (Windows kilidi).
-  ipcMain.handle('reset:request', async (_e, raw) => {
-    const req = resetGate.sanitizeRequest(raw);
-    if (!req.ok) {
-      logLine(`[reset] istek reddedildi (${req.reason})`);
-      return { ok: false, reason: req.reason };
-    }
-    if (!resetGate.confirmMatches(req.confirmText, appI18n.getLocale())) {
-      // Yazılan metin LOGLANMAZ (kullanıcı oraya başka bir şey yazmış olabilir).
-      logLine('[reset] istek reddedildi (confirm_mismatch)');
-      // ⚠️ SEBEP ADI RENDERER'IN SÖZLÜĞÜNE AİT. RESET-02 bilmediği bir sebebi
-      // `failedReason` ile EKRANA BASAR ("Sebep: bad_confirm") — iç mekanizma
-      // adı kullanıcı metnine sızardı ([[feedback_ui_copy_no_internals]]).
-      // Tanınan küme: not_ready | confirm_mismatch | locked.
-      return { ok: false, reason: 'confirm_mismatch' };
-    }
-    // signOut ile AYNI kapı: hesap servisi hazır değilken yıkıcı akış başlamaz.
-    if (!seatGate) {
-      logLine('[reset] istek reddedildi (not_ready)');
-      return { ok: false, reason: 'not_ready' };
-    }
-    const log = (m) => logLine(`[reset] ${m}`);
-    const { deps, instanceHome } = resetContext(log);
-    log(`istek KABUL (seviye=${req.level} günlükleriSakla=${req.keepLogs ? 1 : 0})`);
-
-    // 1) Pane'ler TEMİZ kapanır (ADP-876 sırası: defter hâlâ doğru köke yazılır).
-    let closedPanes = 0;
-    try { closedPanes = closePanesForSignOut(); } catch (e) { log(`pane kapatma hatası: ${e.message}`); }
-
-    // 2-4) Bulut tarafı — hepsi BEST-EFFORT: çevrimdışı bir makine kendi
-    // kurulumunu sıfırlayamıyor olsaydı, özelliğin var olma sebebi giderdi.
-    if (req.level === 'full') {
-      try { await seatGate.releaseDeviceLease(); } catch (e) { log(`kira bırakılamadı: ${e.message}`); }
-      // KARAR A (RESET-R1 §3): kendi cihaz kaydını iptal et. `device.json` birazdan
-      // silinecek → bir sonraki giriş YENİ bir cihaz kimliği üretir; eski satır
-      // `revoked_at` boş kalırsa cihaz limitine HAYALET olarak sayılırdı.
-      try {
-        const ownId = accountScope.ensureDeviceId(instanceHome);
-        const r = await seatGate.revokeDevice(ownId);
-        log(`cihaz kaydı iptali ok=${r && r.ok ? 1 : 0}`);
-      } catch (e) { log(`cihaz kaydı iptal edilemedi: ${e.message}`); }
-    }
-    try { await seatGate.signOut(); } catch (e) { log(`çıkış hatası: ${e.message}`); }
-
-    // 5) TELEMETRİ — SİLMEDEN ÖNCE. `installId` ayar dosyasında yaşar ve tam
-    // sıfırlamada gider; sonraya bırakılırsa olay ya kimliksiz kalır ya da YENİ
-    // bir kurulum gibi görünür.
-    let planned = null;
-    try { planned = await installReset.plan({ ...deps, level: req.level }); } catch { /* kova 'unknown' */ }
-    sendResetTelemetry({ level: req.level, source: 'settings', bytes: planned && planned.bytesTotal });
-
-    // 6) İŞARETÇİ.
-    //
-    // ⚠️ DÜRÜSTÇE — `nonce` BUGÜN DOĞRULANMIYOR. RESET-R1 §2c "köprü jetonuyla
-    // HMAC" öneriyordu; ölçüldü ki bu ŞU ANDA KURULAMAZ: köprü jetonu süreç
-    // ömürlüdür ve `bridge.json` işaretçiyle birlikte silinen kökün içindedir —
-    // yani okuyan süreçte doğrulanacak sır YOKTUR. Doğrulanmayan bir alanı
-    // "kapı" diye anlatmak, olmayan bir korumayı iddia etmek olurdu
-    // ([[capability-driven-affordance]]). Alan yine de rastgele doldurulur
-    // (sözleşme bozulmasın) ama işaretçiyi GERÇEKTEN koruyanlar şunlardır:
-    // dosya `instanceHome` içinde + 0o600 + 10 dakikadan eskisi YOK SAYILIR ve
-    // SİLİNİR + `level` kapalı kümeden. Kalıcı çözüm RESET-05/06 kartına.
-    try {
-      installReset.writeMarker(instanceHome, {
-        level: req.level,
-        keepLogs: req.keepLogs,
-        nonce: crypto.randomBytes(16).toString('hex'),
-      }, deps);
-      log('işaretçi yazıldı — silme YENİDEN BAŞLATMADAN SONRA');
-    } catch (e) {
-      log(`işaretçi YAZILAMADI (${(e && e.code) || 'ERR'}) — sıfırlama İPTAL`);
-      // 'locked' = renderer'ın tanıdığı sebep ("dosyalar kullanımdaydı, kapatıp aç").
-      // Doğru cümle budur: işaretçi yazılamıyorsa veri kökü erişilemez/kilitlidir.
-      return { ok: false, reason: 'locked' };
-    }
-
-    // 7) Chromium depoları: çalışırken güvenli tek yol Electron'un KENDİ API'si
-    // (Local Storage / IndexedDB / Cookies / Cache). `Local State` KASTEN
-    // silinmez — Windows DPAPI anahtarı orada ve `auth/` gidince zaten işlevsiz
-    // (ADP-943 giriş döngüsü yapısal olarak doğmaz).
-    try {
-      const { session } = require('electron');
-      await session.defaultSession.clearStorageData();
-      await session.defaultSession.clearCache();
-      log('tarayıcı depoları boşaltıldı');
-    } catch (e) { log(`tarayıcı depoları boşaltılamadı: ${e.message}`); }
-
-    // 8) Yeniden başlat — MEVCUT yol yeniden kullanılır (kilit bırakma +
-    // relaunch + kapanış nöbetçisi orada; ikinci bir relaunch = ikinci bir gerçek).
-    relaunchForAccountChange(accountScope.ANON_ACCOUNT_KEY, 'reset');
-    return { ok: true, restarting: true, closedPanes, level: req.level };
-  });
 
 
 
@@ -7125,229 +6960,45 @@ function wireIpc() {
   // dayatamaz (G-1): repoPath'i main kendisi çözer.
 
 
-  ipcMain.handle('settings:get', () => {
-    const s = agentSettings.readSettings();
-    return {
-      ok: true,
-      workspaceRoot: s.workspaceRoot,
-      resolvedWorkspaceRoot: agentWorkspaceRoot, // ADP-232-C — null = paketli + ilk kurulum yapılmadı
-      // ADP-852 v3 — Ayarlar→Genel ARTIK ham dizeyi tek başına göstermiyor. `workspaceRoot`
-      // dolu + `resolvedWorkspaceRoot` null kombinasyonu kullanıcıya "her şey yolunda" gibi
-      // görünüyordu (Sistem Durumu ise kırmızıydı). Bu alan o sessiz çelişkiyi ekrana taşır.
-      workspaceRootProblem: (() => {
-        const st = agentSettings.configuredWorkspaceRootStatus();
-        return st.root ? null : { reason: st.reason, configured: st.configured, code: st.code ?? null };
-      })(),
-      repoRoot: REPO_ROOT,
-      // ADP-232-C — ilk-açılış gate sinyali + karşılama ekranının önerilen varsayılanı.
-      // firstRunRequired canlı hesaplanır (settings:set sonrası tekrar sorulursa false
-      // döner — restart beklenirken gate'in geri gelmemesi bu alana bakar).
-      firstRunRequired: workspaceOnboarding.firstRunRequired({ isPackaged: app.isPackaged }),
-      defaultWorkspaceDir: workspaceOnboarding.defaultWorkspaceDir(),
-      pushToTalkKey: s.pushToTalkKey,
-      pushToTalkKeys: agentSettings.PUSH_TO_TALK_KEYS,
-      wakeModelPath: s.wakeModelPath,
-      keepExitedPanes: s.keepExitedPanes === true, // ADP-303 — dead pane auto-close opt-out
-      // ENG-HONEST-CARD-01 — motor politikaları ({ <id>: { vendorHosted:'allow'|'block' } }); sır değil.
-      engines: s.engines || {},
-      // HATA-07 — "Görev sınıfına göre otomatik model" (varsayılan KAPALI). Bu satır
-      // ŞART: yoksa kullanıcı anahtarı açar, diske yazılır ama panel/delegasyon bir
-      // daha OKUYAMAZ (ADP-675/717/845'te ölçülen aynı beyaz-liste tuzağı).
-      autoModelByTaskClass: s.autoModelByTaskClass === true,
-      // LDR-F1 — lider oturumunun otomatik tazeleme kipi ('off'|'warn'|'auto').
-      // Hüküm main'de normalize edilir: renderer çöp bir değeri geri yazamaz.
-      leaderAutoRefresh: leaderRefreshPolicy.normalizeMode(s.leaderAutoRefresh),
-      cloudSyncEnabled: s.cloudSyncEnabled === true, // SYNC-F1-6 — bulut senkronu opt-in (varsayılan KAPALI)
-      // SYNC-F1-7 — tercih projeksiyonu (varsayılan AÇIK). Beyaz liste ŞART: yoksa
-      // kullanıcı kolu kapatır, diske yazılır ama bir daha OKUNMAZ (ADP-675 tuzağı).
-      prefsSyncEnabled: s.prefsSyncEnabled !== false,
-      paneZoomShortcut: s.paneZoomShortcut ?? null, // ADP-558 — pane zoom kısayolu (null = varsayılan)
-      paneMoveShortcut: s.paneMoveShortcut ?? null, // KEY-01 — yerleştirme ailesinin modifier tabanı (null = varsayılan)
-      terminalFontScale: s.terminalFontScale || 'medium', // ADP-663 — terminal/okuyucu yazı ölçeği
-      // ADP-888 — ARAYÜZ DİLİ: kullanıcının TERCİHİ ('system'|'tr'|'en') + o tercihin
-      // bu makinede ÇÖZÜLMÜŞ hâli. İkisi ayrı gider çünkü Ayarlar ekranı "Sistem"
-      // seçiliyken bile hangi dilin geçerli olduğunu göstermek zorundadır (ADP-620
-      // updateChannel/updateChannelEffective ile aynı çift).
-      locale: s.locale || 'system',
-      localeEffective: appI18n.getLocale(),
-      // ADP-885 Faz B (ADR-VOICE-LOCALE) — SES DİLİ: ARAYÜZ DİLİNDEN AYRI eksen.
-      // Aynı tercih/etkin çifti: Ayarlar "Arayüzü izle" seçiliyken bile hangi dilde
-      // dinlendiğini göstermek zorunda. Çözümü renderer YAPMAZ (ikinci gerçek olurdu).
-      voiceLocale: s.voiceLocale || 'follow-ui',
-      voiceLocaleEffective: appI18n.voiceLocale(s),
-      // HAND-A1 — "El kontrolü" overlay tercihi (kapalı-liste nöbetinden geçmiş;
-      // Ayarlar ekranı HAND-A3'te bu alana bağlanır).
-      handControl: handOverlayContract.sanitizeHandControl(s.handControl),
-      updateAutoCheck: s.updateAutoCheck !== false, // ADP-533 — otomatik güncelleme kontrolü toggle'ı
-      // ADP-907 — "yabancı kanca" kartı kapatıldı mı (kart bunu okur, Ayarlar geri açar).
-      foreignHookNoticeDismissed: s.foreignHookNoticeDismissed === true,
-      // ADP-945 — tanıtım turu bitirildi/atlandı mı. Bu satır ŞART (aynı beyaz-liste
-      // tuzağı: ADP-675/717/845). Yoksa `settings:set` bayrağı diske YAZAR ama
-      // ProductTour bir daha OKUYAMAZ → tur her açılışta yine gelir ve düzeltme
-      // "yapıldı ama işe yaramadı" gibi görünür.
-      productTourDone: s.productTourDone === true,
-      // TOUR-02-GUIDE-PERSIST — Rehber turu bitirildi mi. AYNI şartın İKİNCİ
-      // KAPISI: `agentSettings` okuma beyaz-listesine eklemek YETMİYOR, çünkü
-      // renderer ayarı buradan (settings:get PROJEKSİYONU) okur. e2e'de ÖLÇÜLDÜ:
-      // bayrak settings.json'da `true` iken bile Rehber ikinci açılışta geri geldi,
-      // çünkü bu satır yoktu ve `settingsApi().get()` anahtarı hiç taşımıyordu.
-      onboardingGuideDone: s.onboardingGuideDone === true,
-      // ADP-715/845 — telemetri OPT-OUT anahtarı. Bu satır ŞART: yoksa kullanıcı
-      // kapatır, ayar diske yazılır ama panel bir daha OKUYAMAZ → "kapattım ama
-      // hâlâ açık görünüyor" (ADP-675/717'de ölçülen aynı beyaz-liste tuzağı).
-      telemetryEnabled: s.telemetryEnabled !== false,
-      // ADP-620 — yayın kanalı: kullanıcının AÇIK tercihi ('auto'|'stable'|'beta') +
-      // o tercihin bu instance'ta ÇÖZÜLMÜŞ hâli (toggle'ın işaretli görüneceği değer).
-      updateChannel: updateChannel.normalizeChannel(s.updateChannel) || 'auto',
-      updateChannelEffective: currentUpdateChannel(),
-      hasOpenAiKey: !!(s.apiKeys && s.apiKeys.openai),
-      // ADP-827 — xAI anahtarı VAR mı (sır DÖNMEZ). Ayarlar'daki "Grok Voice"
-      // seçeneğinin gri mi aktif mi olacağını bu bayrak belirler.
-      hasXaiKey: !!(s.apiKeys && s.apiKeys.xai),
-      // ADP-580/595 — codex custom AI providers (Groq/DeepSeek/Kimi): BYOK key entry
-      // (Ayarlar) + ajan formunun sağlayıcı/model seçicisi. Tek kaynak providers.cjs.
-      aiProviders: aiProvidersPayload(s),
-      // AGENT-MODEL-01 — motor başına MODEL kataloğu + EFOR kümesi (ajan formu).
-      // aiProviders'tan AYRI: o codex'in ALTINDAKİ sağlayıcıların modelleri, bu ise
-      // MOTORUN KENDİ modelleri (claude alias'ları / codex'in kendi kataloğu).
-      engineModels: engineModelCatalogPayload(),
-      // SKL-B3 (K-8) — ürünün KENDİ API anahtarları (Gemini). aiProviders'tan AYRI
-      // liste: bunlar motor/pane değil, ürünün kendi çağrılarıdır. Sır DÖNMEZ.
-      appApiKeys: appApiKeysPayload(),
-      mcpServers: s.mcpServers,
-      jarvis: s.jarvis,
-      // ADP-854B — DİNLEME EŞİKLERİNİN ÇÖZÜLMÜŞ hâli. `jarvis` ham ayarı taşır
-      // (null = "varsayılan"), panel ise EKRANDA bir sayı göstermek zorunda —
-      // o sayıyı renderer'ın uydurması ikinci bir gerçek demekti (ADP-812 dersi).
-      // Üçü de aynı normalize kapısından geçer, yani panelde gördüğün değer
-      // çalışma anında UYGULANAN değerdir.
-      jarvisEndpoint: {
-        silenceMs: jarvisVoice.normalizeSilenceMs(s.jarvis && s.jarvis.silenceMs),
-        endpointMaxMs: jarvisVoice.normalizeEndpointMaxMs(
-          s.jarvis && s.jarvis.endpointMaxMs,
-          s.jarvis && s.jarvis.silenceMs,
-        ),
-        sleepAfterMs: jarvisVoice.normalizeSleepAfterMs(s.jarvis && s.jarvis.sleepAfterMs),
-        // ADP-916 — panel de UYGULANAN "hiç konuşulmadı" eşiğini görsün.
-        noSpeechMs: jarvisVoice.normalizeNoSpeechMs(s.jarvis && s.jarvis.noSpeechMs),
-        // AGENTX-WAKE-01 — panel uyku türünü de gösterir/değiştirir.
-        silentSleep: !!(s.jarvis && s.jarvis.silentSleep === true),
-      },
-      // ADP-827 — ses modu + Grok kataloğu/fiyatı. Fiyat sayısı RENDERER'DA
-      // TUTULMAZ, main PUSH eder (ADP-614 dersi: etiketleri renderer tutarsa
-      // sessizce bayatlar). `voiceMode` de burada çözülür — panelin kendi
-      // fail-safe kuralını yazması iki gerçek demek olurdu.
-      voiceMode: grokVoice.resolveVoiceMode(s),
-      grok: {
-        model: grokVoice.resolveGrokModel(s),
-        voice: grokVoice.resolveGrokVoice(s),
-        voices: grokVoice.GROK_VOICES,
-        models: Object.values(grokVoice.GROK_MODELS),
-        cost: grokVoice.grokCostNotice(grokVoice.resolveGrokModel(s)),
-        pricingSource: grokVoice.GROK_PRICING_SOURCE,
-      },
-      // ADP-848 — TTS sağlayıcı katmanı (motorlar + anahtar bayrakları + DÜRÜST
-      // maliyet + Türkçe önizleme cümlesi). SIR DÖNMEZ. Aynı sözleşme jarvis:config
-      // üzerinden de gider; iki yüzey de TEK kaynaktan (ttsProviders.ttsConfig) okur.
-      tts: jarvisVoice.ttsProviders.ttsConfig(s, { rootDir: REPO_ROOT }),
-      // ADP-915 — "Motorlar & Maliyet": her yetenek (beyin/ses tanıma/seslendirme)
-      // için hangi motor SEÇİLİ, ücretsiz mi, hangi anahtarı ister, fatura kime
-      // çıkar. SIR DÖNMEZ (yalnız var/yok bayrağı). Renderer bu listeyi ÇİZER —
-      // motor adlarını/varsayılanlarını kendisi YAZMAZ, yoksa yarın bir motor
-      // eklendiğinde ekran sessizce yalan söylerdi (ADP-614 dersi).
-      engineCost: engineCatalog.engineCostSummary(s, {
-        rootDir: REPO_ROOT,
-        // Ücretsiz yerel STT GERÇEKTEN kurulu mu — ekran iddia etmesin, ÖLÇSÜN.
-        sttStatus: jarvisVoice.whisperLocal.status({ settings: s }),
-      }),
-      theme: s.theme, // ADP-258 — durable theme pref (renderer reconciles → localStorage)
-      // ADP-304 — ekran (toast) filtreleri; sır değil, renderer doğrudan okur.
-      notifications: s.notifications,
-      // ADP-343 (ADR-026 §2.5) — güven ayarı + YERLEŞİK listeler. Yerleşikler salt-okunur:
-      // renderer onları yalnız GÖSTERİR (kullanıcı localhost'u güvenilirlikten çıkaramaz,
-      // prod paneli/ödeme sitesini yasaktan çıkaramaz — güvenli varsayılan koddadır).
-      // Yasak desenlerin `path` regex'i JSON'a geçmez → okunur metne çevrilir.
-      browserTrust: s.browserTrust,
-      // ADP-717 — takım kapsamı izinleri (Ayarlar → Takım İzinleri). `readSettings`
-      // BEYAZ LİSTE olduğu için bu satır ŞART: yoksa izin diske yazılır ama panel onu
-      // bir daha OKUYAMAZ (kullanıcı "izin verdim, hâlâ kapalı" görürdü).
-      // ADP-737 — burası bir GÖSTERİM okumasıdır: mandalı ÇAKMAZ. Ayarlar penceresini
-      // açmak "kural yürürlüğe girdi" demek değildir; mandalı yalnız gerçek bir yetki
-      // kararı çakar (ensureTeamScopeMandate). Aksi hâlde damga yine gerçek kullanımın
-      // önüne geçer — düzeltilen mayının aynısı.
-      teamScope: teamScope.sanitizeTeamScope(agentSettings.readSettings().teamScope),
-      browserTrustBuiltins: {
-        trusted: [...browserTrustMod.BUILTIN_TRUSTED],
-        blocked: browserTrustMod.BUILTIN_BLOCKED.map((r) => ({
-          host: r.host,
-          why: r.why,
-          path: r.path ? String(r.path) : null,
-        })),
-      },
-    };
-  });
-  ipcMain.handle('settings:set', (_event, patch) => {
-    // ADP-232 — apply + restart-compare live in agentSettings.applySettingsPatch
-    // so "same value saved again → no restart" is unit-tested, not just hoped.
-    const { next, restartRequired, persisted, persistError } = agentSettings.applySettingsPatch(patch);
-    // ADP-946 — `ok:true` yazımın DİSKE indiğini söylemiyordu (yalnız "kabul edildi").
-    if (persisted === false) logLine(`settings:set DİSKE YAZILAMADI (${persistError}) — patch: ${Object.keys(patch || {}).join(',')}`);
-    // ADP-888 — dil değiştiyse ÜÇ tüketici de aynı anda tazelenir: main'in kendi
-    // diyalogları, açık pencereler (canlı push) ve bundan sonra doğacak pencereler
-    // (argv bayrağı applyAppLocale'i yeniden okur). RESTART GEREKMEZ ve route
-    // değişmez — açık pane/terminal durumu yaşar (ADP-885 §3.1 kararının bedeli budur).
-    const localeState = patch && 'locale' in patch ? broadcastLocale() : null;
-    // SYNC-F1-6 — senkron tercihi bu patch'te değiştiyse motor ANINDA çözülür:
-    // kapatma yeniden başlatma beklemez (opt-in'i geri almanın yarım kalması,
-    // §5.3'ün şifrelenmemiş saklama sınırıyla birlikte kabul edilemez).
-    if (patch && 'cloudSyncEnabled' in patch) {
-      try { syncRuntime.refresh({ tickNow: next.cloudSyncEnabled === true }); }
-      catch (e) { logLine(`[sync] tercih uygulanamadı: ${e.message}`); }
-    }
-    // SYNC-F1-7 — HER ayar yazımından sonra projeksiyon tazelenir. Hangi anahtarın
-    // taşınabilir olduğuna BURASI karar VERMEZ (beyaz liste karar verir); burada
-    // yalnız "bir şey değişti" sinyali vardır. Projeksiyon idempotenttir:
-    // taşınabilir bir anahtar değişmediyse dosya baytı DEĞİŞMEZ, senkron uyanmaz.
-    prefsProjectNow('settings:set');
-    // HAND-A1 — overlay tercihi ANINDA uygulanır (görev kartı madde 3): kapatma
-    // açık pencereleri o an indirir, yoğunluk açık pencerelere canlı gider.
-    if (patch && 'handControl' in patch) {
-      try { applyHandOverlaySettings(); }
-      catch (e) { logLine(`hand overlay: tercih uygulanamadı: ${e.message}`); }
-    }
-    return {
-      ok: true,
-      workspaceRoot: next.workspaceRoot,
-      locale: next.locale,
-      localeEffective: localeState ? localeState.locale : appI18n.getLocale(),
-      // ADP-885 Faz B — ses dili KAYITTAN SONRA yeniden çözülür. İki yoldan da
-      // değişebilir: kullanıcı ses dilini seçti YA DA arayüz dilini değiştirdi ve
-      // ses "Arayüzü izle"de. İkincisi bu satır olmadan ekranda bayat kalırdı.
-      voiceLocale: next.voiceLocale,
-      voiceLocaleEffective: appI18n.voiceLocale(next),
-      pushToTalkKey: next.pushToTalkKey,
-      wakeModelPath: next.wakeModelPath,
-      hasOpenAiKey: !!(next.apiKeys && next.apiKeys.openai),
-      hasXaiKey: !!(next.apiKeys && next.apiKeys.xai), // ADP-827 — kaydettikten sonra rozet tazelensin
-      // ADP-580 — refreshed provider-key presence after a BYOK save (secret-safe).
-      aiProviders: aiProvidersPayload(next),
-      engineModels: engineModelCatalogPayload(), // AGENT-MODEL-01
-      // SKL-B3 — kaydettikten SONRA rozet + KAYNAK tazelensin: kullanıcı "artık
-      // Ayarlar'dan geliyor" cümlesini kaydın hemen ardından görmeli (keys.env'den
-      // Ayarlar'a geçişin görünür olması K-8'in yarısıdır).
-      appApiKeys: appApiKeysPayload(),
-      // ADP-234 — agentWorkspaceRoot is resolved ONCE at module load (spawn cwd,
-      // bridge results dir, embedded-server env all hang off it); a changed
-      // workspaceRoot only takes effect after an app restart. Deliberately
-      // restart-gated (no live rehydration): three independent consumers would
-      // otherwise drift on a half-applied change. The renderer surfaces this flag
-      // as a "restart to apply" notice.
-      restartRequired,
-      // ADP-946 — yazım gerçekten diske indi mi (geri okunmuş hüküm). `false` ise
-      // ayar bu oturumda geçerlidir ama yeniden açılışta KAYBOLUR.
-      persisted,
-      persistError,
-    };
+  // ── ONBOARDING, RESET, SETTINGS & PRESETS IPC (Faz 3.5 — Sıra 11) ──────────
+  registerSettingsIpc({
+    ipcMain,
+    onboardingStore,
+    resetContext,
+    installReset,
+    runningPaneSummary,
+    resetGate,
+    appI18n,
+    signOutConfirmCopy,
+    getSeatGate: () => seatGate,
+    closePanesForSignOut,
+    accountScope,
+    sendResetTelemetry,
+    relaunchForAccountChange,
+    agentSettings,
+    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+    repoRoot: REPO_ROOT,
+    workspaceOnboarding,
+    app,
+    leaderRefreshPolicy,
+    handOverlayContract,
+    updateChannel,
+    currentUpdateChannel: () => currentUpdateChannel(),
+    aiProvidersPayload,
+    engineModelCatalogPayload,
+    appApiKeysPayload,
+    jarvisVoice,
+    grokVoice,
+    engineCatalog,
+    teamScope,
+    browserTrustMod,
+    logLine,
+    broadcastLocale,
+    getSyncRuntime: () => syncRuntime,
+    prefsProjectNow,
+    applyHandOverlaySettings,
+    presetAdvisor,
+    agentRunner,
   });
   // ADP-737 — TAKIM KAPSAMI KAPISI (Faz 3.5 — Sıra 11)
   registerTeamScopeIpc({
@@ -7363,69 +7014,10 @@ function wireIpc() {
   // (ADP-232 Faz A tek-tık relaunch'ı renderer tetikler).
 
 
-  // B-06 — ONBOARDING ŞABLON ÖNERİSİ (ONBOARDING-PRESETS-SPEC §4.2). DAR kanal:
-  // renderer serbest metni + ŞABLON KATALOĞUNU yollar, cevap yalnız o kataloğun
-  // içinden bir id olabilir (presetAdvisor doğrular). Genel amaçlı "modele sor"
-  // kanalı BİLEREK açılmadı — bu kanal başka hiçbir şeye yaramaz.
-  ipcMain.handle('presets:recommend', async (_event, payload) => {
-    const req = payload || {};
-    return presetAdvisor.recommendWithClaude({
-      text: req.text,
-      presets: Array.isArray(req.presets) ? req.presets : [],
-      locale: req.locale === 'en' ? 'en' : 'tr',
-      // ÖLÇÜLEBİLİRLİK DİKİŞİ: e2e hem BAŞARILI hem BAŞARISIZ modeli deterministik
-      // koşabilsin diye ikili yolu dışarıdan verilebilir. Ürün yolunda değişken
-      // yoktur → motor kaydının kendisi (engineCatalog) kullanılır. Bu dikiş
-      // olmadan "model hatasında varsayılan preset görünüyor" iddiası ancak
-      // makinede claude'u SİLEREK kanıtlanabilirdi.
-      claudeBin: process.env.CREWPANE_PRESET_ADVISOR_BIN || engineCatalog.BRAIN_CLI,
-      // GUI süreçlerinin budanmış launchd PATH'i `claude`ı bulamaz (agentRunner
-      // ile aynı düzeltme; jarvisVoice.decideWithClaude da bunu kullanıyor).
-      env: { ...process.env, PATH: agentRunner.augmentedPath(process.env.PATH) },
-    });
-  });
 
 
-  // ADP-139 (DOGFOOD Engel #2) — self-host dev affordances.
-  //  • app:info        → { mode, packaged, rebuildSupported } so the renderer can
-  //                      render the right affordance (HMR badge in dev vs a
-  //                      Rebuild button in prod-from-source).
-  //  • app:rebuildRelaunch → run `npm run electron:build:prep` (FIXED args — no
-  //                      renderer input → no RCE), stream progress, then relaunch
-  //                      the app so a renderer change is picked up in ONE click.
-  //                      Only when running from the source tree (not packaged):
-  //                      a distributed .app has no source/npm to rebuild.
-  ipcMain.handle('app:info', () => ({
-    mode: MODE,
-    packaged: app.isPackaged,
-    rebuildSupported: !app.isPackaged,
-    // ADP-171 — multi-tenant auth opt-in flag (read at runtime so e2e can launch
-    // with CREWPANE_AUTH=1 without a rebuild). Absent/empty → AuthGate bypasses
-    // (anon mode preserved). Truthy ('1'/'true') → magic-link AuthGate enforced.
-    authEnabled: /^(1|true|on|yes)$/i.test(String(process.env.CREWPANE_AUTH || '')),
-    // ADP-268 — shell identity for the header BuildBadge: version (packaged:
-    // extraMetadata-injected package.json), instance (prod/dev/test) and the
-    // shell's build commit to compare against the renderer bundle's.
-    version: app.getVersion(),
-    instance: instancePaths.instanceId(),
-    commit: SHELL_COMMIT,
-    // RESET-03 — BU AÇILIŞTA SIFIRLAMA UYGULANDI MI? Yalnız SAYI ve kapalı bir
-    // `kind` kümesi taşır (yol/dosya adı/hata gövdesi YOK — resetGate.bootNotice).
-    // Cümleyi gösteren yüzey kendi sözlüğünden yazar; null = sıfırlama olmadı.
-    resetBoot: resetBootNotice,
-  }));
-  ipcMain.handle('app:rebuildRelaunch', (event) => rebuildAndRelaunch(event));
 
-  // DEMO-04 — TANITIM TURUNUN ÖRNEK SİTESİ. Kurulumla gelen tek dosyalık statik
-  // sayfanın `file:` adresini döner; tur onu gömülü tarayıcıda açar. Dosya yoksa
-  // `{ ok:false }` — çağıran uydurma bir adrese gitmesin, sekmeyi hiç açmasın.
-  // Renderer'dan gelen TEK girdi dil seçimidir ve KAPALI bir kümeye daraltılır
-  // (yol renderer'dan HİÇ alınmaz → keyfi dosya açtırma yolu yok).
-  ipcMain.handle('demo:siteUrl', (_event, payload) => {
-    const lang = payload && payload.lang === 'en' ? 'en' : 'tr';
-    const url = demoSitePath.demoSiteUrl({ lang });
-    return url ? { ok: true, url } : { ok: false };
-  });
+
 
   // ADP-463-B — setup sihirbazı motor/CLI kontrolü (uyarı-only, ASLA bloklamaz).
   // → { engines:[{id,name,found,path,installUrl}], anyFound }. Probe hata verirse
@@ -7441,115 +7033,7 @@ function wireIpc() {
   // (Terminal.tsx geri düşüşü); bir ekran dolusu çıktı 4096'ı rahat aşar ve eski
   // hâl `slice` edip yine `ok:true` dönüyordu — yani SESSİZ VERİ KAYBI. Artık
   // kırpma olursa çağırana `truncated` ile SÖYLENİR.
-  const CLIPBOARD_MAX = 1024 * 1024;
-  ipcMain.handle('clipboard:write', (_event, text) => {
-    const raw = typeof text === 'string' ? text : '';
-    const value = raw.slice(0, CLIPBOARD_MAX);
-    if (!value) return { ok: false, reason: 'empty' };
-    try {
-      clipboard.writeText(value);
-      return { ok: true, truncated: value.length < raw.length };
-    } catch (err) {
-      logLine(`clipboard:write failed: ${err.message}`);
-      return { ok: false, reason: 'write-failed' };
-    }
-  });
 
-  // ADP-894 — ODAKLI yüzeye YAPIŞTIR. Windows'ta terminal pane'inde Ctrl+V
-  // xterm tarafından `\x16` (SYN) olarak yutuluyor ve HİÇBİR ŞEY yapışmıyordu
-  // (gerçek Electron+xterm ölçümü); macOS'ta aynı işi varsayılan Edit menüsü
-  // `webContents.paste()` ile görüyor. Renderer yalnız "yapıştır" DİYEBİLİR —
-  // panoyu OKUYAMAZ (içerik main'den renderer'a geçmez).
-  //
-  // ADP-925 — MOTORUN KENDİ PANO-GÖRÜNTÜ YOLU. ÖLÇÜLDÜ (gerçek claude v2.1.223
-  // TUI'si, e2e probe): claude ham `\x16` (Ctrl+V) baytını alınca sistem panosundaki
-  // GÖRÜNTÜYÜ kendisi okur ve prompt kutusuna `[Image #1]` rozetini basar. Bir dosya
-  // YOLU yapıştırmak AYNI ŞEY DEĞİLDİR — ölçüldü: yol düz metin olarak kutuda kalır,
-  // rozet çıkmaz (ADP-035'in "yolu görünce [Image #N] yapar" varsayımı bugünün
-  // CLI'ında GEÇERSİZ). Codex ÖLÇÜLMEDİ ⇒ tabloda YOK: ölçmediğimiz bir motoru
-  // "destekliyor" saymak, kullanıcının pane'ine çöp kontrol karakteri yazmak olurdu.
-  // WIN-IMG-01 — tablo artık PLATFORM × MOTOR ve `clipboardImageRoute.cjs`te
-  // yaşıyor (saf + üç platform test edilir). Buradaki eski tek satırlık tablo
-  // platformsuzdu ama ölçüm YALNIZ macOS'taydı: Windows'ta `\x16` pane'e iniyor
-  // ve karşılığı olmayabiliyordu → kullanıcı için SESSİZ HİÇLİK (müşteri kanıtı).
-
-  /**
-   * WIN-IMG-01 — WINDOWS: Explorer'da bir görsele Ctrl+C basmak panoya BİTMAP
-   * koymaz, DOSYA LİSTESİ koyar (CF_HDROP; Electron bunu `FileNameW` formatıyla
-   * açar). Eski akışta `readImage()` boş + `readText()` boş ⇒ `webContents.paste()`
-   * ⇒ hiçbir şey olmuyordu. Best-effort: format yoksa boş dizi.
-   */
-  function readClipboardFilePaths() {
-    if (process.platform !== 'win32') return [];
-    try {
-      const formats = clipboard.availableFormats();
-      if (!formats.includes('FileNameW')) return [];
-      const buf = clipboard.readBuffer('FileNameW');
-      if (!buf || !buf.length) return [];
-      const s = buf.toString('ucs2').replace(/\0+$/g, '').trim();
-      return s ? [s] : [];
-    } catch (err) {
-      logLine(`clipboard file-list read failed: ${err.message}`);
-      return [];
-    }
-  }
-
-  // ADP-925 — PANODAKİ GÖRÜNTÜ. `webContents.paste()` bir DÜZENLEME komutudur ve
-  // yalnız METİN taşır: kullanıcı ekran görüntüsünü panoya alıp Ctrl+V'ye bastığında
-  // HİÇBİR ŞEY olmuyordu (sürükle-bırak çalışıyor, pano çalışmıyordu — aynı ürünün
-  // iki yolu ayrışmıştı). macOS'ta ⌘V hiç, Windows'ta ise ADP-894'ten BERİ hiç
-  // çalışmıyordu: orada Ctrl+V artık metin-yapıştırmaya çevrildiği için claude'un
-  // kendi `\x16` yolu da kapanmıştı.
-  //
-  // Karar burada verilir çünkü panoyu YALNIZ main okuyabilir; teslimi ise renderer
-  // yapar (pty yazımı `pty:input`ten geçsin — ADP-667/692 tuş damgaları dürüst kalır):
-  //   • pano görüntü + motorun kendi yolu var → { kind:'engine-keys' } → renderer o
-  //     baytı pane'e yazar, motor panoyu kendisi okur (claude → `[Image #N]`).
-  //   • pano görüntü + motor bilmiyor (kabuk) → bayt'lar `saveTempImage`'a (sürükle-
-  //     bırakın AYNI mekanizması) → { kind:'image', path } → renderer yolu yapıştırır.
-  //   • aksi hâlde                            → bugünkü metin yolu, DEĞİŞMEDEN.
-  // Görüntü kararı yalnız pano METİNSİZ iken verilir: bir web sayfasından yapılan
-  // "kopyala" çoğu zaman metinle BİRLİKTE bir görüntü de bırakır ve orada kullanıcının
-  // beklediği metindir — çalışan yolu bozmamak için metin ÖNCELİKLİDİR.
-  // GÜVENLİK: pano içeriği yine renderer'a geçmez — geçen şey ya sabit bir kontrol
-  // baytı ya da main'in yazdığı temp dosyanın YOLUdur (renderer'ın fs erişimi yok).
-  ipcMain.handle('clipboard:pasteFocused', (event, opts) => {
-    const paneId = opts && typeof opts === 'object' ? opts.paneId : null;
-    try {
-      const img = clipboard.readImage();
-      // Motoru pane'in KENDİSİNDEN oku (spawn'da kaydedilen durum) — çağıranın
-      // iddiasından değil: hangi CLI'ın koştuğunu bilen taraf main'dir.
-      const entry = paneId ? ptys.get(paneId) : null;
-      const route = clipboardImageRoute.routeClipboardPaste({
-        platform: process.platform,
-        engine: entry ? entry.command : null,
-        hasImage: !!(img && !img.isEmpty()),
-        hasText: !!clipboard.readText().trim(),
-        filePaths: readClipboardFilePaths(),
-      });
-      if (route.kind === 'engine-keys') return { ok: true, kind: 'engine-keys', keys: route.keys };
-      // WIN-IMG-01 — Windows Explorer kopyası: DOSYA zaten diskte, kopya yazmayız.
-      if (route.kind === 'file-path') return { ok: true, kind: 'image', path: route.paths[0], fromDisk: true };
-      if (route.kind === 'image') {
-        const saved = saveTempImage({ data: img.toPNG(), type: 'image/png', name: 'pasted-image' });
-        if (saved.ok) return { ok: true, kind: 'image', path: saved.path, bytes: saved.bytes };
-        // WIN-IMG-01 — SESSİZ BAŞARISIZLIK YASAĞI: eskiden yalnız log'a düşüp metin
-        // yoluna kayıyordu (kullanıcı için hiçbir şey olmuyordu). Artık sebep ÇAĞIRANA
-        // döner ve terminal bunu kullanıcıya GÖSTERİR.
-        logLine(`clipboard:pasteFocused image save failed: ${saved.reason || 'unknown'}`);
-        return { ok: false, reason: saved.reason || 'image-save-failed' };
-      }
-    } catch (err) {
-      logLine(`clipboard:pasteFocused image probe failed: ${err.message}`);
-    }
-    try {
-      event.sender.paste();
-      return { ok: true, kind: 'text' };
-    } catch (err) {
-      logLine(`clipboard:pasteFocused failed: ${err.message}`);
-      return { ok: false, reason: 'paste-failed' };
-    }
-  });
 
   // ── ADP-935 — PANO GEÇMİŞİ ────────────────────────────────────────────────
   // Eren: "bir ekrandan 3-5 şey kopyalıyorum, beşinciyi kopyalayınca ilk dördü
@@ -7590,49 +7074,7 @@ function wireIpc() {
     try { imageStore.dispose(); } catch { /* çıkışı geciktirme */ }
   });
 
-  // ADP-625 — İLK AÇILIŞ DOKTORU (ADP-616 §5.4): "bu kurulum çalışır durumda mı?"
-  // Tek çağrı, beş kontrol, üç renk. Eksik dizinleri OLUŞTURUR (idempotent), geri
-  // kalanını yalnız RAPORLAR — hiçbir kontrol kapı değildir, uygulama her hâlükârda
-  // açılır. Renderer'daki "Sistem Durumu" ekranı da, açılıştaki tek seferlik log da
-  // aynı fonksiyonu çağırır (iki yüzey ayrışamaz).
-  ipcMain.handle('doctor:run', async () => {
-    try {
-      return await runDoctorNow();
-    } catch (err) {
-      logLine(`doctor:run error: ${err && err.message}`);
-      return { generatedAt: Date.now(), overall: 'warn', checks: [], error: 'run_failed' };
-    }
-  });
 
-  // ADP-907 — "dosyayı benim için aç": yabancı kancanın yazılı olduğu AYAR DOSYASINI
-  // kullanıcının kendi editöründe açar. İki sınır:
-  //   • YAZMA YOK. Uygulama kullanıcının ayar dosyasını ASLA değiştirmez; kararı o verir.
-  //   • YOL RENDERER'DAN GELMEZ (ADP-103 capability modeli). Renderer bir yol GÖNDERİR
-  //     ama main onu doktorun KENDİ ürettiği aday listesiyle karşılaştırır; listede
-  //     değilse açmaz. Yani bu köprüden rastgele bir dosya açtırılamaz.
-  ipcMain.handle('doctor:openHookSettings', async (_event, requested) => {
-    const target = typeof requested === 'string' ? requested.trim() : '';
-    if (!target) return { ok: false, reason: 'bad-request' };
-    const allowed = firstRunDoctor.hookSettingsFiles({
-      userHome: hookScanHome(),
-      workspaceRoot: agentWorkspaceRoot,
-    });
-    if (!allowed.some((f) => f.path === target)) {
-      logLine(`doctor:openHookSettings reddedildi (liste dışı yol)`);
-      return { ok: false, reason: 'not-allowed' };
-    }
-    try {
-      if (!fs.existsSync(target)) return { ok: false, reason: 'missing' };
-      const err = await shell.openPath(target);
-      // openPath boş dize dönerse açıldı; dolu dönerse ilişkili uygulama yok →
-      // dosyayı klasörde göster (kullanıcı çıkmaz sokakta kalmasın).
-      if (err) { shell.showItemInFolder(target); return { ok: true, via: 'folder' }; }
-      return { ok: true, via: 'editor' };
-    } catch (e) {
-      logLine(`doctor:openHookSettings hata: ${String((e && e.message) || e)}`);
-      return { ok: false, reason: 'open-failed' };
-    }
-  });
 
   // ── ADP-597 — ABONELİKLE GİRİŞ (Ayarlar → AI Motorları → "Hesap ile giriş") ──
   //
@@ -7761,47 +7203,28 @@ function wireIpc() {
     logLine,
   });
 
-  // ADP-232 — thin relaunch WITHOUT the rebuild: restart-gated settings (a changed
-  // workspaceRoot) need only a process restart, not `electron:build:prep` (which is
-  // the dev-builder path above and would be slow/side-effectful here). No renderer
-  // input, works packaged too. The short delay lets the renderer paint its
-  // "yeniden başlatılıyor…" state before the window dies.
-  ipcMain.handle('app:relaunch', () => {
-    // ADP-232-C — e2e seam (CREWPANE_DISABLE_AUTORESUME deseni): Playwright-Electron
-    // altında gerçek relaunch ÖKSÜZ bir app instance'ı doğurur (yeni kopya harness'a
-    // bağlı değil). first-run gate spec'i relaunch ÇAĞRISINI doğrular, exec'ini değil.
-    if (process.env.CREWPANE_E2E_BLOCK_RELAUNCH === '1') {
-      logLine('relaunch: suppressed (e2e seam)');
-      return { ok: true, suppressed: true };
-    }
-    logLine('relaunch: requested (settings restart-apply)');
-    setTimeout(() => relaunchApp('settings-restart'), 400);
-    return { ok: true };
-  });
-
-  // A-10 — "Yenilikler" (changelog) IPC yüzeyi. Salt-okunur: renderer hiçbir
-  // adres/ID göndermez, yalnız durumu okur (announce'un aksine aksiyon linki yok).
-  ipcMain.handle('changelog:get', () => changelogStateForRenderer());
-  ipcMain.handle('changelog:checkNow', () => runChangelogCheck('manual'));
-  ipcMain.handle('changelog:openUrl', (_event, url) => {
-    // announce:openLink ile AYNI disiplin: adres renderer'dan gelse de main KENDİ
-    // bildiği (zaten https doğrulanmış) kayıt listesindeki bir adresle EŞLEŞMELİ.
-    const target = typeof url === 'string' ? url.trim() : '';
-    if (!target || !changelogState.items.some((e) => e.url === target)) {
-      return { ok: false, reason: 'unknown-url' };
-    }
-    shell.openExternal(target);
-    logLine(`changelog: link açıldı → ${target}`);
-    return { ok: true, url: target };
-  });
-
-  // Autotest-only proof channels (spike regression harness, not product API).
-  ipcMain.on('spike:rendered', (_event, chunk) => {
-    try { if (LOG_PATH) fs.appendFileSync(LOG_PATH, '[rendered] ' + JSON.stringify(chunk) + '\n'); } catch { /* best-effort */ }
-  });
-  ipcMain.on('spike:done', (_event, summary) => {
-    logLine('autotest summary: ' + JSON.stringify(summary));
-    setTimeout(() => { noteQuit('watchdog', 'autotest-done'); app.quit(); }, 200);
+  // ── ADP-139, ADP-232, DEMO-04, ADP-625, A-10 — APP, DOCTOR & CHANGELOG IPC ─
+  registerAppIpc({
+    ipcMain,
+    app,
+    shell,
+    mode: MODE,
+    instancePaths,
+    shellCommit: SHELL_COMMIT,
+    getResetBootNotice: () => resetBootNotice,
+    rebuildAndRelaunch,
+    demoSitePath,
+    runDoctorNow,
+    firstRunDoctor,
+    hookScanHome,
+    getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+    logLine,
+    relaunchApp,
+    changelogStateForRenderer,
+    runChangelogCheck,
+    getChangelogState: () => changelogState,
+    getLogPath: () => LOG_PATH,
+    noteQuit,
   });
 }
 
@@ -11704,28 +11127,11 @@ const syncIpcSurface = syncSurface.createSyncIpc({
 // iki yönlü bir IPC ile taşınır. Sınır DAR: renderer yalnız KENDİ eksenindeki
 // (beyaz listede `renderer` kaynaklı) anahtarları yazabilir — `publishRenderer`
 // gerisini düşürür, yani bir XSS yüzeyi buradan `locale`ı ya da bir sırrı
-// projeksiyona sokamaz.
-ipcMain.handle('prefs:publish', (_e, input) => {
-  const p = prefsProjector();
-  if (!p) return { ok: false, reason: 'no-account' };
-  const map = input && typeof input === 'object' && !Array.isArray(input.values) ? input.values : null;
-  if (!map || typeof map !== 'object') return { ok: false, reason: 'bad-input' };
-  try { return p.publishRenderer(map); }
-  catch (err) { logLine(`[prefs] renderer yayını hatası: ${err.message}`); return { ok: false, reason: 'error' }; }
-});
-/** Doküman → renderer'ın uygulaması gereken `localStorage` değerleri + durum. */
-ipcMain.handle('prefs:pull', () => {
-  const p = prefsProjector();
-  if (!p) return { ok: false, reason: 'no-account', values: {}, keys: prefsWhitelist.RENDERER_KEYS };
-  try { return { ok: true, values: p.rendererValues(), keys: prefsWhitelist.RENDERER_KEYS, status: p.status() }; }
-  catch (err) { logLine(`[prefs] renderer çekimi hatası: ${err.message}`); return { ok: false, reason: 'error', values: {}, keys: prefsWhitelist.RENDERER_KEYS }; }
-});
-/** Ayarlar → Senkron satırının GERÇEĞİ (tahmin değil: dosya + anahtar sayısı + son uygulama). */
-ipcMain.handle('prefs:status', () => {
-  const p = prefsProjector();
-  if (!p) return { ok: false, reason: 'no-account' };
-  try { return { ok: true, ...p.status() }; }
-  catch { return { ok: false, reason: 'error' }; }
+registerPrefsIpc({
+  ipcMain,
+  prefsProjector,
+  prefsWhitelist,
+  logLine,
 });
 
 // VOICE-TRUNC-02 — AgentVoice dikte teslimi: köprüden TEK parça gelen metni ODAKLI

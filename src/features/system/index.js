@@ -6,6 +6,9 @@ const { registerClipIpc } = require('./clipIpc');
 const { registerAnnounceIpc } = require('./announceIpc');
 const { registerDiagnosticsIpc } = require('./diagnosticsIpc');
 const { registerTelemetryIpc } = require('./telemetryIpc');
+const { registerMediaIpc } = require('./mediaIpc');
+const { registerSettingsIpc } = require('./settingsIpc');
+const { registerAppIpc } = require('./appIpc');
 
 function registerSystemIpc(deps) {
   registerFeedbackIpc(deps);
@@ -22,4 +25,7 @@ module.exports = {
   registerAnnounceIpc,
   registerDiagnosticsIpc,
   registerTelemetryIpc,
+  registerMediaIpc,
+  registerSettingsIpc,
+  registerAppIpc,
 };
