@@ -47,8 +47,20 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
-const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService, createPaneDispatchService, createPaneQueryService, REFRESH_SUBMIT_GAP_MS } = require('./src/features/terminal');
+const {
+  createPaneRestoreService,
+  createPtyResumeService,
+  createPtyIsolationService,
+  createPtySpawnService,
+  createPaneControlService,
+  createPaneDispatchService,
+  createPaneQueryService,
+  createPaneAskService,
+  PANE_ASK_MIRROR_MAX,
+  REFRESH_SUBMIT_GAP_MS,
+} = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
+const { createJarvisConversationService } = require('./src/features/voice');
 let windowManager = null;
 let mobileService = null;
 
@@ -3247,105 +3259,30 @@ const mobileReports = require('./src/mobile/mobileReports.cjs'); // ADP-364 — 
 const mobileTranscript = require('./src/mobile/mobileTranscript.cjs'); // ADP-368 — okuma modu (claude oturum JSONL'i)
 const mobileUploads = require('./src/mobile/mobileUploads.cjs'); // ADP-371 — telefondan görsel yükleme (prompt eki)
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ADP-317 — JARVİS KONUŞMASI: TEK DEFTER (main). Renderer paneli ve telefon AYNI
-// kaynaktan okur/yazar → "iki Jarvis" yok. Her mutasyon TEK olay üretir; o olay
-// hem tüm pencerelere (IPC) hem de mobil SSE'ye yayılır.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── ADP-317 — JARVİS KONUŞMASI SERVİSİ (src/features/voice/jarvisConversationService.js - Faz 3.6.40)
 const jarvisConversationMod = require('./src/voice/jarvisConversation.cjs');
-const jarvisConv = jarvisConversationMod.createConversation({ log: logLine });
-
-jarvisConv.onChange((event) => {
-  // 1) Masaüstü paneli — açık her pencereye (telefondan gelen satır ANINDA görünür).
-  for (const w of BrowserWindow.getAllWindows()) {
-    try {
-      if (!w.isDestroyed()) w.webContents.send('jarvis:conv:changed', event);
-    } catch {
-      /* kapanan pencere akışı düşürmez */
-    }
-  }
-  // 2) Telefon — SSE (/m/stream). Masaüstünde yazılan satır ANINDA telefona düşer.
-  if (event.type === 'turn') {
-    emitMobileEvent({ type: 'jarvis-turn', turn: event.turn, at: event.turn.at });
-  } else if (event.type === 'approval') {
-    const a = event.approval;
-    // ADP-322 — `choices` de gider: fan-out kartı TELEFONDA da 4 butonlu çıkar
-    // (boşsa telefon eski ikili kartı çizer — regresyonsuz).
-    emitMobileEvent({ type: 'approval', approvalId: a.id, title: a.title, detail: a.detail, choices: a.choices, at: a.at });
-  } else if (event.type === 'approval-resolved') {
-    // Bir uçta cevaplandı → diğer uçtaki kart KAPANIR (çift onay yok).
-    emitMobileEvent({ type: 'approval-resolved', approvalId: event.approvalId, status: event.status, choice: event.choice ?? null, at: Date.now() });
-  }
+const jarvisConversationService = createJarvisConversationService({
+  jarvisConversationMod,
+  logLine,
+  BrowserWindow,
+  emitMobileEvent: (event) => emitMobileEvent(event),
 });
+const jarvisConv = jarvisConversationService.conversation;
 
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ASK-CARD-01 (FB-1009) — LİDERİN KARAR SORUSU: pane üstünde kart + "cevap bekliyor".
-// Tespit ve defter `electron/paneAsk.cjs`te (saf, test edilir). Burada yalnız dikişler:
-//   • ekran  → `entry.screen.liveLines()` (mobil VT'nin görünür satırları; kullanıcının
-//              gördüğü metin — ham buffer değil)
-//   • teslim → ENT-F1 `deliverToPane` (AXP-03 ile AYNI primitif: metin bir kez + Enter)
-//   • yayın  → tüm pencereler (`paneAsk:changed`); telefon AYNA üzerinden (aşağıda)
-//   • ayna   → Agent X onay defteri (`jarvisConv.openApproval`): telefon JarvisScreen ve
-//              masaüstü Agent X kartı aynı düğmeleri çizer; cevap tek-kazanan kapısından
-//              geçip BURADAN teslim edilir (`onMirrorResolved`). Seçeneksiz ya da 4'ten
-//              çok seçenekli soru aynalanmaz (kart 4 düğme taşır; yarım liste yanıltır).
-// ─────────────────────────────────────────────────────────────────────────────
-const PANE_ASK_MIRROR_MAX = 4;
-const paneAskMirrored = new Set();
-const paneAskRuntime = paneAskMod.createPaneAskRuntime({
-  readScreenLines: (paneId) => {
-    const e = ptys.get(paneId);
-    if (!e) return null;
-    if (e.screen && typeof e.screen.liveLines === 'function') {
-      const lines = e.screen.liveLines();
-      if (Array.isArray(lines)) return lines;
-    }
-    // VT yoksa (patolojik) ham tampondan düş — cleanPaneTail satırlaştırır.
-    const clean = delegationBridgeMod.cleanPaneTail(e.buffer || '', 60);
-    return clean ? clean.split('\n') : [];
-  },
-  paneInfo: (paneId) => {
-    const e = ptys.get(paneId);
-    return e ? { agentId: e.agentId || null } : null;
-  },
-  deliver: (paneId, text) => deliverToPane(paneId, text, { submitGapMs: REFRESH_SUBMIT_GAP_MS, label: 'karar-kartı' }),
-  emit: (event) => {
-    for (const w of BrowserWindow.getAllWindows()) {
-      try { if (!w.isDestroyed()) w.webContents.send('paneAsk:changed', event); } catch { /* kapanan pencere */ }
-    }
-    // Telefona AYRI bir SSE tipi gitmez: mobil sözleşme (mobileApiTypes.MobileEvent)
-    // kapalı kümedir ve telefon kartı zaten AYNADAN (`approval`) alır.
-  },
-  mirror: {
-    open: (ask) => {
-      if (!ask.options.length || ask.options.length > PANE_ASK_MIRROR_MAX) return;
-      const e = ptys.get(ask.paneId);
-      const who = (e && (e.label || e.agentId)) || ask.agentId || '';
-      const opened = jarvisConv.openApproval({
-        id: ask.id,
-        title: appI18n.t('main.ask.title', { agent: who }),
-        detail: `${ask.question}\n${ask.options.map((o, i) => `${i + 1}) ${o.label}`).join('\n')}`,
-        source: 'desktop',
-        choices: ask.options.map((o) => ({ id: o.id, label: o.label })),
-      });
-      if (opened) paneAskMirrored.add(ask.id);
-    },
-    close: (askId) => {
-      if (!paneAskMirrored.delete(askId)) return;
-      try { jarvisConv.closeApproval(askId, 'expired'); } catch { /* zaten kapalı */ }
-    },
-  },
-  log: (line) => logLine(line),
+// ── ASK-CARD-01 (FB-1009) — LİDERİN KARAR SORUSU & PANE ASK SERVİSİ (src/features/terminal/paneAskService.js - Faz 3.6.40)
+const paneAskService = createPaneAskService({
+  paneAskMod,
+  cleanPaneTail: (buf, max) => delegationBridgeMod.cleanPaneTail(buf, max),
+  BrowserWindow,
+  ptys,
+  deliverToPane,
+  getJarvisConv: () => jarvisConv,
+  appI18n,
+  logLine,
+  submitGapMs: REFRESH_SUBMIT_GAP_MS,
+  mirrorMax: PANE_ASK_MIRROR_MAX,
 });
-// Ayna cevaplandı (telefon / Agent X kartı) → seçim BURADAN teslim edilir.
-jarvisConv.onChange((event) => {
-  if (!event || event.type !== 'approval-resolved') return;
-  if (!paneAskMirrored.has(event.approvalId)) return;
-  paneAskMirrored.delete(event.approvalId);
-  if (event.status === 'expired') return; // bizim kapatmamız (close) — yankı
-  void paneAskRuntime.onMirrorResolved(event.approvalId, event.status, event.choice || null);
-});
+const paneAskRuntime = paneAskService.runtime;
 
 mobileService = createMobileService({
   app,

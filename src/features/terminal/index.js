@@ -9,8 +9,12 @@ const { createPtySpawnService, PtySpawnService } = require('./ptySpawnService');
 const { createPaneControlService, PaneControlService } = require('./paneControlService');
 const { createPaneDispatchService, PaneDispatchService, REFRESH_SUBMIT_GAP_MS } = require('./paneDispatchService');
 const { createPaneQueryService, PaneQueryService, captureScreenTail } = require('./paneQueryService');
+const { createPaneAskService, PaneAskService, PANE_ASK_MIRROR_MAX } = require('./paneAskService');
 
 module.exports = {
+  createPaneAskService,
+  PaneAskService,
+  PANE_ASK_MIRROR_MAX,
   registerPtyIpc,
   registerPanesIpc,
   createPaneRestoreService,
