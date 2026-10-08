@@ -2378,162 +2378,26 @@ const PANE_BUFFER_MAX = 256 * 1024;
 const PANE_BUFFER_SLACK = 64 * 1024;
 /** ADP-324 — ilerleme satırı (`pane-live`) yayın kısıtı: spinner saniyede onlarca kez değişir. */
 const PANE_LIVE_THROTTLE_MS = 500;
+// ADP-475 — crash instrumentation & main stall monitor (src/features/system/crashWatchdogService.js - Faz 3.6.9)
+const { createCrashWatchdogService } = require('./src/features/system');
 
-// ADP-475 — crash instrumentation. Eren's incident: the app died TWICE during
-// a heavy build, with NO log line at all. A reactive handler can't help there
-// — a SIGKILL (macOS jetsam memory-pressure kill) never runs any of our JS.
-// The only evidence that survives is something written to disk BEFORE the
-// kill: a periodic heartbeat (fs.appendFileSync via logLine is synchronous),
-// so even the LAST tick before a kill is durable. crashWatchdog.cjs is the
-// pure decision core (unit-tested); this just samples real Electron/OS state
-// on an interval and feeds it through.
-const WATCHDOG_TICK_MS = Number(process.env.CREWPANE_WATCHDOG_TICK_MS || 5000);
-let watchdogTimer = null;
-let watchdogPrevTotalBytes = null;
-let watchdogPrevPaneBytes = new Map();
-let watchdogPrevTickAt = null;
-// ADP-727 — OTOMATİK HEAP SNAPSHOT (varsayılan KAPALI, opt-in).
-// Bu görevin en pahalı dersi: renderer 4,5 GB'a çıkmıştı ama CANLI app'ten heap
-// snapshot ALINAMIYORDU (paketli app'te uzak hata-ayıklama portu yok) → "4,5 GB'ı
-// NE tutuyor" sorusu ancak izole kopyada TEKRAR ÜRETİLEBİLDİĞİ kadar cevaplanabildi.
-// Bir daha olmasın diye: `CREWPANE_HEAP_SNAPSHOT_MB=3000` ile başlatılırsa,
-// renderer o eşiği geçtiğinde app KENDİ heap snapshot'ını log dizinine yazar.
-// OTURUM BAŞINA BİR KEZ — snapshot renderer'ı saniyelerce durdurur, sürekli
-// tetiklenirse tedavi hastalıktan kötü olur.
-const HEAP_SNAPSHOT_MB = Number(process.env.CREWPANE_HEAP_SNAPSHOT_MB || 0);
-let heapSnapshotTaken = false;
-function maybeAutoHeapSnapshot(appMetrics) {
-  if (!HEAP_SNAPSHOT_MB || heapSnapshotTaken) return;
-  const rendererMb = (crashWatchdog.memoryByType(appMetrics).Renderer || 0) / 1024 ** 2;
-  if (rendererMb < HEAP_SNAPSHOT_MB) return;
-  const win = BrowserWindow.getAllWindows()[0];
-  if (!win || win.isDestroyed()) return;
-  heapSnapshotTaken = true; // eşiği bir kez geç, bir kez yaz
-  const file = path.join(app.getPath('logs'), `renderer-${Date.now()}.heapsnapshot`);
-  logLine(`[watchdog] renderer ${rendererMb.toFixed(0)}MB ≥ ${HEAP_SNAPSHOT_MB}MB → heap snapshot yazılıyor: ${file}`);
-  Promise.resolve(win.webContents.takeHeapSnapshot(file))
-    .then(() => logLine(`[watchdog] heap snapshot yazıldı: ${file}`))
-    .catch((e) => logLine(`[watchdog] heap snapshot BAŞARISIZ: ${e.message}`));
-}
-// ---------------------------------------------------------------------------
-// CRASH-R1 (madde 5) — BELLEK UYARISI: TEK SATIR, ÖNERİ, OTOMATİK KAPATMA YOK.
-// ---------------------------------------------------------------------------
-// ÖLÇÜM ÖNCE: bu makinede watchdog eşiği (1536 MB birleşik working-set) SÜREKLİ
-// aşılıyor — 16.09 gecesinin altı günlük dosyasında 49 'warn' satırı var ve
-// hiçbiri bir olayın habercisi değildi. Yani eşiğin HER geçilişinde kullanıcıya
-// bildirim atmak GÜRÜLTÜDÜR ve gerçek uyarıyı sağırlaştırır.
-//
-// Bu yüzden advisory: (a) OTURUMDA BİR KEZ, (b) yalnız uyarı ısrarlıysa
-// (ADVISE_TICKS ardışık tick = ~1 dk), (c) ÖNERİ verir, karar kullanıcınındır.
-// OTOMATİK PANE KAPATMA YOKTUR — ürün kullanıcının çalışan oturumunu kendi
-// kararıyla kapatmaz (bu kartın açık şartı).
-//
-// Kullanıcıya çıkan ASIL 'dur ve sor' yüzeyi resourceGovernor'ın 'critical'
-// kartıdır (kullanılabilir bellek < %15); burası onun ALTINDAKİ kademedir ve
-// bilerek yalnız günlüğe yazar.
-const ADVISE_TICKS = 12; // 12 × 5 sn ≈ 1 dk ısrarlı uyarı
-let memAdviseStreak = 0;
-let memAdvised = false;
-function maybeAdviseMemory(assessment, panes) {
-  if (memAdvised) return;
-  if (!assessment || assessment.level !== 'warn') { memAdviseStreak = 0; return; }
-  memAdviseStreak += 1;
-  if (memAdviseStreak < ADVISE_TICKS) return;
-  memAdvised = true;
-  // Öneri SOMUT olsun: veri akmayan pane'ler adaydır (throughput ölçümü zaten var).
-  const idle = (Array.isArray(panes) ? panes : []).filter((x) => x && x.bytesPerSec === 0).map((x) => x.paneId);
-  const hint = idle.length
-    ? `en eski boş pane'ler aday: ${idle.slice(0, 3).join(', ')}`
-    : 'boş pane yok — açık pane sayısını azaltmak yardımcı olur';
-  logLine(
-    `⚠️ BELLEK UYARISI — ${(assessment.totalBytes / 1024 ** 2).toFixed(0)} MB birleşik bellek, `
-    + `${ptys.size} pane açık. ÖNERİ: kullanmadığın bir pane'i kapat (${hint}). `
-    + 'Otomatik kapatma YAPILMADI — karar senin.',
-  );
-}
-function watchdogTick() {
-  try {
-    const memUsage = process.memoryUsage();
-    const appMetrics = app.getAppMetrics();
-    maybeAutoHeapSnapshot(appMetrics);
-    const assessment = crashWatchdog.assessMemory({ memUsage, appMetrics }, watchdogPrevTotalBytes);
-    const now = Date.now();
-    const currPaneBytes = new Map();
-    for (const [paneId, entry] of ptys) currPaneBytes.set(paneId, entry.bytes || 0);
-    const dtMs = watchdogPrevTickAt ? now - watchdogPrevTickAt : 0;
-    const panes = crashWatchdog.paneThroughput(watchdogPrevPaneBytes, currPaneBytes, dtMs);
-    // Quiet ticks stay OUT of the log (a line every 5s forever would bury the
-    // signal) — only log when something is worth a post-mortem correlating,
-    // OR periodically anyway so a SIGKILL always has a recent heartbeat within
-    // reach (every 6th tick ≈ 30s, independent of whether anything is "warn").
-    const heartbeatDue = assessment.level === 'warn' || panes.some((p) => p.burst);
-    watchdogTick._n = (watchdogTick._n || 0) + 1;
-    if (heartbeatDue || watchdogTick._n % 6 === 0) {
-      // ADP-727 — appMetrics + zaman damgası da geçilir: hangi SÜREÇ TÜRÜ şişiyor
-      // ve saatte kaç MB, artık logdan doğrudan okunur (bkz. formatHeartbeat).
-      logLine(crashWatchdog.formatHeartbeat({ memUsage, assessment, panes, appMetrics, at: new Date().toISOString() }));
-    }
-    maybeAdviseMemory(assessment, panes);
-    watchdogPrevTotalBytes = assessment.totalBytes;
-    watchdogPrevPaneBytes = currPaneBytes;
-    watchdogPrevTickAt = now;
-  } catch (e) {
-    // Sampling itself must never crash the app it's trying to protect.
-    logLine(`watchdog tick error: ${e.message}`);
-  }
-}
-// VOICE-TRUNC-01 — ANA SÜREÇ DURMA İZİ. Ölçüldü: ana süreç dikte burst'ü sırasında
-// ≥ ~600 ms yanıt vermezse macOS AgentVoice'un sentetik tuş olaylarını düşürüyor
-// (698 karakterlik prompt'un 500'ü kayboldu; 700 ms blokajda 255 olayın 45'i ulaştı).
-// Olay gecesi neyin durdurduğu günlükte YOKTU — bu monitör bir sonraki kayıpta
-// "[main-stall] ~N ms" satırını bırakır (çekirdek mainStallMonitor.cjs, testli).
-// PERF-FLEET-01 — DURMA ARTIK YALNIZ GÜNLÜĞE YAZILMIYOR. 08.09 panic'inden önce
-// bu satırlar 1 sn → 18 → 23 → 30 sn'ye tırmandı ve KULLANICI HİÇBİR ŞEY GÖRMEDİ
-// (crewpane-shell.4.log). `onStall` damgayı kaynak bekçisine taşır; bekçi zaten
-// ekranda olan kartı (ResourceGovernorCard) kendi `onChange`'iyle açar — yeni bir
-// bildirim sistemi KURULMADI, olan kapıya bağlandı.
-// RG-STALL-01 — sapma artık MONOTONİK saatle ölçülür (modül varsayılanı `hrtime.bigint`)
-// ve 60 sn'lik akla yatkınlık tavanı uygulanır: tavanın üstü `[main-clock-jump]` satırı
-// olur, `onStall` ÇAĞRILMAZ — yani uyku/askı artık bekçiyi kritiğe düşürmez.
-const mainStallMonitor = require('./src/core/mainStallMonitor.cjs').createStallMonitor({
-  setInterval, clearInterval, now: Date.now, log: logLine,
-  onStall: (ev) => {
-    try { resourceGovernor().noteStall(ev); } catch { /* bekçi yoksa durma izi yine günlükte */ }
-  },
+const crashWatchdogService = createCrashWatchdogService({
+  app,
+  BrowserWindow,
+  ptys,
+  logLine,
+  resourceGovernor: () => resourceGovernor(),
+  crashWatchdog,
 });
-// RG-STALL-01 — İKİNCİ KEMER: uyku/uyanış kancası. `powerMonitor` 0.2.45'e kadar hiç
-// kullanılmıyordu; uyanıştaki tek dev tik "ana süreç durdu" sanılıp bekçiyi kritiğe
-// düşürüyordu (RG-CAP-01 §3.2). Tavan bu tiki zaten sıçrama sayar, bu kanca ise sapmanın
-// hiç ÜRETİLMEMESİNİ sağlar. `app.whenReady()` sonrası kurulur (powerMonitor şartı).
-let powerMonitorBound = false;
-function bindPowerMonitorToStallMonitor() {
-  if (powerMonitorBound) return;
-  try {
-    const { powerMonitor } = require('electron');
-    if (!powerMonitor || typeof powerMonitor.on !== 'function') return;
-    powerMonitor.on('suspend', () => {
-      try { mainStallMonitor.suspend(); logLine('[main-power] sistem askıya alındı — durma ölçümü duraklatıldı'); } catch { /* kanca asla açılışı düşürmez */ }
-    });
-    powerMonitor.on('resume', () => {
-      try { mainStallMonitor.resume(); logLine('[main-power] sistem uyandı — ilk tik atlanacak (monitör sıfırlandı)'); } catch { /* aynı */ }
-    });
-    powerMonitorBound = true;
-  } catch { /* headless/test: kanca yoksa tavan tek başına korur */ }
-}
+
 function startCrashWatchdog() {
-  if (watchdogTimer) return;
-  logLine(`crash watchdog started (tick=${WATCHDOG_TICK_MS}ms)`);
-  watchdogTimer = setInterval(watchdogTick, WATCHDOG_TICK_MS);
-  watchdogTimer.unref?.();
-  bindPowerMonitorToStallMonitor();
-  mainStallMonitor.start();
+  return crashWatchdogService.startCrashWatchdog();
 }
+
 function stopCrashWatchdog() {
-  if (!watchdogTimer) return;
-  clearInterval(watchdogTimer);
-  watchdogTimer = null;
-  mainStallMonitor.stop();
+  return crashWatchdogService.stopCrashWatchdog();
 }
+
 
 /**
  * node-pty ships a `spawn-helper` binary in its prebuild. On macOS/Linux the pty

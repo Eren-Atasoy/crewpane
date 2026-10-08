@@ -17,7 +17,10 @@ function registerSystemIpc(deps) {
   registerAnnounceIpc(deps);
 }
 
+const { createCrashWatchdogService } = require('./crashWatchdogService');
+
 module.exports = {
+  createCrashWatchdogService,
   registerSystemIpc,
   registerFeedbackIpc,
   registerFileIpc,
