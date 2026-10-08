@@ -71,6 +71,9 @@ const defaultStaticModules = {
   workspaceOnboarding: require('../../agents/workspaceOnboarding.cjs'),
   builtinSkills: require('../../agents/builtinSkills.cjs'),
   skillEngineSync: require('../../agents/skillEngineSync.cjs'),
+  accountScope: require('../../config/accountScope.cjs'),
+  mobileDeviceStore: require('../../mobile/mobileDeviceStore.cjs'),
+  mobileTranscript: require('../../mobile/mobileTranscript.cjs'),
 };
 
 /**

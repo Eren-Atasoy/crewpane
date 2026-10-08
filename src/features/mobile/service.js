@@ -3,42 +3,24 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { createMobileGatewayLifecycle } = require('./mobileLifecycle');
 
 const SHOT_BRIDGE_MAX_BYTES = 25 * 1024 * 1024; // makul PNG tavanı (5K tam ekran ~10MB)
 
-function createMobileService({
-  app,
-  ptys,
-  getAppWindow = () => null,
-  rendererSupabaseTarget,
-  getMobileAppDbToken = () => null,
-  planDenial = () => null,
-  delegationBridgeMod,
-  secretRedactor,
-  mobileTranscript,
-  currentSessionId = () => null,
-  agentRunner,
-  delegationQueueStore,
-  mobileOffice,
-  jarvisVoice,
-  mobileGatewayMod,
-  mobileReports,
-  mobileUploads,
-  jarvisConv,
-  mobileDeviceStore,
-  logLine = () => {},
-  repoRoot = '',
-  shellCommit = '',
-  standaloneDir = () => '',
-}) {
-  const mobileSubscribers = new Set();
-  const mobilePending = new Map();
-  const mobileCommandPending = new Map();
+const defaultMobileModules = {
+  mobileGatewayMod: require('../../mobile/mobileGateway.js'),
+  mobileReports: require('../../mobile/mobileReports.cjs'),
+  mobileOffice: require('../../mobile/mobileOffice.cjs'),
+  mobileUploads: require('../../mobile/mobileUploads.cjs'),
+  mobileTranscript: require('../../mobile/mobileTranscript.cjs'),
+  mobileDeviceStore: require('../../mobile/mobileDeviceStore.cjs'),
+  delegationBridgeMod: require('../../agents/delegationBridge.js'),
+  delegationQueueStore: require('../../agents/delegationQueueStore.cjs'),
+  agentRunner: require('../../agents/agentRunner.js'),
+  jarvisVoice: require('../../voice/jarvisVoice.js'),
+};
 
-  let mobileGateway = null;
-  let mobileGatewayLastFailure = null;
-  let mobileUploadsSweepTimer = null;
-
+function createMobilePathsHelper({ app, standaloneDir, repoRoot }) {
   function mobileSpriteDir() {
     const candidates = app.isPackaged
       ? [
@@ -59,17 +41,20 @@ function createMobileService({
     return candidates.find((d) => fs.existsSync(path.join(d, 'index.html'))) || null;
   }
 
-  function emitMobileEvent(event) {
-    if (mobileSubscribers.size === 0) return;
-    for (const cb of mobileSubscribers) {
-      try {
-        cb(event);
-      } catch {
-        /* tek dinleyici hatası akışı düşürmez */
-      }
-    }
-  }
+  return {
+    mobileSpriteDir,
+    mobileWebRoot,
+  };
+}
 
+function createMobilePaneReader({
+  ptys,
+  delegationBridgeMod,
+  secretRedactor,
+  mobileTranscript,
+  currentSessionId,
+  agentRunner,
+}) {
   function mobilePaneTail(paneId, opts = {}) {
     const entry = ptys.get(String(paneId || ''));
     if (!entry) return null;
@@ -122,6 +107,18 @@ function createMobileService({
     return out;
   }
 
+  return {
+    mobilePaneTail,
+    mobilePaneTranscript,
+    mobileListPanes,
+  };
+}
+
+function createMobileRendererBridge({
+  getAppWindow,
+  mobilePending,
+  mobileCommandPending,
+}) {
   function mobileQueryRenderer(kind, params, timeoutMs = 8000) {
     const win = getAppWindow();
     if (!win || win.isDestroyed()) return Promise.reject(new Error('uygulama penceresi yok'));
@@ -150,28 +147,16 @@ function createMobileService({
     });
   }
 
-  async function mobileDelegationState() {
-    const win = getAppWindow();
-    if (win && !win.isDestroyed()) {
-      try {
-        return await mobileQueryRenderer('delegation-state', {}, 3000);
-      } catch {
-        /* renderer yok/yavaş → diske düş */
-      }
-    }
-    return mobileOffice.delegationStateFromQueue(delegationQueueStore.loadQueueState());
-  }
+  return {
+    mobileQueryRenderer,
+    mobileCommandRenderer,
+  };
+}
 
-  function mobileOfficeSnapshot() {
-    const target = rendererSupabaseTarget();
-    return mobileOffice.officeSnapshot({
-      supabase: { url: target.url, key: target.anonKey, schema: target.schema },
-      accessToken: getMobileAppDbToken(),
-      listPanes: mobileListPanes,
-      delegationState: mobileDelegationState,
-    });
-  }
-
+function createShotBridge({
+  mobileOfficeSnapshot,
+  mobileCommandRenderer,
+}) {
   async function shotBridgeAgents() {
     const office = await mobileOfficeSnapshot();
     return (office && Array.isArray(office.agents) ? office.agents : []).map((a) => ({
@@ -204,6 +189,50 @@ function createMobileService({
     });
   }
 
+  return {
+    shotBridgeAgents,
+    shotBridgeSend,
+  };
+}
+
+function createMobileOfficeBridge({
+  getAppWindow,
+  mobileQueryRenderer,
+  mobileOffice,
+  delegationQueueStore,
+  rendererSupabaseTarget,
+  getMobileAppDbToken,
+  mobileListPanes,
+}) {
+  async function mobileDelegationState() {
+    const win = getAppWindow();
+    if (win && !win.isDestroyed()) {
+      try {
+        return await mobileQueryRenderer('delegation-state', {}, 3000);
+      } catch {
+        /* renderer yok/yavaş → diske düş */
+      }
+    }
+    return mobileOffice.delegationStateFromQueue(delegationQueueStore.loadQueueState());
+  }
+
+  function mobileOfficeSnapshot() {
+    const target = rendererSupabaseTarget();
+    return mobileOffice.officeSnapshot({
+      supabase: { url: target.url, key: target.anonKey, schema: target.schema },
+      accessToken: getMobileAppDbToken(),
+      listPanes: mobileListPanes,
+      delegationState: mobileDelegationState,
+    });
+  }
+
+  return {
+    mobileDelegationState,
+    mobileOfficeSnapshot,
+  };
+}
+
+function createMobileVoiceBridge({ jarvisVoice, repoRoot, planDenial }) {
   function mobileTranscribe(payload) {
     return jarvisVoice.transcribeWhisper({ ...(payload || {}), apiKey: jarvisVoice.openAiKey(repoRoot) });
   }
@@ -212,96 +241,122 @@ function createMobileService({
     return planDenial('mobileRemote', 0, { notify });
   }
 
-  function mobileStartFailure(err) {
-    const i18nMod = require('../../../i18n/index.cjs');
-    return require('../../mobile/mobileStartFailure.cjs').mobileStartFailure(err, (k) => i18nMod.t(k));
-  }
+  return {
+    mobileTranscribe,
+    mobilePlanDenial,
+  };
+}
 
-  async function startMobile() {
-    if (mobileGateway) return mobileGateway;
-    const planGate = mobilePlanDenial({ notify: false });
-    if (planGate) {
-      logLine(`mobile gateway: plan tavanı — kalkmadı (katman=${planGate.tier}); cihaz defteri diskte KORUNUYOR`);
-      return null;
-    }
-    try {
-      mobileGateway = await mobileGatewayMod.startMobileGateway({
-        log: logLine,
-        appInfo: { version: app.getVersion(), commit: shellCommit },
-        spriteDir: mobileSpriteDir(),
-        webRoot: mobileWebRoot(),
-        listPanes: mobileListPanes,
-        paneTail: mobilePaneTail,
-        paneTranscript: mobilePaneTranscript,
-        queryRenderer: mobileQueryRenderer,
-        officeSnapshot: mobileOfficeSnapshot,
-        reportsList: (params) => mobileReports.listReports({ params }),
-        reportRead: (reportId, opts) => mobileReports.readReport({ reportId, page: opts && opts.page }),
-        command: mobileCommandRenderer,
-        transcribe: mobileTranscribe,
-        saveUpload: (p) => mobileUploads.saveUpload(p),
-        resolveUpload: (id) => mobileUploads.resolveUpload(id),
-        jarvisHistory: (q) => jarvisConv.history(q),
-        killSwitch: mobileKillSwitch,
-        subscribe: (cb) => {
-          mobileSubscribers.add(cb);
-          return () => mobileSubscribers.delete(cb);
-        },
-      });
-    } catch (err) {
-      logLine(`mobile gateway failed to start: ${err.message}`);
-      mobileGateway = null;
-      mobileGatewayLastFailure = mobileStartFailure(err);
-    }
-    if (mobileGateway && !mobileUploadsSweepTimer) {
-      const sweep = () => {
-        try {
-          const n = mobileUploads.sweepUploads({});
-          if (n) logLine(`mobile uploads: ${n} eski gün klasörü temizlendi`);
-        } catch (err) {
-          logLine(`mobile uploads: temizlik hatası: ${err.message}`);
-        }
-      };
-      sweep();
-      mobileUploadsSweepTimer = setInterval(sweep, 24 * 60 * 60 * 1000);
-      mobileUploadsSweepTimer.unref?.();
-    }
-    return mobileGateway;
-  }
+function mobileStartFailure(err) {
+  const i18nMod = require('../../../i18n/index.cjs');
+  return require('../../mobile/mobileStartFailure.cjs').mobileStartFailure(err, (k) => i18nMod.t(k));
+}
 
-  function mobileKillSwitch() {
-    const state = mobileDeviceStore.loadState();
-    state.enabled = false;
-    mobileDeviceStore.saveState(state);
-    if (mobileGateway) {
-      mobileGateway.stop();
-      mobileGateway = null;
-    }
-    logLine('mobile gateway: KILL-SWITCH — mobil erişim kapatıldı');
-    return { ok: true };
-  }
+function createMobileService(rawOpts = {}) {
+  const opts = Object.assign({}, defaultMobileModules, rawOpts);
+  const {
+    app,
+    ptys,
+    getAppWindow = () => null,
+    rendererSupabaseTarget,
+    getMobileAppDbToken = () => null,
+    planDenial = () => null,
+    delegationBridgeMod,
+    secretRedactor,
+    mobileTranscript,
+    currentSessionId = () => null,
+    agentRunner,
+    delegationQueueStore,
+    mobileOffice,
+    jarvisVoice,
+    mobileGatewayMod,
+    mobileReports,
+    mobileUploads,
+    jarvisConv,
+    mobileDeviceStore,
+    logLine = () => {},
+    repoRoot = '',
+    shellCommit = '',
+    standaloneDir = () => '',
+  } = opts;
 
-  function stopMobile() {
-    if (mobileGateway) {
+  const mobileSubscribers = new Set();
+  const mobilePending = new Map();
+  const mobileCommandPending = new Map();
+
+  const { mobileSpriteDir, mobileWebRoot } = createMobilePathsHelper({ app, standaloneDir, repoRoot });
+  const { mobilePaneTail, mobilePaneTranscript, mobileListPanes } = createMobilePaneReader({
+    ptys,
+    delegationBridgeMod,
+    secretRedactor,
+    mobileTranscript,
+    currentSessionId,
+    agentRunner,
+  });
+  const { mobileQueryRenderer, mobileCommandRenderer } = createMobileRendererBridge({
+    getAppWindow,
+    mobilePending,
+    mobileCommandPending,
+  });
+  const { mobileDelegationState, mobileOfficeSnapshot } = createMobileOfficeBridge({
+    getAppWindow,
+    mobileQueryRenderer,
+    mobileOffice,
+    delegationQueueStore,
+    rendererSupabaseTarget,
+    getMobileAppDbToken,
+    mobileListPanes,
+  });
+  const { shotBridgeAgents, shotBridgeSend } = createShotBridge({
+    mobileOfficeSnapshot,
+    mobileCommandRenderer,
+  });
+  const { mobileTranscribe, mobilePlanDenial } = createMobileVoiceBridge({
+    jarvisVoice,
+    repoRoot,
+    planDenial,
+  });
+
+  function emitMobileEvent(event) {
+    if (mobileSubscribers.size === 0) return;
+    for (const cb of mobileSubscribers) {
       try {
-        mobileGateway.stop();
+        cb(event);
       } catch {
-        /* best-effort */
+        /* tek dinleyici hatası akışı düşürmez */
       }
-      mobileGateway = null;
-    }
-    if (mobileUploadsSweepTimer) {
-      clearInterval(mobileUploadsSweepTimer);
-      mobileUploadsSweepTimer = null;
     }
   }
+
+  const lifecycle = createMobileGatewayLifecycle({
+    app,
+    shellCommit,
+    logLine,
+    mobilePlanDenial,
+    mobileGatewayMod,
+    mobileSpriteDir,
+    mobileWebRoot,
+    mobileListPanes,
+    mobilePaneTail,
+    mobilePaneTranscript,
+    mobileQueryRenderer,
+    mobileOfficeSnapshot,
+    mobileReports,
+    mobileCommandRenderer,
+    mobileTranscribe,
+    mobileUploads,
+    jarvisConv,
+    mobileSubscribers,
+    mobileDeviceStore,
+    mobileStartFailure,
+  });
 
   return {
     mobileSubscribers,
     mobilePending,
     mobileCommandPending,
-    getMobileGateway: () => mobileGateway,
-    getMobileGatewayLastFailure: () => mobileGatewayLastFailure,
+    getMobileGateway: lifecycle.getMobileGateway,
+    getMobileGatewayLastFailure: lifecycle.getMobileGatewayLastFailure,
     mobileSpriteDir,
     mobileWebRoot,
     emitMobileEvent,
@@ -316,10 +371,10 @@ function createMobileService({
     shotBridgeSend,
     mobileTranscribe,
     mobilePlanDenial,
-    startMobile,
-    stopMobile,
+    startMobile: lifecycle.startMobile,
+    stopMobile: lifecycle.stopMobile,
     mobileStartFailure,
-    mobileKillSwitch,
+    mobileKillSwitch: lifecycle.mobileKillSwitch,
   };
 }
 

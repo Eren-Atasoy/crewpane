@@ -10,7 +10,7 @@
 function registerPrefsIpc({
   ipcMain,
   prefsProjector,
-  prefsWhitelist,
+  prefsWhitelist = require('../../../prefs/prefsWhitelist.cjs'),
   logLine = () => {},
 }) {
   ipcMain.handle('prefs:publish', (_e, input) => {

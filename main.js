@@ -738,14 +738,6 @@ const vendorSurface = require('./src/core/vendorSurface.cjs');
 // ADP-614 — katman kataloğu (hangi entitlement CrewPane açar + etiketler).
 // ADP-660 — katman LİMİTİ kararı (Basic ⇄ Pro/Ultra).
 const planLimits = require('./src/config/planLimits.cjs');
-// ADP-703 — HESAP-KAPSAMLI YEREL DEPO (bağlama / geçiş)
-const accountScope = require('./src/config/accountScope.cjs');
-// SYNC-F1-6 — bulut senkronu
-const syncBoot = require('./sync/syncBoot.cjs');
-const prefsProjectorFactory = require('./prefs/prefsProjector.cjs');
-const prefsWhitelist = require('./prefs/prefsWhitelist.cjs');
-const syncSurface = require('./sync/syncIpc.cjs');
-const memoryIndexDerive = require('./src/memory/memoryIndexDerive.cjs');
 
 // ── ADP-AUTH-BUNDLE — AUTH, PLAN & ANAHTAR SERVİSLERİ PAKETİ (src/features/auth/authServicesBundle.js - Faz 3.6.64)
 const {
@@ -946,7 +938,6 @@ function _collectTerminalExecutionDeps() {
     resourceGovernorService,
     agentRunner,
     engineDelegation,
-    mobileTranscript,
     modelDetect,
   };
 }
@@ -971,7 +962,6 @@ function _collectMobileVoiceAndSystemDeps() {
     spawn,
     appI18n,
     handService,
-    mobileDeviceStore,
     jarvisWidget,
     jarvisVoice,
     instancePaths,
@@ -985,7 +975,6 @@ function _collectMobileVoiceAndSystemDeps() {
     vendorSurface,
     telemetryMod,
     telemetryChannelMod,
-    accountScope,
     schemeOwnership,
     schemeVerdict,
     IS_AUTOMATED_SESSION,
@@ -1139,12 +1128,6 @@ windowManager = createWindowManager({
 // cihaz-eşleşmeli token. delegationBridge'e DOKUNULMAZ (loopback + efemer + asla
 // tünellenmez). Varsayılan READ-ONLY; yazma rotaları ADP-296.
 // ─────────────────────────────────────────────────────────────────────────────
-const mobileGatewayMod = require('./src/mobile/mobileGateway.js');
-const mobileDeviceStore = require('./src/mobile/mobileDeviceStore.cjs');
-const mobileOffice = require('./src/mobile/mobileOffice.cjs'); // ADP-334 — ofis MAIN'de derlenir
-const mobileReports = require('./src/mobile/mobileReports.cjs'); // ADP-364 — raporlar MAIN'de (INDEX.md)
-const mobileTranscript = require('./src/mobile/mobileTranscript.cjs'); // ADP-368 — okuma modu (claude oturum JSONL'i)
-const mobileUploads = require('./src/mobile/mobileUploads.cjs'); // ADP-371 — telefondan görsel yükleme (prompt eki)
 
 // ── ADP-317 — JARVİS KONUŞMASI SERVİSİ (src/features/voice/jarvisConversationService.js - Faz 3.6.40)
 const jarvisConversationMod = require('./src/voice/jarvisConversation.cjs');
@@ -1165,17 +1148,11 @@ mobileService = createMobileService({
   planDenial: (f, c, o) => planLimitService.planDenial(f, c, o),
   delegationBridgeMod,
   secretRedactor,
-  mobileTranscript,
   currentSessionId: (id) => paneTranscriptService.currentSessionId(id),
   agentRunner,
   delegationQueueStore,
-  mobileOffice,
   jarvisVoice,
-  mobileGatewayMod,
-  mobileReports,
-  mobileUploads,
   jarvisConv,
-  mobileDeviceStore,
   logLine,
   repoRoot: REPO_ROOT,
   shellCommit: SHELL_COMMIT,
@@ -1209,18 +1186,13 @@ const syncService = createSyncService({
   getBoundAccount: () => authService.getBoundAccount(),
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   publicSupabaseEnv: () => backendEnvService.publicSupabaseEnv(),
-  accountScope,
   getSeatGate: () => authService.getSeatGate(),
   appDbTokenFor: (action) => backendEnvService.appDbTokenFor(action),
-  memoryIndexDerive,
   pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
   logLine,
   broadcastLocale: () => appLocaleService.broadcastLocale(),
   getAppWindow: () => appWindow,
   getPopoutWindows: () => (windowManager ? windowManager.popoutWindows : new Map()),
-  prefsProjectorFactory,
-  syncBoot,
-  syncSurface,
 });
 
 /** Tercih/kök/hedef değişti → motoru yeniden çöz (kapanışta ANINDA söker). */
@@ -1233,7 +1205,6 @@ const syncService = createSyncService({
 registerPrefsIpc({
   ipcMain,
   prefsProjector: () => syncService.prefsProjector(),
-  prefsWhitelist,
   logLine,
 });
 

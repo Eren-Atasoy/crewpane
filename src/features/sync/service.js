@@ -188,56 +188,57 @@ function createSyncRuntimeInstance(options) {
 /**
  * Sync and Preferences Service (Faz 3.6.3)
  */
-function createSyncService(deps) {
-  const {
-    agentSettings,
-    getBoundAccount = () => null,
-    getAgentWorkspaceRoot = () => null,
-    publicSupabaseEnv = () => ({}),
-    accountScope,
-    getSeatGate = () => null,
-    appDbTokenFor = async () => null,
-    memoryIndexDerive,
-    pushPlanLimit = () => {},
-    logLine = () => {},
-    broadcastLocale = () => {},
-    getAppWindow = () => null,
-    getPopoutWindows = () => new Map(),
-    prefsProjectorFactory = require('../../../prefs/prefsProjector.cjs'),
-    syncBoot = require('../../../sync/syncBoot.cjs'),
-    syncSurface = require('../../../sync/syncIpc.cjs'),
-  } = deps;
+function _resolveSyncCoreDeps(deps) {
+  return {
+    agentSettings: deps.agentSettings,
+    getBoundAccount: typeof deps.getBoundAccount === 'function' ? deps.getBoundAccount : () => null,
+    getAgentWorkspaceRoot: typeof deps.getAgentWorkspaceRoot === 'function' ? deps.getAgentWorkspaceRoot : () => null,
+    publicSupabaseEnv: typeof deps.publicSupabaseEnv === 'function' ? deps.publicSupabaseEnv : () => ({}),
+    accountScope: deps.accountScope || require('../../config/accountScope.cjs'),
+    getSeatGate: typeof deps.getSeatGate === 'function' ? deps.getSeatGate : () => null,
+    appDbTokenFor: typeof deps.appDbTokenFor === 'function' ? deps.appDbTokenFor : async () => null,
+    memoryIndexDerive: deps.memoryIndexDerive || require('../../memory/memoryIndexDerive.cjs'),
+  };
+}
 
-  const { prefsProjector, prefsProjectNow, prefsApplySoon } = createPrefsHandlers({
-    agentSettings,
-    getBoundAccount,
-    prefsProjectorFactory,
-    logLine,
-    broadcastLocale,
-    getAppWindow,
-    getPopoutWindows,
-  });
+function _resolveSyncAuxDeps(deps) {
+  return {
+    pushPlanLimit: typeof deps.pushPlanLimit === 'function' ? deps.pushPlanLimit : () => {},
+    logLine: typeof deps.logLine === 'function' ? deps.logLine : () => {},
+    broadcastLocale: typeof deps.broadcastLocale === 'function' ? deps.broadcastLocale : () => {},
+    getAppWindow: typeof deps.getAppWindow === 'function' ? deps.getAppWindow : () => null,
+    getPopoutWindows: typeof deps.getPopoutWindows === 'function' ? deps.getPopoutWindows : () => new Map(),
+    prefsProjectorFactory: deps.prefsProjectorFactory || require('../../../prefs/prefsProjector.cjs'),
+    syncBoot: deps.syncBoot || require('../../../sync/syncBoot.cjs'),
+    syncSurface: deps.syncSurface || require('../../../sync/syncIpc.cjs'),
+  };
+}
+
+function _resolveSyncDeps(deps = {}) {
+  return {
+    ..._resolveSyncCoreDeps(deps),
+    ..._resolveSyncAuxDeps(deps),
+  };
+}
+
+/**
+ * Sync Service Factory (Faz 3.6.3)
+ */
+function createSyncService(rawDeps = {}) {
+  const deps = _resolveSyncDeps(rawDeps);
+
+  const { prefsProjector, prefsProjectNow, prefsApplySoon } = createPrefsHandlers(deps);
 
   const syncRuntime = createSyncRuntimeInstance({
-    agentSettings,
-    getBoundAccount,
-    getAgentWorkspaceRoot,
-    publicSupabaseEnv,
-    accountScope,
-    getSeatGate,
-    appDbTokenFor,
-    memoryIndexDerive,
-    pushPlanLimit,
-    logLine,
+    ...deps,
     prefsProjector,
     prefsApplySoon,
-    syncBoot,
   });
 
-  const syncIpcSurface = syncSurface.createSyncIpc({
+  const syncIpcSurface = deps.syncSurface.createSyncIpc({
     getEngine: () => syncRuntime.getEngine(),
     getSetup: () => syncRuntime.describe(),
-    log: (l) => logLine(l),
+    log: (l) => deps.logLine(l),
   });
 
   return {
