@@ -989,6 +989,7 @@ const {
   createAnnounceService,
   createChangelogService,
   createResetBootService,
+  createMediaService,
 } = require('./src/features/system');
 // ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
 const { createUpdateService } = require('./src/features/update');
@@ -1033,6 +1034,18 @@ const resetBootService = createResetBootService({
   resetGate,
   helperReaper,
   analyticsNow: () => analyticsNow(),
+});
+
+// ── ADP-035/BOARD-IMG/FDBK — MEDYA, GEÇİCİ GÖRSEL & GÖREV EK DEPOSU (src/features/system/mediaService.js - Faz 3.6.17)
+const mediaService = createMediaService({
+  nativeImage,
+  instancePaths,
+  tempImageStore,
+  attachmentStoreMod,
+  feedbackBridgeMod,
+  logLine,
+  getBoundAccount: () => boundAccount,
+  getLogPath: () => LOG_PATH,
 });
 
 // ─── ADP-845/OBS-01/OBS-02 TELEMETRİ, PROVISIONING, HEARTBEAT & ANALİTİK (src/features/system/telemetryService.js - Faz 3.6.11)
@@ -3863,131 +3876,20 @@ function liveAgentPaneCount() {
   return n;
 }
 
-// ---------------------------------------------------------------------------
-// ADP-035 / WIN-IMG-01 — temp image store for multimodal prompts.
-// ---------------------------------------------------------------------------
-// Bounds (RCE/abuse guard, ADP-013 disiplini): image MIME only, capped size,
-// sanitized name, fixed temp dir. The renderer never touches fs.
-//
-// 🔴 WIN-IMG-01 — TTL YARIŞI KALDIRILDI. Buradaki eski kod her dosyaya yazma
-// anında `setTimeout(unlink, 5dk)` kuruyordu ve gerekçesi "agent reads it < this"
-// idi. Bu varsayım YAVAŞ TURLARDA TUTMUYOR (müşteri kanıtı, Windows v0.2.31: 4
-// görsel eklendi, ajan yolları aldı, dosyalar diskte YOKTU). Ömür artık
-// OTURUMA bağlı: `tempImageStore` uygulamanın o çalışmasına ait bir klasöre yazar,
-// kapanışta siler, açılışta yetimleri süpürür. Süre YOK ⇒ yarış YAPISAL kapalı.
-const imageStore = tempImageStore.createTempImageStore({ log: (line) => logLine(line) });
-
-/** Write a renderer-supplied image blob to the session image dir; return its path. */
 function saveTempImage(payload) {
-  return imageStore.save(payload);
+  return mediaService.saveTempImage(payload);
 }
 
-// ---------------------------------------------------------------------------
-// BOARD-IMG-2/3 — GÖREV KARTI EKLERİ (task_attachments) · TEK YUTAK
-// ---------------------------------------------------------------------------
-// `imageStore`un TAM TERSİ bir ömür sözleşmesi: o OTURUMLUK (ajana yol verip
-// kaybolur), bu KALICI (karta iliştirilen kanıt yıllarca durur). İkisi ayrı
-// raflardır — biri diğerinin yerine geçmez.
-//
-// Kök HESAP-KAPSAMLI: `instancePaths.crewpaneHome()` zaten `accounts/<key>`e
-// çözer (ADP-703), yani hesap değişince ekler de değişir — ayrı bir kapsam
-// mantığı YAZILMAZ.
-//
-// TEMBEL: depo kökü hesap bağlanmasından SONRA doğrudur (`bindAccountRoot`).
-// Açılışta hevesle kurmak, anonim köke bağlı bir depo üretirdi.
-let _attachmentStore = null;
-let _attachmentStoreRoot = null;
-
-/**
- * 160px mikro küçük-resim (JPEG q60) — ÖLÇÜLDÜ: ~5.9 KB base64 (tasarım §1.3).
- * `clipboardHistory.cjs:256`'daki kanıtlanmış `nativeImage.resize(...)` deseninin
- * aynısı; oradaki gerekçe de aynıydı: 4K bir çekimin data-URL'ini listeye/satıra
- * koymak megabaytlar demektir.
- */
-function makeAttachmentThumb(buf) {
-  const img = nativeImage.createFromBuffer(buf);
-  if (!img || img.isEmpty()) return null;
-  const size = img.getSize();
-  // Zaten küçükse büyütmeyiz (bulanıklaştırmanın anlamı yok).
-  const target = size.width > 160 ? img.resize({ width: 160, quality: 'good' }) : img;
-  return { dataUrl: `data:image/jpeg;base64,${target.toJPEG(60).toString('base64')}`, width: size.width, height: size.height };
-}
-
-/**
- * FDBK-01 — ölçülebilir genişlikte JPEG üretici (geri bildirim köprüsünün
- * `makeImage` bağımlılığı). `makeAttachmentThumb` 160px'e SABİTTİR; burada
- * genişlik/kalite parametreyle gelir çünkü aynı köprü hem 160px liste küçük
- * resmini hem ~1000px kayıt karesini üretir. Aynı `nativeImage.resize` deseni.
- */
-function makeFeedbackImage(buf, opts = {}) {
-  const img = nativeImage.createFromBuffer(buf);
-  if (!img || img.isEmpty()) return null;
-  const size = img.getSize();
-  const width = Math.max(64, Math.min(2000, Number(opts.width) || 160));
-  const quality = Math.max(30, Math.min(90, Number(opts.quality) || 60));
-  const target = size.width > width ? img.resize({ width, quality: 'good' }) : img;
-  return {
-    dataUrl: `data:image/jpeg;base64,${target.toJPEG(quality).toString('base64')}`,
-    width: size.width,
-    height: size.height,
-  };
-}
-
-/** FDBK-01 — AgentShot çekim klasörü. AgentShot ayrı bir üründür; kurulu
- *  değilse klasör yoktur ve köprü zarifçe `no-dir` döner (özellik kapanır,
- *  sürükle-bırak yolu çalışmaya devam eder). */
-function agentShotDir() {
-  try {
-    return path.join(os.homedir(), '.agentshot', 'shots');
-  } catch {
-    return null;
-  }
-}
-
-let _feedbackBridge = null;
-function feedbackBridge() {
-  if (!_feedbackBridge) {
-    _feedbackBridge = feedbackBridgeMod.createFeedbackBridge({
-      logPath: () => LOG_PATH,
-      shotsDir: agentShotDir,
-      makeImage: makeFeedbackImage,
-    });
-  }
-  return _feedbackBridge;
-}
-
-/** Bağlı hesabın ek deposu (kök değişirse yeniden kurulur). */
-function attachmentStore() {
-  const root = instancePaths.crewpaneHome();
-  if (_attachmentStore && _attachmentStoreRoot === root) return _attachmentStore;
-  _attachmentStore = attachmentStoreMod.createAttachmentStore({
-    root,
-    deviceId: (boundAccount && boundAccount.deviceId) || null,
-    makeThumb: makeAttachmentThumb,
-    log: (line) => logLine(line),
-  });
-  _attachmentStoreRoot = root;
-  return _attachmentStore;
-}
-
-/**
- * TEK YUTAK — renderer IPC'si de köprü rotası da (MCP) BURAYA düşer.
- * Dönen şey DB satırı DEĞİL, satırın ALANLARIDIR: INSERT'i çağıran kendi
- * kimliğiyle yapar (renderer supabase-js, MCP PostgREST). İkinci bir DB
- * istemcisi icat etmeyiz.
- */
 function ingestTaskAttachment(payload) {
-  const p = payload && typeof payload === 'object' ? payload : {};
-  const store = attachmentStore();
-  const out = p.path
-    ? store.ingestFile({
-      sourcePath: p.path, taskId: p.taskId, title: p.title, kind: p.kind, source: p.source, createdBy: p.createdBy,
-    })
-    : store.ingestBuffer({
-      data: p.data, taskId: p.taskId, title: p.title, kind: p.kind, source: p.source, createdBy: p.createdBy,
-    });
-  if (!out.ok) logLine(`[attach] reddedildi (${out.reason}${out.detail ? `: ${out.detail}` : ''})`);
-  return out;
+  return mediaService.ingestTaskAttachment(payload);
+}
+
+function attachmentStore() {
+  return mediaService.attachmentStore();
+}
+
+function feedbackBridge() {
+  return mediaService.feedbackBridge();
 }
 
 // ---------------------------------------------------------------------------
@@ -5311,8 +5213,7 @@ function wireIpc() {
     workspacePlanDenial,
     workspaceOnboarding,
     rememberWorkspaceRoot,
-    switchWorkspaceRoot,
-    imageStore,
+    imageStore: mediaService.imageStore,
     ingestTaskAttachment,
     attachmentStore,
     memoryGraph,
@@ -5731,15 +5632,7 @@ function attachWebviewGuards(win) { return windowManager.attachWebviewGuards(win
 // WIN-IMG-01 — TTL YOK: aynı oturum deposundan geçer (ajanın kanıt-screenshot'ları
 // da geç okunabilir; "5 dk yeter" varsayımı burada da geçersizdi).
 function saveBrowserShot(base64, tag) {
-  const res = imageStore.save({
-    data: Buffer.from(String(base64 || ''), 'base64'),
-    type: 'image/png',
-    name: tag || 'shot',
-    prefix: 'crewpane-browser',
-  });
-  if (res.ok) return res.path;
-  logLine(`browser screenshot save failed: ${res.reason || 'unknown'}`);
-  return null;
+  return mediaService.saveBrowserShot(base64, tag);
 }
 
 // ADP-095 — main-side CDP action runner the delegation bridge calls after approval.
