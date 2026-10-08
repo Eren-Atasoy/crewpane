@@ -51,7 +51,7 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
-const { createPaneRestoreService, createPtyResumeService } = require('./src/features/terminal');
+const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService } = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 let windowManager = null;
 let mobileService = null;
@@ -174,7 +174,6 @@ const tokenCost = require('./src/services/tokenCost.cjs'); // TOK-A/B — fiyat 
 // Bayat id ile okunan transcript "prompt yok" der → GERÇEKTEN ÇALIŞAN worker
 // `undelivered` YALANIYLA öldürülürdü (2026-07-28'in beş vakasının ölçülmüş kök nedeni).
 const paneSessionAnchor = require('./src/terminal/paneSessionAnchor.cjs');
-const taskClaim = require('./src/agents/taskClaim.cjs'); // ADP-896 — aynı ajan+görev için ikiz pane kapısı
 // B-01 (GIT-BACKBONE-SPEC) — görev ↔ branch ↔ proje omurgası (izole worktree).
 const taskCodeMod = require('./src/agents/taskCode.cjs');
 const worktreeStore = require('./src/services/worktreeStore.cjs');
@@ -1078,6 +1077,16 @@ const ptyResumeService = createPtyResumeService({
   isPackaged: () => app.isPackaged,
   repoRoot: REPO_ROOT,
   getDepartmentDirs: () => agentSettings.readSettings().departmentDirs,
+});
+
+// ── B-01/B-02/ADP-761/ADP-896 — GÖREV İZOLASYONU VE PANE TEKİLLEŞTİRME (src/features/terminal/ptyIsolationService.js - Faz 3.6.23)
+const ptyIsolationService = createPtyIsolationService({
+  ptys,
+  crewpaneHome: () => crewpaneHome(),
+  logLine: (line) => logLine(line),
+  getWorkspaceRoot: () => agentWorkspaceRoot,
+  readSettings: () => agentSettings.readSettings(),
+  appI18n: { t: (k) => appI18n.t(k), getLocale: () => appI18n.getLocale() },
 });
 
 function analyticsNow() {
@@ -2415,153 +2424,19 @@ function mappedProjectRootsForReports() {
 }
 
 function activeWorktreePaths() {
-  try {
-    return worktreeStore.listByState('active', crewpaneHome()).map((r) => r.path).filter(Boolean);
-  } catch {
-    return [];
-  }
+  return ptyIsolationService.activeWorktreePaths();
 }
 
-/**
- * B-01 — İZOLASYON POLİTİKASI: bu proje worktree modunda mı?
- *
- * VARSAYILAN **KAPALI** (`'off'`). GIT-BACKBONE-SPEC §2.1 ilke 3'ün ("fail-closed
- * ama geri-uyumlu") uygulaması: bugünkü kurulumlarda hiçbir proje kaydı yok ve
- * izolasyon açık gelseydi HER spawn "proje repo'su tanımlı değil" ile DURURDU —
- * yani bir iyileştirme, çalışan bir uygulamayı kırardı. Kullanıcı bir projeyi
- * `settings.projectIsolation` ile açtığında (ya da B-02'nin proje ekranı yazdığında)
- * omurga devreye girer; o andan sonra o proje için sessiz paylaşımlı-ağaç YOKTUR.
- */
-function projectIsolationMode(project) {
-  try {
-    const s = agentSettings.readSettings();
-    const map = s && s.projectIsolation;
-    const v = map && typeof map === 'object' ? map[String(project || '').toLowerCase()] : null;
-    return v === 'worktree' ? 'worktree' : 'off';
-  } catch {
-    return 'off';
-  }
-}
-
-/**
- * B-01 (§2.5) — pane'i doğurmadan ÖNCE görevin izole ağacını hazırla.
- *
- * @returns {Promise<{trusted?:object, blocked?:boolean, why?:string}|null>}
- *   `trusted` → spawnPty'ye geçirilecek kademe-0 bağı.
- *   `blocked:true` → spawn HİÇ yapılmaz (izolasyon açık ama hazırlanamadı).
- *   `null` → izolasyon devrede değil; bugünkü davranış birebir.
- */
 async function prepareTaskIsolation(opts) {
-  const isAgent = typeof opts?.command === 'string' && opts.command !== 'shell';
-  if (!isAgent) return null;
-  const taskId = typeof opts?.taskId === 'string' && opts.taskId.trim() ? opts.taskId.trim() : null;
-  if (!taskId) return null; // görevsiz pane izole edilmez (ADP-003 sade terminal dahil)
-
-  const project = (typeof opts?.project === 'string' && opts.project.trim())
-    || (typeof opts?.department === 'string' && opts.department.trim())
-    || '';
-  const isolation = projectIsolationMode(project);
-  if (isolation !== 'worktree') return null;
-
-  // Kod: görev kimliğinden ya da etiketten — TEK kaynaktan (taskCode.cjs).
-  const code = taskCodeMod.taskCodeOf(opts.label) || taskCodeMod.taskCodeOf(taskId) || taskId;
-  const repo = projectRepos.resolveProjectRepo(project, agentWorkspaceRoot, {
-    settings: agentSettings.readSettings(),
-    store: worktreeStore,
-    homedir: crewpaneHome(),
-    log: logLine,
-  });
-  if (!repo) {
-    return { blocked: true, why: `proje '${project}' için git deposu bulunamadı (H-5) — izolasyon açıkken paylaşımlı ağaçta koşulmaz` };
-  }
-
-  const res = await worktreeService.ensure({
-    taskId,
-    code,
-    project,
-    agentId: typeof opts?.agentId === 'string' ? opts.agentId : null,
-    paneId: null,
-    workspaceRoot: agentWorkspaceRoot,
-    repoPath: repo.repoPath,
-    defaultBranch: (worktreeStore.getProject(project, crewpaneHome()) || {}).defaultBranch || 'dev',
-    isolation,
-    // F-8/H-4b — "mevcut sahip canlı mı" sorusunu main KENDİ defterinden ölçer,
-    // çağıranın iddiasından değil (ADP-953'ün dersi).
-    ownerLive: (ownerAgentId) => {
-      for (const e of ptys.values()) if (e && e.agentId === ownerAgentId) return true;
-      return false;
-    },
-    homedir: crewpaneHome(),
-    log: logLine,
-  });
-  if (!res.ok) {
-    if (res.degrade) return null; // geri-uyum yolu: bugünkü davranış
-    return { blocked: true, why: res.why };
-  }
-  for (const n of res.notes || []) logLine(`worktree[${taskId}]: ${n}`);
-  return { trusted: { taskWorktree: res.path, taskBranch: res.branch, taskId } };
+  return ptyIsolationService.prepareTaskIsolation(opts);
 }
 
-/**
- * B-01 — GÖREVİN İZOLE AĞACINI ÇÖZ (SENKRON, git çağrısı YOK).
- *
- * Yalnız DEFTERE ve `statSync`'e bakar: kayıtlı bir worktree varsa yolunu verir.
- * Ağacı YARATMAZ — yaratma (`worktreeService.ensure`, ölçülen 7.4 sn) asenkron
- * `pty:spawn` yolunda, spawnPty'den ÖNCE koşar. Bu ayrım bilinçlidir: `spawnPty`
- * restart-resume ve daemon respawn gibi SENKRON yollardan da çağrılıyor ve orada
- * main sürecini 7 saniye bloklamak uygulamayı dondururdu.
- *
- * `taskId` renderer'dan gelebilir — bu bir KİMLİKTİR, yol değil. Yolu main kendi
- * defterinden türetir; renderer bir dizin adı söyleyemez (G-1).
- */
-/**
- * ENG-OPENCODE-PROVIDER-01 — asenkron ön-uçuş girdileri `spawnPty`nin plan'ıyla AYNI
- * kaynaklardan çözülür (komut → descriptor, ikili, cwd, env); sonuç `cwd`+`model`
- * damgalıdır ve spawnPty yalnız damga tutuyorsa kullanır (tutmuyorsa senkron yeniden ölçer).
- * Herhangi bir adımda hata → null (spawnPty kendi senkron yoluna düşer; log orada).
- */
 async function preflightModelGate(opts, trusted) {
-  try {
-    const command = typeof opts.command === 'string' ? opts.command : '';
-    if (!command || command === 'shell') return null;
-    const descriptor = engineRegistry.getEngine(command);
-    if (!descriptor || !descriptor.modelGate) return null;
-    const model = agentRunner.sanitizeModel(opts.model, command);
-    if (!model) return null;
-    const resolved = agentRunner.resolveCommand(command);
-    const env = agentRunner.sanitizeEnv(opts.env, process.env);
-    const bin = engineInstall.resolveBinary(resolved.file, env);
-    const settings = agentSettings.readSettings();
-    const wt = (trusted && trusted.taskWorktree) || (resolveTaskWorktreeSync(opts) || {}).taskWorktree;
-    const cwd = agentRunner.resolveCwd(opts, agentWorkspaceRoot, resolved.isAgent, settings.departmentDirs, null, resolved.isAgent ? wt : undefined);
-    return await opencodeModelGate.preflight({
-      descriptor,
-      model,
-      bin,
-      env,
-      cwd,
-      settings,
-      t: appI18n.t,
-      locale: appI18n.getLocale(),
-      label: (engineInstall.installInfo(command) || {}).label || command,
-    });
-  } catch (e) {
-    logLine(`model gate ön-uçuş atlandı (senkron yol ölçecek): ${e && e.message}`);
-    return null;
-  }
+  return ptyIsolationService.preflightModelGate(opts, trusted);
 }
 
 function resolveTaskWorktreeSync(opts) {
-  try {
-    const taskId = typeof opts?.taskId === 'string' && opts.taskId.trim() ? opts.taskId.trim() : null;
-    if (!taskId) return null;
-    const rec = worktreeService.resolveExistingSync(taskId, crewpaneHome());
-    return rec ? { taskWorktree: rec.path, taskBranch: rec.branch, taskId: rec.taskId } : null;
-  } catch (e) {
-    // Defter okuması spawn'ı ASLA düşürmez; sessiz de kalmaz.
-    logLine(`worktree çözümü başarısız (spawn izolasyonsuz devam eder): ${e.message}`);
-    return null;
-  }
+  return ptyIsolationService.resolveTaskWorktreeSync(opts);
 }
 
 /**
@@ -4788,152 +4663,11 @@ function writeEditorState(state) {
  * kendisi `taskClaim.decideIsolationTwin` (saf) → `agentRunner.applyPaneIsolationEnv`.
  */
 function liveIsolationFiles() {
-  const out = [];
-  for (const entry of ptys.values()) {
-    if (entry && typeof entry.isolationFile === 'string' && entry.isolationFile) out.push(entry.isolationFile);
-  }
-  return out;
+  return ptyIsolationService.liveIsolationFiles();
 }
 
-function livePanesForClaim() {
-  const rows = [];
-  for (const [paneId, entry] of ptys) {
-    rows.push({ paneId, agentId: entry.agentId ?? null, label: entry.label ?? null, stalled: entry.stalled === true });
-  }
-  return rows;
-}
-
-function findLivePaneForAgent(agentId) {
-  if (!agentId) return null;
-  for (const [paneId, entry] of ptys) {
-    if (entry.agentId === agentId) return { paneId, entry };
-  }
-  return null;
-}
-
-/**
- * ADP-761 — TEK DEDUPE KARARI (tek uygulama, iki çağıran).
- *
- * ADP-487 guard'ı `pty:spawn` IPC HANDLER'ına konmuştu; ama `spawnPty` IPC'den
- * BAĞIMSIZ olarak da çağrılıyor (restore, kurtarma teklifi, ölü-oturum fallback'i,
- * pty-resume daemon respawn'ı). O yolların her biri KENDİ ad-hoc "bu ajan zaten
- * canlı mı" kontrolünü taşıyor — yani beş ayrı kopya, sıfır merkezi kapı: tam da
- * ADP-487'nin kapatmaya çalıştığı desen (dağıtık kopyalar SAPAR). Karar artık TEK
- * fonksiyonda; `pty:spawn` onu SIRA gereği önce çağırır (dedupe → plan limiti:
- * mevcut ajanla konuşmak yeni ajan açmak değildir), `spawnPty` ise YAPISAL ARKA
- * DURAK olarak çağırır — hangi yol gelirse gelsin duplikasyon imkânsız.
- *
- * `forceFresh` — ADP-289 karantina istisnası (stalled pane'e ASLA yazma, KURAL-1):
- * çağıran "ikinci pane'i BİLEREK istiyorum" der. Bayrak yoksa mevcut pane REUSE edilir.
- * ADP-953 — bayrak artık TEK BAŞINA yetmez: `freshReason` ile sebep bildirilir ve
- * 'quarantine' iddiası main'in KENDİ `entry.stalled` defterine karşı DOĞRULANIR
- * (doğrulanmazsa ikinci pane açılmaz). Bkz. aşağıdaki forceFresh bloğu.
- *
- * @returns {null | object} reuse yükü (spawn edilmeyecek) ya da null (spawn devam).
- */
 function dedupeSpawnForAgent(opts, why) {
-  const agentId = typeof opts?.agentId === 'string' ? opts.agentId.trim() : '';
-  if (!agentId) return null;
-  // ADP-896 — GÖREV KAPISI, ajan kapısından ÖNCE. `forceFresh` ajan-tekilliğini
-  // bilerek atlar (ADP-289 karantina) ama "aynı GÖREV zaten uçuşta mı" sorusu HİÇ
-  // sorulmuyordu → aynı ADP koduyla ikiz pane (pane-122↔128, pane-125↔127) ve aynı
-  // repoda paralel iki worker. Takılı pane'in kurtarılması İSTİSNA olarak geçer.
-  const claim = taskClaim.decideSpawn(livePanesForClaim(), opts);
-  if (claim.action === 'reuse') {
-    const existing = ptys.get(claim.paneId);
-    if (existing) {
-      logLine(`pty:spawn GÖREV KİLİDİ (${why}) agentId=${agentId} — ${claim.why}`);
-      return {
-        paneId: claim.paneId,
-        pid: existing.pid,
-        command: existing.command,
-        shell: existing.command,
-        agentId: existing.agentId ?? null,
-        department: existing.department ?? null,
-        cwd: existing.cwd ?? null,
-        model: existing.launchModel ?? null,
-        reused: true,
-      };
-    }
-  } else if (claim.code && claim.paneId) {
-    logLine(`pty:spawn görev kapısı GEÇİRDİ (${why}) agentId=${agentId} — ${claim.why}`);
-  }
-  if (opts?.forceFresh === true) {
-    // ADP-761 — İKİNCİ PANE'İN DOĞDUĞU AN: tek yer burası. Eskiden bu olay hiçbir iz
-    // bırakmıyordu; "neden bu ajanın 2 terminali var?" sorusu ancak defter dosyalarını
-    // ve `pty spawned` satırlarını elle eşleştirerek (40 dakikalık adli inceleme)
-    // yanıtlanabiliyordu.
-    const twin = findLivePaneForAgent(agentId);
-    if (twin) {
-      // ADP-953 — `forceFresh` ARTIK BİR İDDİADIR, ÖLÇÜLMÜŞ BİR GERÇEK DEĞİL.
-      //
-      // Eskiden bayrak kapıyı KOŞULSUZ açıyordu: çağıran "bu pane takılı" derse main
-      // sorgusuz ikinci pane veriyordu. Windows'ta tam da bu iddia YALAN çıkıyordu —
-      // ConPTY yeniden çizimi worker'ın `DONE:` satırını gizleyip pane'i sahte
-      // `stalled` yapıyor, sıradaki dispatch de o sahte duruma dayanıp `forceFresh`
-      // gönderiyordu (kök neden delegationSupervisor.markerCount + delegation.ts ANSI
-      // deliğinde düzeltildi). ADP-487'nin dersi burada bir kez daha uygulanır:
-      // KAPI ÇAĞIRANIN İDDİASINA DEĞİL, KENDİ DEFTERİNE BAKAR.
-      //
-      // Üç MEŞRU sebep ayrı ayrı adlandırılır (sözleşmeyi genişletmek yerine ALAN
-      // ekleme deseni — ADP-321/761):
-      //   • 'quarantine' (ADP-289) → İDDİA DOĞRULANIR: main'in kendi `entry.stalled`ı
-      //     da takılı demiyorsa bayrak REDDEDİLİR ve pane REUSE edilir.
-      //   • 'replace' (ADP-761) → çağıran eski pane'i AZ ÖNCE kapattı; kapanış asenkron
-      //     olduğu için kapı bilerek atlanır. Hangi pane olduğu `retirePaneId` ile
-      //     BİLDİRİLİR — "herhangi bir ikinci pane" yetkisi değildir.
-      //   • 'recovery' (ADP-705) → teslimat doğrulaması başarısız; kanıt main'de YOK
-      //     (renderer'ın delivery state'i) ve bütçe alt-görev başına BİR pane.
-      // Sebep bildirilmemişse en dar yorum uygulanır: 'quarantine' (yani doğrulanır).
-      // Karar SAF ve test edilebilir (taskClaim.cjs — `node --test`); burada yalnız
-      // main'in defteri (`entry.stalled`) girdi olarak verilir.
-      const verdict = taskClaim.decideForceFresh(
-        { paneId: twin.paneId, stalled: twin.entry.stalled === true },
-        opts,
-      );
-      if (!verdict.honored) {
-        logLine(
-          `pty:spawn forceFresh REDDEDİLDİ (${why}) agentId=${agentId} sebep=${verdict.reason} — ${verdict.why}`,
-        );
-        const e = twin.entry;
-        return {
-          paneId: twin.paneId,
-          pid: e.pid,
-          command: e.command,
-          shell: e.command,
-          agentId: e.agentId ?? null,
-          department: e.department ?? null,
-          cwd: e.cwd ?? null,
-          model: e.launchModel ?? null,
-          reused: true,
-        };
-      }
-      logLine(
-        `pty:spawn İKİNCİ PANE (forceFresh/${verdict.reason}, ${why}) agentId=${agentId} — ${verdict.why}; ` +
-          `mevcut canlı pane ${twin.paneId} DURUYOR. ` +
-          'Bu pane\'i geri kazanmak supervisor hayalet-reap\'inin ya da operatörün işi.',
-      );
-    }
-    return null;
-  }
-  const existing = findLivePaneForAgent(agentId);
-  if (!existing) return null;
-  const e = existing.entry;
-  logLine(
-    `pty:spawn DEDUPED (${why}) agentId=${agentId} → reusing existing paneId=${existing.paneId} ` +
-      `(would have opened a duplicate; caller did not set forceFresh)`,
-  );
-  return {
-    paneId: existing.paneId,
-    pid: e.pid,
-    command: e.command,
-    shell: e.command,
-    agentId: e.agentId ?? null,
-    department: e.department ?? null,
-    cwd: e.cwd ?? null, // ADP-502 — reuse'da da gerçek spawn-cwd döner
-    model: e.launchModel ?? null,
-    reused: true,
-  };
+  return ptyIsolationService.dedupeSpawnForAgent(opts, why);
 }
 
 /**
