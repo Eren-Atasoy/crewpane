@@ -71,17 +71,23 @@ const { createBackendEnvService } = require('./src/features/services');
 let windowManager = null;
 let mobileService = null;
 
+function _handleFocusDeepLink(record) {
+  try {
+    if (authUrlService) {
+      authUrlService.consumeArgvDeepLink(record && record.argv, 'focus-request');
+    }
+  } catch (e) {
+    try { process.stderr.write(`[single-instance] deep-link error: ${e.message}\n`); } catch { /* ignore */ }
+  }
+}
+
 const bootstrapCtx = {
   app,
   dialog,
   argv: process.argv,
   cwd: process.cwd(),
   handleFocusWindow: (record) => {
-    try {
-      consumeArgvDeepLink(record && record.argv, 'focus-request');
-    } catch (e) {
-      try { process.stderr.write(`[single-instance] deep-link error: ${e.message}\n`); } catch { /* ignore */ }
-    }
+    _handleFocusDeepLink(record);
     try {
       let win = appWindow;
       if (!win || win.isDestroyed()) {
@@ -839,11 +845,11 @@ const ptySpawnService = createPtySpawnService({
   dedupeSpawnForAgent: (opts, why) => ptyIsolationService.dedupeSpawnForAgent(opts, why),
   resolveTaskWorktreeSync: (opts) => ptyIsolationService.resolveTaskWorktreeSync(opts),
   liveIsolationFiles: () => ptyIsolationService.liveIsolationFiles(),
-  integrationResolverOrNull: () => integrationResolverOrNull(),
-  codeIndexResolverOrNull: () => codeIndexResolverOrNull(),
+  integrationResolverOrNull: () => integrationService.integrationResolverOrNull(),
+  codeIndexResolverOrNull: () => codeIndexService.codeIndexResolverOrNull(),
   getDelegationBridge: () => (delegationBridgeService ? delegationBridgeService.getBridge() : null),
   publicSupabaseEnv: () => publicSupabaseEnv(),
-  engineKeyStore: () => engineKeyStore(),
+  engineKeyStore: () => integrationService.engineKeyStore(),
   reportModuleFault: (fault) => reportModuleFault(fault),
   settleMemoryUsage: (opts) => memoryService.settleMemoryUsage(opts),
   scheduleSupervisorSweep: (delayMs) => delegationSupervisorService.scheduleSupervisorSweep(delayMs),
@@ -1303,21 +1309,7 @@ const integrationService = createIntegrationService({
   paneCapabilityMatrix,
 });
 
-function integrations() {
-  return integrationService.integrations();
-}
-function engineKeyStore() {
-  return integrationService.engineKeyStore();
-}
-async function integrationsStatusFor(req = {}) {
-  return integrationService.integrationsStatusFor(req);
-}
-async function stampIntegrationVerified(service) {
-  return integrationService.stampIntegrationVerified(service);
-}
-function integrationResolverOrNull() {
-  return integrationService.integrationResolverOrNull();
-}
+
 
 // ── CIDX-1 — KOD İNDEKSİ SERVİSİ (src/features/services/codeIndexService.js - Faz 3.6.37)
 const codeIndexService = createCodeIndexService({
@@ -1329,16 +1321,7 @@ const codeIndexService = createCodeIndexService({
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   logLine,
 });
-function codeIndexResolverOrNull() {
-  return codeIndexService.codeIndexResolverOrNull();
-}
-function codeIndexRepoPath(slug) {
-  return codeIndexService.codeIndexRepoPath(slug);
-}
-function codeIndexFreshness(repoPath, indexedSha) {
-  return codeIndexService.codeIndexFreshness(repoPath, indexedSha);
-}
-const codeIndexJobs = codeIndexService.codeIndexJobs;
+
 
 // ── ADP-719/801/833/954 — AUTH URL & DEEP LINK SERVICE (src/features/auth/authUrlService.js - Faz 3.6.36)
 const authUrlService = createAuthUrlService({
@@ -1352,17 +1335,7 @@ const authUrlService = createAuthUrlService({
 
 let schemeVerdict = null;
 
-function handleAuthUrl(url) {
-  return authUrlService.handleAuthUrl(url);
-}
 
-function drainPendingAuthUrls() {
-  return authUrlService.drainPendingAuthUrls();
-}
-
-function consumeArgvDeepLink(argv, source) {
-  return authUrlService.consumeArgvDeepLink(argv, source);
-}
 
 // (ADP-440 — bölge overlay'i, tray penceresi, annotator ve kısayolları kaldırıldı.)
 
@@ -1435,23 +1408,9 @@ const workspaceRootService = createWorkspaceRootService({
   forceFirstRun: FORCE_FIRST_RUN,
 });
 
-const activeRoots = workspaceRootService.activeRoots;
-function switchWorkspaceRoot(rawRoot) {
-  return workspaceRootService.switchWorkspaceRoot(rawRoot);
-}
-function reresolveWorkspaceRootAfterAccountBind() {
-  return workspaceRootService.reresolveWorkspaceRootAfterAccountBind();
-}
-function seedBuiltinSkills(reason) {
-  return workspaceRootService.seedBuiltinSkills(reason);
-}
-function syncSkillEngineViews(reason) {
-  return workspaceRootService.syncSkillEngineViews(reason);
-}
-
 // ── ADP-103/108/109/437 — ÇALIŞMA ALANI DOSYA VE KALICILIK SERVİSİ (src/features/services/workspaceFileService.js - Faz 3.6.27)
 const workspaceFileService = createWorkspaceFileService({
-  activeRoots,
+  activeRoots: workspaceRootService.activeRoots,
   getWorkspaceRoot: () => agentWorkspaceRoot,
   getUserDataPath: () => app.getPath('userData'),
   ptys,
@@ -1546,7 +1505,6 @@ function _buildWindowAndWorkspaceDeps() {
     agentWorkspaceRoot,
     supervisorFor,
     workspaceOnboarding,
-    switchWorkspaceRoot,
     worktreeStore,
     projectRepos,
     mergeService,
@@ -1558,9 +1516,7 @@ function _buildWindowAndWorkspaceDeps() {
     branchName,
     codeIndexStore,
     codeIndexHealth,
-    codeIndexRepoPath,
-    codeIndexFreshness,
-    codeIndexJobs,
+    codeIndexService,
     invalidateGitBranchCache,
     clipboardImageRoute,
     localSprites,
@@ -1623,7 +1579,7 @@ function _buildMobileAndVoiceIpcDeps() {
     browserService,
     setAppWindowGuest: (g) => { appWindowGuest = g; },
     getAppWindowGuest: () => appWindowGuest,
-    integrations,
+    integrationService,
     mcpProcess,
     integrationAutostart,
     sprintStore,
@@ -1654,7 +1610,6 @@ function _buildMobileAndVoiceIpcDeps() {
     skillGuard,
     skillEngineView,
     boundAccount,
-    syncSkillEngineViews,
     delegationQueueStore,
     delegationSupervisorStore,
     resumeQueueStore,
@@ -1673,7 +1628,6 @@ function _buildSystemAndEngineIpcDeps() {
     LOG_PATH,
     analyticsSchema,
     credentialGate,
-    stampIntegrationVerified,
     vendorSurface,
     telemetryMod,
     provisionStoreMod,
@@ -1688,7 +1642,7 @@ function _buildSystemAndEngineIpcDeps() {
     IS_AUTOMATED_SESSION,
     AUTOMATED_SESSION_REASON,
     secretBackendState,
-    handleAuthUrl,
+    authUrlService,
     crewpaneIdConfig,
     planLimits,
     appDbTokenFor,
@@ -1717,7 +1671,6 @@ function _buildSystemAndEngineIpcDeps() {
     runDoctorNow,
     firstRunDoctor,
     hookScanHome,
-    engineKeyStore,
     engineLoginLedger,
     planCatalog,
     telemetryService,
@@ -2053,7 +2006,7 @@ const delegationBridgeService = createDelegationBridgeService({
   mobileService,
   notifyLog,
   appDbTokenFor: (source) => appDbTokenFor(source),
-  integrationsStatusFor: (req) => integrationsStatusFor(req),
+  integrationsStatusFor: (req) => integrationService.integrationsStatusFor(req),
   seatDenial: (action) => seatDenial(action),
   planWaveLimit: (requested) => planLimitService.planWaveLimit(requested),
   deliverDictationToFocusedSurface: (text) => deliverDictationToFocusedSurface(text),
@@ -2094,12 +2047,9 @@ app.whenReady().then(async () => {
     instanceHome: instancePaths.instanceHome(),
     initSeatGate,
     bindAccountRoot,
-    reresolveWorkspaceRootAfterAccountBind,
     syncService,
-    seedBuiltinSkills,
-    syncSkillEngineViews,
-    consumeArgvDeepLink,
-    drainPendingAuthUrls,
+    authUrlService,
+    workspaceRootService,
     wireIpc,
     startResourceGovernorSampling,
     windowManager,

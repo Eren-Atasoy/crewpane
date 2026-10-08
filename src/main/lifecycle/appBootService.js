@@ -138,7 +138,7 @@ function _normalizeTelemetryAndRestoreRoutines(d) {
   if (paneRestoreService && !d.offerRecoverablePanes) d.offerRecoverablePanes = (win, entries, meta) => paneRestoreService.offerRecoverablePanes(win, entries, meta);
 }
 
-function _normalizeLifecycleServices(d) {
+function _normalizeBridgeAndServerServices(d) {
   if (d.crashWatchdogService && !d.startCrashWatchdog) {
     d.startCrashWatchdog = () => d.crashWatchdogService.startCrashWatchdog();
   }
@@ -152,10 +152,22 @@ function _normalizeLifecycleServices(d) {
     if (!d.standaloneDir) d.standaloneDir = () => d.nextServerManager.standaloneDir();
     if (!d.startNextServer) d.startNextServer = (m, o) => d.nextServerManager.startNextServer(m, o);
   }
+}
+
+function _normalizeWorkspaceAndAuthServices(d) {
   if (d.syncService) {
     if (!d.syncRuntime) d.syncRuntime = d.syncService.syncRuntime;
     if (!d.prefsApplySoon) d.prefsApplySoon = () => d.syncService.prefsApplySoon();
     if (!d.prefsProjectNow) d.prefsProjectNow = (r) => d.syncService.prefsProjectNow(r);
+  }
+  if (d.authUrlService) {
+    if (!d.consumeArgvDeepLink) d.consumeArgvDeepLink = (argv, src) => d.authUrlService.consumeArgvDeepLink(argv, src);
+    if (!d.drainPendingAuthUrls) d.drainPendingAuthUrls = () => d.authUrlService.drainPendingAuthUrls();
+  }
+  if (d.workspaceRootService) {
+    if (!d.reresolveWorkspaceRootAfterAccountBind) d.reresolveWorkspaceRootAfterAccountBind = () => d.workspaceRootService.reresolveWorkspaceRootAfterAccountBind();
+    if (!d.seedBuiltinSkills) d.seedBuiltinSkills = (r) => d.workspaceRootService.seedBuiltinSkills(r);
+    if (!d.syncSkillEngineViews) d.syncSkillEngineViews = (r) => d.workspaceRootService.syncSkillEngineViews(r);
   }
 }
 
@@ -165,7 +177,8 @@ function _normalizeBootDeps(deps) {
   _normalizeMemoryAndStorageRoutines(d);
   _normalizeWindowRoutines(d);
   _normalizeTelemetryAndRestoreRoutines(d);
-  _normalizeLifecycleServices(d);
+  _normalizeBridgeAndServerServices(d);
+  _normalizeWorkspaceAndAuthServices(d);
   return d;
 }
 
