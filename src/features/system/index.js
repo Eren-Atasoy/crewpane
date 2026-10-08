@@ -18,9 +18,12 @@ function registerSystemIpc(deps) {
 }
 
 const { createCrashWatchdogService } = require('./crashWatchdogService');
+const { createFaultService, obsSurfaceFor } = require('./faultService');
 
 module.exports = {
   createCrashWatchdogService,
+  createFaultService,
+  obsSurfaceFor,
   registerSystemIpc,
   registerFeedbackIpc,
   registerFileIpc,

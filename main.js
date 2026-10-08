@@ -997,54 +997,32 @@ const stdioGuards = stdioGuard.installStdioGuards({
 });
 logger.setStdoutGuard(() => stdioGuards.canWriteStdout());
 
-// ── ADP-335 — MODÜL HATA SINIRI (bkz. moduleGuard.cjs) ──────────────────────────────────
-// main'deki HERHANGİ bir modülde sıradan bir kod hatası (ReferenceError/TypeError) tüm
-// uygulamayı çökertiyordu. Artık her riskli yüzey (VT harvest, gateway, SSE,
-// sprint/queue yazımı, timer'lar) bir supervisor'ın içinde koşar: patlarsa O MODÜL degrade
-// olur, diğerleri ve uygulama yaşar. Hata YUTULMAZ: log + tıklanabilir bildirim.
-const moduleFaults = []; // son N hata (bildirim merkezi + `module:faults` IPC'si okur)
-const supervisors = new Map();
+// ── ADP-335 — MODÜL HATA SINIRI & OBS-02 HATA TAKİBİ (src/features/system/faultService.js - Faz 3.6.10)
+const { createFaultService, obsSurfaceFor } = require('./src/features/system');
+
+const faultService = createFaultService({
+  app,
+  getAppWindow: () => appWindow,
+  logLine,
+  telemetryEnvNow: () => telemetryEnvNow(),
+  telemetryEnabledNow: () => telemetryEnabledNow(),
+  appRoot: path.resolve(__dirname, '..'),
+});
+
+const moduleFaults = faultService.moduleFaults;
+function obsReporterNow() {
+  return faultService.obsReporterNow();
+}
+function reportModuleFault(fault, extra) {
+  return faultService.reportModuleFault(fault, extra);
+}
+function supervisorFor(name) {
+  return faultService.supervisorFor(name);
+}
+
 // TEST-ONLY sentetik hata enjeksiyonu — hata sınırının GERÇEK uygulamada tuttuğunu kanıtlamak
 // için (e2e). `CREWPANE_FAULT_INJECT=vt,gateway`. Env yoksa hiçbir etkisi yok.
 const FAULT_INJECT = String(process.env.CREWPANE_FAULT_INJECT || '').split(',').map((s) => s.trim()).filter(Boolean);
-
-// ─── OBS-02 — HATA TAKİBİ (Sentry) KÖPRÜSÜ ───────────────────────────────────
-// Bu haftaki arızaların HEPSİ sessizdi: kullanıcı gördü, biz görmedik. Köprü şu:
-// bildirim merkezinde beliren HER modül hatası aynı anda Sentry'ye de düşer.
-// İKİNCİ BİR HATA YOLU AÇILMAZ — yeni `uncaughtException` dinleyicisi yok, yeni
-// IPC kanalı yok; yalnız bu fonksiyonun sonuna bir MUSLUK eklendi. Böylece
-// "Sentry'de var ama uygulamada yok" (ya da tersi) diye bir hata sınıfı doğamaz.
-//
-// Raporlayıcı BURADA (whenReady'den ÖNCE) kurulur: açılışın ilk saniyesinde patlayan
-// bir modül de yakalansın. DSN yoksa nesne yine kurulur ama `capture` ilk satırda
-// döner — yani ağ katmanına hiç inilmez.
-let obsReporter = null;
-function obsReporterNow() {
-  if (obsReporter) return obsReporter;
-  try {
-    // INT-OBS-01 — anahtar artık ÖNCE Entegrasyon Merkezi'nin kurduğu yerden okunur;
-    // `~/.crewpane/telemetry.env` GERİYE DÖNÜK olarak çalışmaya devam eder.
-    const env = telemetryEnvNow();
-    const channel = telemetryChannelMod.resolveChannel();
-    obsReporter = errorReporter.createErrorReporter({
-      dsn: telemetryChannelMod.resolveDsn(channel, env),
-      channel,
-      app: 'crewpane',
-      appVersion: app.getVersion(),
-      appRoot: path.resolve(__dirname, '..'),
-      homeDir: os.homedir(),
-      osInfo: { platform: process.platform, arch: process.arch, release: os.release() },
-      // CANLI okuma: Ayarlar → Gizlilik'ten kapatıldığı an sonraki olay gitmez.
-      enabled: () => telemetryEnabledNow(),
-      log: (line) => logLine(line),
-    });
-  } catch (e) {
-    // Raporlayıcı kurulamazsa uygulama YAŞAR — hata takibi hiçbir zaman arıza kaynağı olamaz.
-    obsReporter = { capture: () => ({ sent: false, reason: 'init-failed' }), stats: () => ({}), enabledNow: () => false };
-    try { logLine(`obs: raporlayıcı kurulamadı (${e && e.message})`); } catch { /* best-effort */ }
-  }
-  return obsReporter;
-}
 
 // ─── OBS-01 — ÜRÜN ANALİTİĞİ KÖPRÜSÜ ─────────────────────────────────────────
 // İlk ödeyen müşteriler geldi ve neyi kullandıklarını bilmiyoruz: kaç kişi ilk
@@ -1137,70 +1115,7 @@ function analyticsFirstTime(marker) {
   }
 }
 
-/** Modül adından Sentry YÜZEYİ (main | renderer | worker) — etiket tek kaynaktan. */
-function obsSurfaceFor(moduleName) {
-  if (moduleName === 'renderer') return 'renderer';
-  if (moduleName === 'worker' || moduleName === 'pane') return 'worker';
-  return 'main';
-}
 
-/**
- * @param {object} fault  bildirim merkezine + log'a giden kayıt (şekli DEĞİŞMEDİ)
- * @param {object} [extra] YALNIZ Sentry'ye giden ek bağlam (`{ stack }`). Bilerek
- *   `fault` içine konmaz: `moduleFaults` dizisi IPC ile renderer'a dönüyor ve
- *   bildirim kartının sözleşmesini genişletmenin bir sebebi yok.
- */
-function reportModuleFault(fault, extra) {
-  moduleFaults.push(fault);
-  if (moduleFaults.length > 50) moduleFaults.shift();
-  logLine(
-    `MODULE FAULT ${fault.module}${fault.label ? `/${fault.label}` : ''}: ${fault.message} ` +
-      `@ ${fault.location || '?'}${fault.stopped ? ' — MODÜL DURDURULDU (degrade)' : ''}`,
-  );
-  try {
-    if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('module:fault', fault);
-  } catch { /* pencere gitti — log'da zaten var */ }
-  // OBS-02 — musluk. `capture` ASLA throw etmez (kendi içinde sarılı) ama burada da
-  // koruyoruz: bir gün imza değişirse bile bildirim merkezi çalışmaya devam etsin.
-  try {
-    obsReporterNow().capture({
-      surface: obsSurfaceFor(fault.module),
-      module: fault.module,
-      label: fault.label,
-      message: fault.message,
-      location: fault.location,
-      stopped: fault.stopped,
-      fatal: fault.fatal,
-      level: fault.level,
-      stack: extra && extra.stack,
-      // SEN-F1 — ofis tuvali kurtarma zincirinin aşama bağlamı (varsa) Sentry
-      // ETİKETİ olur; bir dahaki teşhis "hangi basamakta düştü" sorusunu
-      // mesaj metnini okumadan yanıtlar.
-      stage: fault.stage,
-      renderer: fault.renderer,
-      attempt: fault.attempt,
-      // WIN-FIRSTRUN-01 (K5) — pane-exit etiketleri (motor · spawn'dan süre · ilk bayt).
-      engine: fault.engine,
-      msSinceSpawn: fault.msSinceSpawn,
-      firstDataBytes: fault.firstDataBytes,
-    });
-  } catch { /* hata takibi hata üretmez */ }
-}
-
-/** Modül adına göre (tekil) supervisor. */
-function supervisorFor(name) {
-  let sup = supervisors.get(name);
-  if (!sup) {
-    sup = moduleGuard.createSupervisor({
-      name,
-      // OBS-02 — ham hata ikinci argümandan gelir; yığın izi YALNIZ Sentry'ye taşınır.
-      onFault: (fault, err) => reportModuleFault(fault, { stack: err && err.stack }),
-      log: (m) => logLine(`[guard] ${m}`),
-    });
-    supervisors.set(name, sup);
-  }
-  return sup;
-}
 
 // ---------------------------------------------------------------------------
 // Terminal (node-pty) — ADP-003 generalises the ADP-001 single-pty bridge to
