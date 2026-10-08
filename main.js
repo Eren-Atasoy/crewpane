@@ -732,7 +732,7 @@ const startupSweepService = createStartupSweepService({
   getPublicSupabaseEnv: () => publicSupabaseEnv(),
   agentSettings,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-  getMemoryIndexer: () => memoryIndexer(),
+  getMemoryIndexer: () => memoryService.memoryIndexer(),
   jarvisVoice,
   mcpProcess,
   helperReaper,
@@ -838,7 +838,7 @@ const ptySpawnService = createPtySpawnService({
   appI18n: { t: (k) => appI18n.t(k), getLocale: () => appI18n.getLocale() },
   planDenial: (feature, current, opts) => planDenial(feature, current, opts),
   dedupeSpawnForAgent: (opts, why) => ptyIsolationService.dedupeSpawnForAgent(opts, why),
-  resolveTaskWorktreeSync: (opts) => resolveTaskWorktreeSync(opts),
+  resolveTaskWorktreeSync: (opts) => ptyIsolationService.resolveTaskWorktreeSync(opts),
   liveIsolationFiles: () => liveIsolationFiles(),
   integrationResolverOrNull: () => integrationResolverOrNull(),
   codeIndexResolverOrNull: () => codeIndexResolverOrNull(),
@@ -846,7 +846,7 @@ const ptySpawnService = createPtySpawnService({
   publicSupabaseEnv: () => publicSupabaseEnv(),
   engineKeyStore: () => engineKeyStore(),
   reportModuleFault: (fault) => reportModuleFault(fault),
-  settleMemoryUsage: (opts) => settleMemoryUsage(opts),
+  settleMemoryUsage: (opts) => memoryService.settleMemoryUsage(opts),
   scheduleSupervisorSweep: (delayMs) => delegationSupervisorService.scheduleSupervisorSweep(delayMs),
   sendPaneEvent: (win, paneId, channel, payload) => (windowManager ? windowManager.sendPaneEvent(win, paneId, channel, payload) : null),
   sessionAnchor: { forget: (id) => paneTranscriptService.sessionAnchor.forget(id) },
@@ -1091,25 +1091,7 @@ const memoryService = createMemoryService({
   transcriptProbe,
 });
 
-function memoryIndexer() {
-  return memoryService.memoryIndexer();
-}
 
-function searchIndexer() {
-  return memoryService.searchIndexer();
-}
-
-function memorySearcher() {
-  return memoryService.memorySearcher();
-}
-
-function memoryEmbedInstaller() {
-  return memoryService.memoryEmbedInstaller();
-}
-
-function settleMemoryUsage(opts) {
-  return memoryService.settleMemoryUsage(opts);
-}
 
 // ── ADP-095/333/341/394/396/399/884 — BAŞLIKLI TARAYICI OTOMASYONU SERVİSİ (src/features/services/browserService.js - Faz 3.6.24)
 const { createBrowserService } = require('./src/features/services');
@@ -1136,53 +1118,7 @@ const crashWatchdogService = createCrashWatchdogService({
   crashWatchdog,
 });
 
-function startCrashWatchdog() {
-  return crashWatchdogService.startCrashWatchdog();
-}
 
-function stopCrashWatchdog() {
-  return crashWatchdogService.stopCrashWatchdog();
-}
-
-
-
-
-
-/**
- * Spawn an agent-aware pty (ADP-013). Backward compatible with ADP-003: a bare
- * `{ cols, rows }` (no `command`) still launches the login shell, so the
- * ADP-001 spike regression and existing `<Terminal>` callers are unaffected.
- *
- * With `command: 'claude'|'codex'` (whitelisted) the agent CLI runs IN the pane,
- * labelled with `agentId`/`department`/`label` for the binding store. An
- * arbitrary `command` string THROWS (RCE guard, ADR-002) — the IPC handler lets
- * that reject so a compromised renderer cannot exec arbitrary binaries.
- */
-/**
- * B-01 (F-7) — AKTİF izole ağaçların yolları (yerel defterden).
- * Kanıt çözümü ve Raporlar izleyicisi bunu tüketir. Defter okunamazsa BOŞ liste:
- * izolasyon devrede değilken bugünkü davranış bit-bit korunur.
- */
-/**
- * REPORTS-ROOT-01 — Raporlar sekmesinin (okuyucu + izleyici) eşlenmiş repo kökleri:
- * settings.projectRepos + worktrees.json slug'ları, supervisor'ın `resolveProjectRepo`
- * kuralıyla çözülür (tek kaynak: resultRoot.cjs). Asla throw etmez.
- */
-function mappedProjectRootsForReports() {
-  return ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot);
-}
-
-function activeWorktreePaths() {
-  return ptyIsolationService.activeWorktreePaths();
-}
-
-async function preflightModelGate(opts, trusted) {
-  return ptyIsolationService.preflightModelGate(opts, trusted);
-}
-
-function resolveTaskWorktreeSync(opts) {
-  return ptyIsolationService.resolveTaskWorktreeSync(opts);
-}
 
 // ── ADP-013/386/905/MCP-COST-01 — PANE QUERY & LIFECYCLE SERVICE (src/features/terminal/paneQueryService.js - Faz 3.6.34)
 const paneQueryService = createPaneQueryService({
@@ -1636,7 +1572,6 @@ function _buildWindowAndWorkspaceDeps() {
     projectRepos,
     mergeService,
     worktreeService,
-    activeWorktreePaths,
     REPO_ROOT,
     codeIntel,
     gitBranchCache,
@@ -1651,13 +1586,10 @@ function _buildWindowAndWorkspaceDeps() {
     clipboardImageRoute,
     localSprites,
     mediaService,
+    memoryService,
     memoryGraph,
-    memoryIndexer,
-    memorySearcher,
-    searchIndexer,
     memoryEmbedder,
     memoryEmbedInstall,
-    memoryEmbedInstaller,
     memoryRecall,
     secretRedactor,
     memoryTaskBlock,
@@ -1684,7 +1616,6 @@ function _buildTerminalAndExecutionIpcDeps() {
     agentRunner,
     resourceGovernorModule,
     engineDelegation,
-    preflightModelGate,
     spendGuard,
     leaderComposer,
     transcriptProbe,
@@ -1847,7 +1778,7 @@ const nextServerManager = createNextServerManager({
   crewpaneEnv,
   helperReaper,
   nextServerPolicy,
-  mappedProjectRootsForReports,
+  mappedProjectRootsForReports: () => ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot),
 });
 
 function standaloneDir() { return nextServerManager.standaloneDir(); }
@@ -1929,8 +1860,8 @@ windowManager = createWindowManager({
   quitFunnel,
   armQuitBrake,
   reportsWatcher,
-  activeWorktreePaths,
-  mappedProjectRootsForReports,
+  activeWorktreePaths: () => ptyIsolationService.activeWorktreePaths(),
+  mappedProjectRootsForReports: () => ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot),
   browserGuests: browserService.browserGuests,
   ghostGuests: () => browserService.ghostGuests,
   guestOwners: browserService.guestOwners,
@@ -2197,7 +2128,7 @@ app.whenReady().then(async () => {
     paneRestoreService,
     getAppWindow: () => appWindow,
     logLine,
-    startCrashWatchdog,
+    crashWatchdogService,
     app,
     startupSweepService,
     workspaceFileService,
@@ -2274,7 +2205,7 @@ const lifecycleManager = createLifecycleManager({
   isAutotest: AUTOTEST,
   crewpaneHome: () => crewpaneHome(),
   armQuitBrake: (label) => armQuitBrake(label),
-  stopCrashWatchdog: () => stopCrashWatchdog(),
+  crashWatchdogService,
   paneQueryService,
   stopNextServer: () => stopNextServer(),
   noteQuit: (reason, signal) => noteQuit(reason, signal),

@@ -144,6 +144,9 @@ function _normalizeBootDeps(deps) {
   _normalizeMemoryAndStorageRoutines(d);
   _normalizeWindowRoutines(d);
   _normalizeTelemetryAndRestoreRoutines(d);
+  if (d.crashWatchdogService && !d.startCrashWatchdog) {
+    d.startCrashWatchdog = () => d.crashWatchdogService.startCrashWatchdog();
+  }
   return d;
 }
 

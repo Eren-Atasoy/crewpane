@@ -103,7 +103,7 @@ function buildWorkspaceAndStorageDeps(ctx) {
     agentWorkspaceRoot: ctx.agentWorkspaceRoot,
     mergeService: ctx.mergeService,
     worktreeService: ctx.worktreeService,
-    activeWorktreePaths: ctx.activeWorktreePaths,
+    activeWorktreePaths: ctx.activeWorktreePaths || (() => (ctx.ptyIsolationService ? ctx.ptyIsolationService.activeWorktreePaths() : [])),
     REPO_ROOT: ctx.REPO_ROOT,
     codeIntel: ctx.codeIntel,
     gitBranchCache: ctx.gitBranchCache,
@@ -127,6 +127,16 @@ function _resolveMediaOps(ctx) {
   };
 }
 
+function _resolveMemoryOps(ctx) {
+  const mem = ctx.memoryService;
+  return {
+    memoryIndexer: ctx.memoryIndexer || (() => (mem ? mem.memoryIndexer() : null)),
+    memorySearcher: ctx.memorySearcher || (() => (mem ? mem.memorySearcher() : null)),
+    memoryEmbedInstaller: ctx.memoryEmbedInstaller || (() => (mem ? mem.memoryEmbedInstaller() : null)),
+    searchIndexer: ctx.searchIndexer || (() => (mem ? mem.searchIndexer() : null)),
+  };
+}
+
 function buildMediaAndMemoryDeps(ctx) {
   return {
     clipboardImageRoute: ctx.clipboardImageRoute,
@@ -136,18 +146,15 @@ function buildMediaAndMemoryDeps(ctx) {
     officePkg,
     imageStore: ctx.mediaService ? ctx.mediaService.imageStore : ctx.imageStore,
     memoryGraph: ctx.memoryGraph,
-    memoryIndexer: ctx.memoryIndexer,
-    memorySearcher: ctx.memorySearcher,
+    ..._resolveMemoryOps(ctx),
     memoryEmbedder: ctx.memoryEmbedder,
     memoryEmbedInstall: ctx.memoryEmbedInstall,
-    memoryEmbedInstaller: ctx.memoryEmbedInstaller,
     memoryRecall: ctx.memoryRecall,
     secretRedactor: ctx.secretRedactor,
     memoryTaskBlock: ctx.memoryTaskBlock,
     currentSessionId: ctx.currentSessionId,
     paneContextScope: ctx.paneContextScope,
     engineMemoryScope: ctx.engineMemoryScope,
-    searchIndexer: ctx.searchIndexer || (() => (ctx.memoryService ? ctx.memoryService.searchIndexer() : null)),
     broadcastClipChanged: ctx.broadcastClipChanged || (() => (ctx.windowManager ? ctx.windowManager.broadcastClipChanged() : null)),
     clipboardHistoryCore: ctx.clipboardHistoryCore,
   };
@@ -237,7 +244,7 @@ function buildTerminalAndExecutionDeps(ctx) {
       resourceGovernorModule: ctx.resourceGovernorModule,
       engineDelegation: ctx.engineDelegation,
       prepareTaskIsolation: ctx.prepareTaskIsolation || (ctx.ptyIsolationService ? (opts) => ctx.ptyIsolationService.prepareTaskIsolation(opts) : null),
-      preflightModelGate: ctx.preflightModelGate,
+      preflightModelGate: ctx.preflightModelGate || (ctx.ptyIsolationService ? (opts, trusted) => ctx.ptyIsolationService.preflightModelGate(opts, trusted) : null),
       spendGuard: ctx.spendGuard,
       leaderComposer: ctx.leaderComposer,
       transcriptProbe: ctx.transcriptProbe,

@@ -14,6 +14,7 @@ const defaultLifecycleOptions = {
   isAutotest: false,
   crewpaneHome: () => '',
   armQuitBrake: () => {},
+  crashWatchdogService: null,
   stopCrashWatchdog: () => {},
   killAllPtys: () => {},
   stopNextServer: () => {},
@@ -37,7 +38,11 @@ const defaultLifecycleOptions = {
 };
 
 function normalizeLifecycleDeps(deps = {}) {
-  return Object.assign({}, defaultLifecycleOptions, deps);
+  const d = Object.assign({}, defaultLifecycleOptions, deps);
+  if (d.crashWatchdogService && d.stopCrashWatchdog === defaultLifecycleOptions.stopCrashWatchdog) {
+    d.stopCrashWatchdog = () => d.crashWatchdogService.stopCrashWatchdog();
+  }
+  return d;
 }
 
 /**
