@@ -48,7 +48,7 @@ const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
-const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService } = require('./src/features/terminal');
+const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService } = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 let windowManager = null;
 let mobileService = null;
@@ -1100,6 +1100,61 @@ const ptySpawnService = createPtySpawnService({
   emitMobileEvent: (evt) => emitMobileEvent(evt),
   getPaneAskRuntime: () => (typeof paneAskRuntime !== 'undefined' ? paneAskRuntime : null),
 });
+
+// ── ADP-303/717/737 — LİDER PANE KONTROLÜ & WORKER DÖNGÜSÜ SERVİSİ (src/features/terminal/paneControlService.js - Faz 3.6.26)
+const paneControlService = createPaneControlService({
+  ptys,
+  getAppWindow: () => appWindow,
+  crewpaneHome: () => crewpaneHome(),
+  logLine: (line) => logLine(line),
+  getPtyResumeService: () => ptyResumeService,
+  getJarvisConv: () => (typeof jarvisConv !== 'undefined' ? jarvisConv : null),
+  appVersion: () => app.getVersion(),
+  isQuitting: () => Boolean(app.isQuitting),
+  engineRegistry,
+  livePaneRegistry,
+  paneControl,
+  paneKill,
+  agentRunner,
+  teamScope,
+  agentSettings,
+});
+
+function resetCommandFor(command) {
+  return paneControlService.resetCommandFor(command);
+}
+
+function killPane(paneId, entry, agentId, why) {
+  return paneControlService.killPane(paneId, entry, agentId, why);
+}
+
+function recycleWorkerPanes(agentId, mode = 'reset') {
+  return paneControlService.recycleWorkerPanes(agentId, mode);
+}
+
+function callerScopeFor(leaderId, declared) {
+  return paneControlService.callerScopeFor(leaderId, declared);
+}
+
+function authorizeTeamScope(opts = {}) {
+  return paneControlService.authorizeTeamScope(opts);
+}
+
+async function authorizeTeamScopeInteractive(opts = {}) {
+  return paneControlService.authorizeTeamScopeInteractive(opts);
+}
+
+function listPanesForControl(caller = {}) {
+  return paneControlService.listPanesForControl(caller);
+}
+
+function closePanesForControl(payload = {}) {
+  return paneControlService.closePanesForControl(payload);
+}
+
+function focusPaneForControl(paneId, caller = {}) {
+  return paneControlService.focusPaneForControl(paneId, caller);
+}
 
 function analyticsNow() {
   return telemetryService.analyticsNow();
@@ -4908,415 +4963,9 @@ app.whenReady().then(async () => {
     app.quit();
   }
 });
+// ADP-303 / ADP-717 / ADP-737 — Lider pane kontrolü ve worker pane geri dönüşümü
+// src/features/terminal/paneControlService.js içine taşındı (bkz: paneControlService).
 
-// TASK-MQSBV4EFQ8D6B — free a FINISHED worker's EXECUTION pane(s) so the next delegation
-// auto-places into a fresh pane (the operator never closes panes by hand). Touches ONLY
-// delegation execution panes (disallowSubagent === true, ADP-136) for this agentId — the
-// LEADER, spawned without that flag, is structurally never recycled.
-//
-// ADP-266 — "free" is now a SOFT RESET, not a kill: the agent CLI keeps running and only its
-// conversation is cleared (claude → /clear, codex → /new). Killing it produced the
-// `[pty exited: 129]` (SIGHUP) the operator saw in every worker terminal after a delegation,
-// threw away a warm session, and forced a 9s cold boot on the next dispatch. What the kill
-// actually protected against — writing the next subtask into a STALE conversation — is what
-// /clear removes. `shell`/unknown panes have no reset command, so they still get the kill.
-//
-// A session is not reset forever: after MAX_TASKS_PER_SESSION resets the pane is killed so a
-// fresh process reclaims accumulated TUI scrollback / RSS. Returns how many panes were freed.
-const MAX_TASKS_PER_SESSION = 10;
-const RESET_ESC_GAP_MS = 150;
-const RESET_SUBMIT_GAP_MS = 400; // ADP-048 two-step submit
-
-// ENG-07 L2 — "yeni konuşma" komutu artık burada YAZILI DEĞİL, descriptor'dan okunur
-// (`engineRegistry.capability(<motor>, 'reset')`). Kayıtsız motor / `shell` → `null` →
-// pane geri dönüşümü soft-reset yerine KILL'e düşer (bugünkü nazik davranış aynen).
-// Kayıp sessiz değil: `unsupported.reset` gerekçesi pane'in yetenek beyanına girer.
-function resetCommandFor(command) {
-  const cmd = engineRegistry.capability(command, 'reset');
-  return typeof cmd === 'string' && cmd ? cmd : null;
-}
-
-function killPane(paneId, entry, agentId, why) {
-  try { entry.child.kill(); } catch { /* already dead */ }
-  ptys.delete(paneId);
-  try { livePaneRegistry.freePane(paneId, crewpaneHome()); } catch { /* best-effort */ }
-  // ADP-limit — a recycled worker pane's queued limit must not respawn it later.
-  ptyResumeService.forgetPane(paneId);
-  logLine(`pane recycled (${why}) paneId=${paneId} agent=${agentId}`);
-}
-
-function softResetPane(paneId, entry, agentId, resetCmd) {
-  // ESC discards a half-typed line; then the command is typed and submitted separately
-  // (a single text+CR chunk drops the CR before the text registers — ADP-048).
-  try { entry.child.write('\x1b'); } catch { return false; }
-  setTimeout(() => {
-    try { entry.child.write(resetCmd); } catch { return; }
-    setTimeout(() => {
-      try { entry.child.write('\r'); } catch { /* pane died mid-reset */ }
-    }, RESET_SUBMIT_GAP_MS);
-  }, RESET_ESC_GAP_MS);
-  entry.lastResetAt = Date.now();
-  entry.taskCount = (entry.taskCount || 0) + 1;
-  logLine(`pane recycled (soft reset ${resetCmd}) paneId=${paneId} agent=${agentId} tasks=${entry.taskCount}`);
-  return true;
-}
-
-function recycleWorkerPanes(agentId, mode = 'reset') {
-  if (typeof agentId !== 'string' || !agentId) return 0;
-  let freed = 0;
-  for (const [paneId, entry] of [...ptys]) {
-    if (entry.agentId !== agentId || entry.disallowSubagent !== true) continue;
-    const resetCmd = mode === 'reset' ? resetCommandFor(entry.command) : null;
-    const overBudget = (entry.taskCount || 0) + 1 >= MAX_TASKS_PER_SESSION;
-    if (!resetCmd || overBudget) {
-      killPane(paneId, entry, agentId, overBudget ? 'task budget spent' : 'delegation free');
-    } else if (!softResetPane(paneId, entry, agentId, resetCmd)) {
-      killPane(paneId, entry, agentId, 'reset write failed'); // safe degrade
-    }
-    freed++;
-  }
-  return freed;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ADP-303 (C) — LİDER PANE KONTROLÜ. Optimus pane AÇabiliyordu (delegasyon) ama
-// KAPATamıyordu: tek çıkış yolu pty süreçlerini elle kill etmekti → EPIPE çökme
-// diyaloğu + `[pty exited: 143]` zombisi (2026-07-12 vakası). Bu üç fonksiyon
-// bridge (`/panes`, `/pane/close`, `/pane/focus`) üzerinden delegate MCP'ye açılır.
-//
-// KAPATMA = X BUTONUNUN AYNISI: paneKill.killPaneExplicit (child kill + registry
-// removePane + resume-daemon forgetPane) → child.onExit → renderer `pty:exit` →
-// hücre UI'dan düşer (ADP-303 B). Ayrı bir "kapat" yolu YOK; tek yol = tek davranış.
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** Live panes in the leader-facing shape (no buffers — leader context is scarce). */
-function allPanesForControl() {
-  const out = [];
-  // STAT-D1 §KN-2 — statü BURADA türetilir ve özete taşınır. `listPanes` bunu zaten
-  // yapıyordu ama lider yolu (`/panes` → MCP) `summarizePane`den geçtiği için statü
-  // hiç ulaşmıyordu; lider label'a bakıp "Boşta" okuyordu (49 dk boyunca yalan).
-  const now = Date.now();
-  for (const [paneId, e] of ptys) {
-    out.push(
-      paneControl.summarizePane({
-        paneId,
-        ...e,
-        status: agentRunner.statusFor(e.lastDataAt, now),
-        // STAT-D2 §B-1 — GÖREV BAĞININ EKSİK AYAĞI. Statü (KN-2) bu yola taşındı ama
-        // `labelTaskCode` YALNIZ `listPanes`te hesaplanıyordu; pty kaydında böyle bir
-        // ALAN YOK, dolayısıyla `...e` yayılımı onu getiremez → lider/MCP satırı DAİMA
-        // null görüyordu (STAT-QA1 ölçümü: 158 örnek). Tüketici bunu bekliyor:
-        // `crewpane-delegate-mcp.cjs` → `p.taskId || p.labelTaskCode`. `p.taskId` de
-        // yalnız worktree izolasyonu açıkken dolduğu için lider "bu pane hangi işi
-        // koşuyor?"u hiç okuyamıyordu (yalan değil — KÖRLÜK; INV-1'in aynı satırdaki
-        // yarısı). Çıkarım `listPanes` ile AYNI tek kaynaktan (`taskCode.cjs`) gelir;
-        // ikinci bir regex YAZILMAZ (F-6 dersi).
-        labelTaskCode: labelTaskCodeOf(e.label),
-        exited: false,
-      }),
-    );
-  }
-  return out;
-}
-
-/**
- * ADP-717 — çağıranın KENDİ takımı. Kritik: payload'daki `department` çağıranın kendi
- * BEYANIDIR (env'den gelir, ajan onu değiştirebilir) — o değere yaslanan bir kural
- * kandırılabilir. Doğru kaynak: liderin KENDİ canlı pane kaydı; oradaki `department`
- * spawn anında roster'dan yazılır (agentRunner.withLeaderEnv ile aynı değer) ve ajan
- * ona erişemez. Pane bulunamazsa (pane'siz köprü çağrısı) beyana düşülür.
- */
-function callerScopeFor(leaderId, declared) {
-  const id = typeof leaderId === 'string' ? leaderId.trim() : '';
-  if (id) {
-    for (const e of ptys.values()) {
-      if (e && e.agentId === id && e.department) return e.department;
-    }
-  }
-  return typeof declared === 'string' ? declared : '';
-}
-
-/**
- * ADP-717 — TEK kapsam kararı (delege + sprint + pane). `teamScope.authorize`'ın
- * main tarafındaki tek çağrı noktası: politikayı ayarlardan, çağıranın kapsamını
- * canlı pane defterinden çözer. `once` izni başarılı bir delegasyonda TÜKETİLİR
- * (silinmez — `manage`'e döner ki başlatılan iş sonradan temizlenebilsin).
- */
-function authorizeTeamScope({ action, leaderId, targetScope, force, targetStartedAt } = {}) {
-  const policy = agentSettings.teamScopePolicy(app.getVersion());
-  const decision = teamScope.authorize({
-    action,
-    callerId: leaderId,
-    callerScope: callerScopeFor(leaderId, ''),
-    targetScope,
-    policy,
-    force: force === true,
-    targetStartedAt,
-  });
-  if (decision.ok && decision.via === 'grant' && action === 'delegate' && decision.grant && decision.grant.mode === 'once') {
-    const consumed = teamScope.consumeGrant(policy.grants, decision.grant);
-    if (consumed.changed) {
-      agentSettings.writeSettings({ teamScope: { ...policy, grants: consumed.grants } });
-      logLine(`team scope: tek-seferlik izin TÜKETİLDİ (leader=${leaderId} scope=${targetScope}) → yalnız yönetim`);
-    }
-  }
-  logLine(
-    `team scope: ${action} by=${leaderId || '-'} target=${targetScope || '-'} → ` +
-      (decision.ok ? `İZİNLİ (${decision.via})` : `RED (${decision.code})`),
-  );
-  return decision;
-}
-
-// ---------------------------------------------------------------------------
-// ADP-737 — ÇAPRAZ-TAKIM İZİN AKIŞI (sahibin onayı)
-// ---------------------------------------------------------------------------
-//
-// ADP-717 kuralı doğru kurdu ama tek çıkışı vardı: RED + "Ayarlar'a git" metni. Bir
-// üründe bu, işin ORTASINDA duran bir duvardır — üstelik ADP-729 §5'teki sahipsiz
-// mandal yüzünden kullanıcı o duvarı hiç izin vermeden de görebiliyordu.
-//
-// Bu akış duvarı bir SORUYA çevirir: red anında SAHİBE (patron) tek kart çıkar
-// (masaüstü Jarvis kartı + mobil — jarvisConversation defteri iki uçta da çizer),
-// "Her zaman / Yalnız bu sefer / Reddet". Onay verilirse izin YAZILIR ve karar
-// yeniden alınır — yani lider aynı çağrıda işine devam eder.
-//
-// DEĞİŞMEZLER:
-//   • Karar hâlâ deterministik kodda (teamScope.authorize). Onay yalnız POLİTİKAYI
-//     değiştirir; kart bir "evet" dönse bile authorize tekrar koşar.
-//   • Ajanın/sayfanın metni izni yükseltemez: kart metnini MAIN yazar, payload'dan
-//     yalnız kimlik/slug alanları geçer.
-//   • Aynı (lider, hedef takım) için AÇIK bir kart varken ikinci kart açılmaz —
-//     paralel worker'lar patrona onay yağmuru yağdırmasın.
-//   • Cevap gelmezse iş BAŞLAMAZ (fail-closed): zaman aşımı = red.
-
-/** Cevap beklenen çapraz-takım kartları: `${leaderId}→${targetScope}` → Promise. */
-const crossTeamConsentPending = new Map();
-/**
- * Kartın kendi ömrü: patron masasında olmayabilir, soru AÇIK kalsın (10 dk).
- * Cevap geldiğinde izin YAZILIR — çağıran çoktan pes etmiş olsa bile, çünkü liderin
- * bir sonraki denemesi o izinle geçmeli.
- */
-const CROSS_TEAM_CARD_TTL_MS = 10 * 60 * 1000;
-/**
- * ÇAĞIRANIN bekleme bütçesi. MCP istemcisinin HTTP zaman aşımı 20 sn
- * (`crewpane-delegate-mcp.cjs`): daha uzun beklersek lider temiz bir RED yerine
- * TAŞIMA HATASI görür ve köprüyü ölü sanır. Patron klavyedeyse bu süre yeter ve iş
- * AYNI çağrıda devam eder; değilse net bir mesajla reddedilir, kart açık kalır.
- */
-const CROSS_TEAM_CONSENT_WAIT_MS = 10000;
-
-/**
- * Sahibe çapraz-takım izni sor. Cevap geldiğinde İZNİ KENDİSİ YAZAR (çağıran beklemeyi
- * bırakmış olsa bile) ve cevabı döner.
- * @returns {Promise<'always'|'once'|'deny'>}
- */
-function askCrossTeamConsent({ leaderId, callerScope, targetScope }) {
-  const key = `${leaderId}→${targetScope}`;
-  const inflight = crossTeamConsentPending.get(key);
-  if (inflight) return inflight; // aynı soru zaten açık — ikinci kart açma
-
-  const promise = new Promise((resolve) => {
-    const approvalId = `tsc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    let settled = false;
-    let off = null;
-    let timer = null;
-    const finish = (answer) => {
-      if (settled) return;
-      settled = true;
-      if (off) { try { off(); } catch { /* best-effort */ } }
-      if (timer) clearTimeout(timer);
-      crossTeamConsentPending.delete(key);
-      if (answer !== 'deny') {
-        // İzin YAZMA burada: çağıran beklemeyi bıraksa da patronun kararı kaybolmasın.
-        const granted = agentSettings.grantTeamScope({
-          leaderId,
-          scopes: [teamScope.normalizeScope(targetScope)],
-          mode: answer === 'once' ? 'once' : 'always',
-        });
-        logLine(`team scope: SAHİP İZİN VERDİ leader=${leaderId} target=${targetScope} mode=${answer} ok=${granted.ok}`);
-      } else {
-        logLine(`team scope: sahip İZİN VERMEDİ leader=${leaderId} target=${targetScope}`);
-      }
-      resolve(answer);
-    };
-    try {
-      off = jarvisConv.onChange((event) => {
-        if (!event || event.type !== 'approval-resolved' || event.approvalId !== approvalId) return;
-        if (event.status !== 'allowed') return finish('deny');
-        finish(event.choice === 'single' ? 'once' : 'always');
-      });
-      const opened = jarvisConv.openApproval({
-        id: approvalId,
-        title: 'Takım dışına iş verme izni',
-        // Metni MAIN yazar; payload'dan yalnız kimlik/slug geçer (prompt izni yükseltemez).
-        detail:
-          `"${leaderId}" kendi takımının (${callerScope || 'bilinmiyor'}) DIŞINDA, ` +
-          `"${targetScope}" takımından bir çalışana iş vermek istiyor.\n` +
-          'İzin verirsen o takımın pane\'lerini kapatabilir de (yetki = yönetim).',
-        source: 'desktop',
-        // ADP-322 SÖZLÜĞÜ (kartın kendi dili): yalnız 'approve'/'single' İZİN sayılır,
-        // diğer her seçenek RED'dir. Yeni bir id icat etmek kartı sessizce "reddet"
-        // makinesine çevirirdi — bu yüzden mevcut vokabüler kullanılır.
-        choices: [
-          { id: 'approve', label: 'Her zaman izin ver' },
-          { id: 'single', label: 'Yalnız bu sefer' },
-          { id: 'cancel', label: 'Reddet' },
-        ],
-      });
-      if (!opened) return finish('deny'); // kart açılamadı → fail-closed
-      logLine(`team scope: İZİN SORULDU leader=${leaderId} target=${targetScope} approvalId=${approvalId}`);
-      timer = setTimeout(() => {
-        try { jarvisConv.closeApproval(approvalId, 'expired'); } catch { /* best-effort */ }
-        logLine(`team scope: izin kartı SÜRESİ DOLDU (leader=${leaderId} target=${targetScope})`);
-        finish('deny');
-      }, CROSS_TEAM_CARD_TTL_MS);
-      if (timer && typeof timer.unref === 'function') timer.unref();
-    } catch (err) {
-      logLine(`team scope: izin kartı açılamadı: ${String((err && err.message) || err)}`);
-      finish('deny');
-    }
-  });
-  crossTeamConsentPending.set(key, promise);
-  return promise;
-}
-
-/**
- * ADP-737 — kapsam kararı + (gerekirse) SAHİBİN ONAY AKIŞI. `/delegate`, `/sprint` ve
- * renderer'ın per-worker kapısı buradan geçer. Red `cross-team` DEĞİLSE (kapsamsız pane,
- * bozuk action…) soru sorulmaz: onun cevabı bir izin değildir.
- */
-async function authorizeTeamScopeInteractive({ action, leaderId, targetScope, force, targetStartedAt } = {}) {
-  const first = authorizeTeamScope({ action, leaderId, targetScope, force, targetStartedAt });
-  if (first.ok || first.code !== 'cross-team') return first;
-
-  const callerScope = callerScopeFor(leaderId, '');
-  const consent = askCrossTeamConsent({ leaderId, callerScope, targetScope });
-  // Çağıranın bütçesi kartın ömründen KISA (MCP 20 sn): süre dolarsa net bir RED
-  // döneriz ama SORU AÇIK KALIR — patron sonra onaylarsa izin yazılır ve liderin
-  // bir sonraki denemesi geçer. Sessizce asılı kalan bir çağrı en kötü seçenekti.
-  let timer = null;
-  const answer = await Promise.race([
-    consent,
-    new Promise((r) => {
-      timer = setTimeout(() => r('pending'), CROSS_TEAM_CONSENT_WAIT_MS);
-      if (timer && typeof timer.unref === 'function') timer.unref();
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
-
-  if (answer === 'pending') {
-    return {
-      ...first,
-      code: 'cross-team-consent-pending',
-      reason:
-        `${first.reason}\n(Sahibine SORULDU — masaüstündeki/telefondaki izin kartı açık. ` +
-        'İzin verilince aynı isteği tekrar gönder.)',
-    };
-  }
-  if (answer === 'deny') {
-    return {
-      ...first,
-      reason: `${first.reason}\n(Sahibine soruldu; izin VERİLMEDİ.)`,
-    };
-  }
-  // İzin `askCrossTeamConsent` içinde YAZILDI. Karar YENİDEN alınır — "evet" cevabı
-  // kararın yerine geçmez, yalnız politikayı değiştirir.
-  return authorizeTeamScope({ action, leaderId, targetScope, force, targetStartedAt });
-}
-
-/**
- * Panes a caller may see. ADP-717: the filter moved OUT of the MCP client (where the
- * caller could simply not apply it) into the server, and it uses the SAME authorize()
- * as close/focus — what you can see is what you can manage.
- */
-function listPanesForControl(caller = {}) {
-  const all = allPanesForControl();
-  const leaderId = (caller && typeof caller.leaderId === 'string' ? caller.leaderId : '').trim();
-  if (!leaderId) return all; // kimliksiz çağrı (UI/iç kullanım) — süzme yok
-  return teamScope.visiblePanes(all, {
-    callerId: leaderId,
-    callerScope: callerScopeFor(leaderId, caller.department),
-    policy: agentSettings.teamScopePolicy(app.getVersion()),
-  });
-}
-
-/**
- * Close panes for a leader. `payload` = { leaderId?, department?, force?, filter:{paneId|agentId|exitedOnly|all} }.
- * Scope + self-protection decided in paneControl (unit-tested); executed here.
- */
-function closePanesForControl(payload = {}) {
-  const filter = payload.filter && typeof payload.filter === 'object' ? payload.filter : {};
-  const leaderId = typeof payload.leaderId === 'string' ? payload.leaderId : '';
-  const caller = {
-    agentId: leaderId,
-    // ADP-717 — çağıranın kapsamı BEYANDAN değil, kendi canlı pane kaydından çözülür.
-    department: callerScopeFor(leaderId, payload.department),
-    force: payload.force === true,
-    // ADP-717 — kapsam kararının verisi (izinler + yürürlük mandalı) authorizeClose'a
-    // buradan geçer; karar teamScope.authorize'da, delegasyonla ORTAK.
-    policy: agentSettings.teamScopePolicy(app.getVersion()),
-  };
-  const plan = paneControl.planClose(allPanesForControl(), filter, caller);
-  if (!plan.ok) {
-    logLine(`pane control: close REFUSED by=${caller.agentId || '-'} reason=${plan.error}`);
-    return { ok: false, error: plan.error };
-  }
-  const closed = [];
-  for (const p of plan.close) {
-    const entry = ptys.get(p.paneId);
-    if (!entry) continue;
-    const res = paneKill.killPaneExplicit({
-      paneId: p.paneId,
-      entry,
-      isQuitting: app.isQuitting === true,
-      registry: livePaneRegistry,
-      homedir: crewpaneHome(),
-      resumeDaemon: ptyResumeService.getDaemon(),
-      log: logLine,
-    });
-    if (res.killed) {
-      ptys.delete(p.paneId);
-      closed.push(p.paneId);
-    }
-  }
-  // AUDIT — who closed what, and what was refused (shell log is the audit trail).
-  logLine(
-    `pane control: close by=${caller.agentId || '-'} dept=${caller.department || '-'} ` +
-      `filter=${JSON.stringify(filter)} force=${caller.force} closed=[${closed.join(',')}] ` +
-      `denied=[${plan.denied.map((d) => d.paneId).join(',')}]`,
-  );
-  return { ok: true, closed, denied: plan.denied };
-}
-
-/** Bring a pane to the front (window + team + terminals view + xterm focus, via the renderer). */
-function focusPaneForControl(paneId, caller = {}) {
-  const id = String(paneId || '');
-  const entry = ptys.get(id);
-  if (!entry) return { ok: false, error: `no such pane: ${id}` };
-  // ADP-717 — odaklama da YÖNETİMDİR: yönetemeyeceğin pane'i öne çekemezsin (aynı karar).
-  const leaderId = typeof caller.leaderId === 'string' ? caller.leaderId.trim() : '';
-  if (leaderId) {
-    const scoped = authorizeTeamScope({
-      action: 'manage',
-      leaderId,
-      targetScope: entry.department,
-      force: true, // kapsamsız (shell) pane'i odaklamak zararsız — kapatmak değil
-      targetStartedAt: entry.startedAt,
-    });
-    if (!scoped.ok) return { ok: false, code: scoped.code, error: scoped.reason };
-  }
-  const win = entry.win && !entry.win.isDestroyed() ? entry.win : appWindow;
-  if (!win || win.isDestroyed()) return { ok: false, error: 'no app window' };
-  // ADP-263 already wired the renderer side (JARVIS_FOCUS_PANE_EVENT: switch wing → show the
-  // terminals view → focus the xterm); this IPC just feeds that same path from main.
-  win.webContents.send('pane:focus', { paneId: id });
-  try {
-    win.show();
-    win.focus();
-  } catch { /* best-effort */ }
-  logLine(`pane control: focus paneId=${id} agent=${entry.agentId ?? '-'}`);
-  return { ok: true, paneId: id };
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADP-293 — MOBİL GATEWAY (ADR-020). AYRI yüzey: sabit port + tailnet adresi +
