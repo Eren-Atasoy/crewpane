@@ -10,9 +10,12 @@ const { registerCodeIntelIpc } = require('./codeIntelIpc');
 const { registerWorkspaceIpc } = require('./workspaceIpc');
 
 const { createIntegrationService } = require('./integrationService');
+const { createBrowserService, BrowserService } = require('./browserService');
 
 module.exports = {
   createIntegrationService,
+  createBrowserService,
+  BrowserService,
   registerWorktreeIpc,
   registerBrowserIpc,
   registerIntegIpc,

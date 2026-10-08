@@ -2909,7 +2909,7 @@ function relaunchForAccountChange(nextKey, reason) {
 //   • BL-01 köprü `/sprint` → dalga tavanı (REDDETMEZ, dalgayı KISITLAR + söyler)
 
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
-const { createIntegrationService } = require('./src/features/services');
+const { createIntegrationService, createBrowserService } = require('./src/features/services');
 
 const integrationService = createIntegrationService({
   instancePaths,
@@ -4270,6 +4270,36 @@ function broadcastLocale() {
   return state;
 }
 
+// ── ADP-095/333/341/394/396/399/884 — BAŞLIKLI TARAYICI OTOMASYONU SERVİSİ (src/features/services/browserService.js - Faz 3.6.24)
+const browserService = createBrowserService({
+  getAppWindow: () => appWindow,
+  logLine,
+  saveBrowserShot: (b64, tag) => saveBrowserShot(b64, tag),
+  browserGuests,
+  guestOwners,
+  agentGuests,
+  getAppWindowGuest: () => appWindowGuest,
+  setAppWindowGuest: (g) => { appWindowGuest = g; },
+  isOwnedGuest,
+  lastUnownedGuest,
+  incPendingAgentTabs: () => { pendingAgentTabs++; },
+  decPendingAgentTabs: () => { if (pendingAgentTabs > 0) pendingAgentTabs--; },
+  browserCdp,
+  browserGateMod,
+});
+
+function browserGate() {
+  return browserService.browserGate();
+}
+
+async function probeBrowserTarget(value) {
+  return browserService.probeBrowserTarget(value);
+}
+
+async function runBrowserAction(value) {
+  return browserService.runBrowserAction(value);
+}
+
 // ── Pencere Yönetimi (Faz 3.3): BrowserWindow yönetimi src/main/windows altında ──
 windowManager = createWindowManager({
   BrowserWindow,
@@ -4312,7 +4342,7 @@ windowManager = createWindowManager({
   activeWorktreePaths,
   mappedProjectRootsForReports,
   browserGuests,
-  ghostGuests: () => ghostGuests,
+  ghostGuests: () => browserService.ghostGuests,
   guestOwners,
   agentGuests,
   getPendingAgentTabs: () => pendingAgentTabs,
@@ -4336,301 +4366,6 @@ function saveBrowserShot(base64, tag) {
   return mediaService.saveBrowserShot(base64, tag);
 }
 
-// ADP-095 — main-side CDP action runner the delegation bridge calls after approval.
-// Drives the live <webview> guest (visible to the user) via its debugger. Emits a
-// `browser:activity` event to the renderer for the activity log (visual feedback).
-/**
- * ADP-333 — bir ajan için KENDİ sekmesini çöz. Yoksa (ya da kullanıcı kapattıysa)
- * renderer'dan ARKA PLANDA yeni bir sekme ister ve sahiplenir. Kullanıcının sekmesine
- * ASLA düşmez: burada "aktif sekme" hiç okunmaz.
- */
-async function resolveAgentGuest(agentId) {
-  const owned = agentGuests.get(agentId);
-  logLine(`[adp333] resolve agent=${agentId} owned=${owned ? owned.id : 'YOK'} guests=[${[...browserGuests.keys()].join(',')}] owners=${JSON.stringify([...guestOwners.entries()])}`);
-  if (owned && !owned.isDestroyed()) return owned;
-  agentGuests.delete(agentId);
-  if (!appWindow || appWindow.isDestroyed()) {
-    throw new Error('uygulama penceresi kapalı — ajan sekmesi açılamıyor');
-  }
-  // Renderer arka planda (kullanıcının odağını ÇALMADAN) bir sekme açar, guest id'si
-  // hazır olunca 'browser:setTabOwner' ile sahipliği bildirir.
-  // ADP-396 — sekme AÇILANA KADAR "bir ajan sekmesi bekleniyor" bayrağı: bu aralıkta
-  // gelen attach insan hedefini (appWindowGuest) DEĞİŞTİRMEZ.
-  pendingAgentTabs++;
-  try {
-    appWindow.webContents.send('browser:agent-tab', { agentId, url: 'about:blank' });
-    const deadline = Date.now() + 10000;
-    for (;;) {
-      const g = agentGuests.get(agentId);
-      if (g && !g.isDestroyed()) return g;
-      if (Date.now() > deadline) {
-        throw new Error(`ajan sekmesi açılamadı (${agentId}) — kullanıcının sekmesi KULLANILMAZ, işlem yapılmadı`);
-      }
-      await new Promise((r) => setTimeout(r, 150));
-    }
-  } finally {
-    if (pendingAgentTabs > 0) pendingAgentTabs--;
-  }
-}
-
-/**
- * ADP-341 — güven kapısının TEK örneği: oturum izinleri ve DURDUR sayacı main ile
- * bridge arasında PAYLAŞILIR (iki ayrı defter = iptal edilmeyen izin demektir).
- */
-function browserGate() {
-  return browserGateMod.getBrowserGate({ log: logLine });
-}
-
-/**
- * Bir eylemin koşacağı guest: ajan → KENDİ sekmesi, insan (Jarvis/renderer, agentId YOK)
- * → aktif sekme. Risk probu ile eylemin AYNI sekmeyi görmesi şart — yoksa "başka sekmede
- * ölçüp burada tıklamak" gibi bir güvenlik deliği açılırdı (ADP-341).
- */
-async function resolveGuestFor(value) {
-  const agentId = value && typeof value.agentId === 'string' ? value.agentId.trim() : '';
-  if (agentId) return resolveAgentGuest(agentId);
-  // ── İNSAN yolu (Jarvis / renderer) ────────────────────────────────────────────
-  // ADP-396 ÜÇÜNCÜ SAVUNMA: hedefe rağmen sahipli bir guest sızdıysa (renderer yanlış
-  // bildirdi / gelecekteki bir regresyon), ajanın sayfasında ASLA koşma — sahipsiz
-  // sekmeye dön. Hiç sahipsiz sekme yoksa dürüstçe patla (sessizce ajanın sekmesinde
-  // tıklamak, düzeltmeye çalıştığımız bug'ın ta kendisidir).
-  let guest = appWindowGuest;
-  if (guest && !guest.isDestroyed() && isOwnedGuest(guest.id)) {
-    logLine(`[adp396] insan hedefi SAHİPLİ guest'e işaret ediyordu (${guestOwners.get(guest.id)}) → sahipsiz sekmeye dönülüyor`);
-    guest = lastUnownedGuest();
-    appWindowGuest = guest;
-  }
-  if (!guest || guest.isDestroyed()) {
-    throw new Error('internal browser not open (no guest webContents attached). Open the Browser tab in the app.');
-  }
-  return guest;
-}
-
-/**
- * ADP-341 (ADR-026 §2) — RİSK PROBU: kapı karar vermeden ÖNCE gerçek bağlamı ölç.
- *   • origin: eylemin koşacağı guest'in KENDİ adresi (ajanın payload'ı değil → uyduramaz)
- *   • hedef eleman: CDP `Runtime.evaluate` ile eylemden ÖNCE (parola alanı mı? "Öde" butonu mu?)
- * Prob patlarsa throw eder; kapı bunu "hedef bilinmiyor → SOR" olarak okur.
- */
-async function probeBrowserTarget(value) {
-  const guest = await resolveGuestFor(value);
-  const url = typeof guest.getURL === 'function' ? guest.getURL() : '';
-  const selector = value && typeof value.selector === 'string' ? value.selector : '';
-  if (!selector) return { url, elementInfo: null };
-  const info = await browserCdp.readElementInfo(guest.debugger, selector);
-  return { url, elementInfo: info.elementInfo, found: info.found };
-}
-
-// ── ADP-394 — HAYALET MOD: ajanın sekmesi GÖRÜNMEZ ama KOMPOZE EDİLİR ────────────
-//
-// ADP-392 (ölçüldü): `display:none` bir <webview>'in guest'i kare üretmez ve viewport'u
-// 0×0 olur → CDP fare olayı fiziksel olarak inemez, ekran görüntüsü hiç dönmez. Ajanın
-// sekmesi İKİ katmanda gizleniyordu: (1) aktif olmayan sekme (InternalBrowser),
-// (2) tarayıcı dock host'u öndeki sekme değilse (WorkspaceDock).
-//
-// Çözüm: otomasyon KOŞARKEN renderer o guest'i "hayalet"e çevirir (opacity:0.01 +
-// pointer-events:none → kompoze edilir, görünmez, tıklanamaz). ADP-333 korunur: ajan
-// Eren'in aktif sekmesini/odağını ÇALMAZ, dock'u öne getirmez.
-//
-// PİL/GPU: hayalet guest sürekli çizilir. Bu yüzden hayalet mod KALICI DEĞİL — yalnız
-// eylem sırasında açılır, boşta kapanır (guest yeniden display:none olur, sıfır maliyet).
-const GHOST_IDLE_MS = 8000;
-const ghostGuests = new Set(); // kompoze edilmesi istenen guest id'leri
-let ghostTimer = null;
-
-function sendGhost(guestId, on) {
-  try {
-    if (appWindow && !appWindow.isDestroyed()) {
-      appWindow.webContents.send('browser:composite', { guestId, on });
-    }
-  } catch { /* best-effort */ }
-}
-
-function scheduleGhostRelease() {
-  if (ghostTimer) clearTimeout(ghostTimer);
-  ghostTimer = setTimeout(() => {
-    ghostTimer = null;
-    if (ghostGuests.size === 0) return;
-    for (const id of ghostGuests) sendGhost(id, false);
-    logLine(`[adp394] hayalet mod kapandı (${ghostGuests.size} guest boşta) — GPU/pil tasarrufu`);
-    ghostGuests.clear();
-  }, GHOST_IDLE_MS);
-  ghostTimer.unref?.();
-}
-
-// Kompozisyon GEREKTİREN eylemler: fare/kare olmadan sürülemezler. (navigate/read/readPage
-// kompoze edilmeyen guest'te de çalışır — onları bekletmeyiz, yalnız hayaleti ısıtırız.)
-const NEEDS_COMPOSITE = new Set(['click', 'type', 'screenshot']);
-
-/**
- * ⚠ `innerWidth` KOMPOZİSYON KANITI DEĞİLDİR: gizlenen bir guest, ESKİ düzeninin ölçüsünü
- * korur (0×0 olmaz) — yani "viewport dolu" iken bile kare üretmiyor olabilir. (Bu, ADP-394'ün
- * ilk denemesini yedi: main hayalet modu hiç açmadı, sonraki navigate taze belgeyi gizli
- * host'ta 0×0 açtı ve tıklama yine inmedi.)
- *
- * TEK GÜVENİLİR SİNYAL (ADP-392 ölçümü): kare üretmeyen guest'te `Page.captureScreenshot`
- * HİÇ dönmez. O yüzden hazırlık probu = küçük bir kareyi zaman sınırıyla çekebilmek.
- */
-async function producesFrame(guest, ms = 900) {
-  let timer;
-  const capped = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(false), ms);
-    if (typeof timer.unref === 'function') timer.unref();
-  });
-  const shot = guest.debugger
-    .sendCommand('Page.captureScreenshot', {
-      format: 'jpeg',
-      quality: 1,
-      clip: { x: 0, y: 0, width: 8, height: 8, scale: 1 },
-    })
-    .then(() => true)
-    .catch(() => false);
-  try {
-    return await Promise.race([shot, capped]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Eylemden ÖNCE guest'in ÇİZİLDİĞİNDEN emin ol. Hayalet modu KOŞULSUZ ister (gizli bir
- * yüzeyde no-op'tur: görünür sekme/dock zaten normal çizilir), sonra guest'in gerçekten
- * kare ürettiğini bekler. Üretmiyorsa dürüstçe patlar — sessizce boşluğa tıklamaz.
- */
-async function ensureGuestComposited(guest, action) {
-  ghostGuests.add(guest.id);
-  sendGhost(guest.id, true);
-  if (!NEEDS_COMPOSITE.has(action)) return null; // navigate/read: bekletme, yalnız ısıt
-  const deadline = Date.now() + 4000;
-  for (;;) {
-    if (guest.isDestroyed()) throw new Error('sekme kapandı — otomasyon sürülemez');
-    // ⚠ SIRA ÖNEMLİ: readViewport debugger'ı ATTACH eder. Kare probunu önce koşarsak
-    // attach'sız debugger'a komut gider, hep patlar ve oturumun İLK eylemi (browser-cdp
-    // spec'i tam da bunu yapıyor) sahte "kompoze edilemedi" hatası alır.
-    const vp = await browserCdp.readViewport(guest.debugger).catch(() => ({ w: 0, h: 0 }));
-    if (vp.w * vp.h > 0 && (await producesFrame(guest))) {
-      logLine(`[adp394] guest ${guest.id} kompoze edildi (${vp.w}×${vp.h}) — hayalet mod`);
-      return vp;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(
-        'sekme kompoze edilemedi (guest kare üretmiyor) — tıklama inmez, işlem YAPILMADI (tarayıcı paneli kapalı/gizli olabilir)',
-      );
-    }
-    await new Promise((r) => setTimeout(r, 120));
-  }
-}
-
-async function runBrowserAction(value) {
-  let guest;
-  try {
-    guest = await resolveGuestFor(value);
-  } catch (err) {
-    return { ok: false, error: String(err.message || err) };
-  }
-  try {
-    if (appWindow && !appWindow.isDestroyed()) {
-      // ADP-399 (görünürlük) — patron ajanın tarayıcıda NE yaptığını görsün: eylem + hedef +
-      // SİTE (origin) + ajan. `owned`=ajan sekmesi mi (renderer buna göre dock'u öne alır,
-      // AKTİF SEKMEYİ DEĞİŞTİRMEDEN — Eren kararı: odak çalmadan görünürlük). Origin ajanın
-      // payload'ından DEĞİL guest'in kendi URL'inden (uyduramaz — ADP-341 deseni).
-      let origin = null;
-      try {
-        const u = typeof guest.getURL === 'function' ? guest.getURL() : '';
-        origin = u ? new URL(u).host || u : null;
-      } catch { origin = null; }
-      appWindow.webContents.send('browser:activity', {
-        action: value.action,
-        selector: value.selector || null,
-        agentId: value.agentId || null,
-        origin,
-        owned: !!(value && value.agentId),
-        at: Date.now(),
-      });
-    }
-  } catch { /* activity feedback is best-effort */ }
-  // ADP-135 — 'back' isn't a CDP action; drive the guest's own nav history (used by
-  // Jarvis voice "geri git"). Additive: the agent CDP actions below are untouched.
-  if (value && value.action === 'back') {
-    try {
-      const nav = guest.navigationHistory;
-      if (nav && typeof nav.canGoBack === 'function' && nav.canGoBack()) nav.goBack();
-      else if (typeof guest.canGoBack === 'function' && guest.canGoBack()) guest.goBack();
-      else return { ok: false, error: 'no back history' };
-      logLine('browser back');
-      return { ok: true, result: { ok: true, action: 'back' } };
-    } catch (err) {
-      logLine(`browser action error (back): ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  }
-  // ADP-884 — 'back'in İKİZLERİ: ileri + yenile. Bunlar da CDP eylemi DEĞİL, guest'in
-  // kendi gezinme yüzeyidir (aynı gerekçe, aynı kalıp — ikinci bir mekanizma yok).
-  if (value && value.action === 'forward') {
-    try {
-      const nav = guest.navigationHistory;
-      if (nav && typeof nav.canGoForward === 'function' && nav.canGoForward()) nav.goForward();
-      else if (typeof guest.canGoForward === 'function' && guest.canGoForward()) guest.goForward();
-      else return { ok: false, error: 'no forward history' };
-      logLine('browser forward');
-      return { ok: true, result: { ok: true, action: 'forward' } };
-    } catch (err) {
-      logLine(`browser action error (forward): ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  }
-  if (value && value.action === 'reload') {
-    try {
-      if (typeof guest.reload !== 'function') return { ok: false, error: 'reload unsupported' };
-      guest.reload();
-      logLine('browser reload');
-      return { ok: true, result: { ok: true, action: 'reload' } };
-    } catch (err) {
-      logLine(`browser action error (reload): ${err.message}`);
-      return { ok: false, error: String(err.message || err) };
-    }
-  }
-  try {
-    // ADP-394 — eylemden ÖNCE guest'i çizdir (gerekiyorsa hayalet mod). Kompoze edilmeyen
-    // bir sekmede tıklama inmez; bunu SESSİZCE denemek yerine burada kesinleştiriyoruz.
-    await ensureGuestComposited(guest, value.action);
-    const result = await browserCdp.runCdpAction(guest.debugger, value, {
-      saveScreenshot: saveBrowserShot,
-      log: logLine,
-      // ADP-095 — navigate via the webContents (headed, visible), not CDP
-      // Page.navigate (which can close the debugger target). Resolves once the
-      // load settles (or a hard cap) so the next CDP read sees the new document.
-      navigate: (url) =>
-        new Promise((resolve) => {
-          let done = false;
-          const finish = () => {
-            if (done) return;
-            done = true;
-            guest.removeListener('did-stop-loading', finish);
-            guest.removeListener('did-finish-load', finish);
-            guest.removeListener('did-fail-load', finish);
-            resolve();
-          };
-          guest.on('did-stop-loading', finish);
-          guest.on('did-finish-load', finish);
-          guest.on('did-fail-load', finish);
-          try {
-            void guest.loadURL(url);
-          } catch {
-            finish();
-          }
-          setTimeout(finish, 8000).unref?.();
-        }),
-    });
-    return { ok: true, result };
-  } catch (err) {
-    logLine(`browser action error (${value.action}): ${err.message}`);
-    return { ok: false, error: String(err.message || err) };
-  } finally {
-    // Eylem bitti: hayalet mod boşta kapansın (sürekli kompozisyon = pil/GPU).
-    scheduleGhostRelease();
-  }
-}
 
 /**
  * E2E-MUTE-01 — TEST PENCERESİNİ ETİKETLE. Kapı koşusu GERÇEK app'i açar; ekranda
