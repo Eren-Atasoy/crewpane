@@ -45,8 +45,11 @@ const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 
 // ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
-const { createWindowManager } = require('./src/main/windows');
-const { registerSystemIpc } = require('./src/features/system');
+const {
+  registerSystemIpc,
+  registerDiagnosticsIpc,
+  registerTelemetryIpc,
+} = require('./src/features/system');
 const { registerPopoutIpc } = require('./src/features/popout');
 const { registerDesignIpc } = require('./src/features/design');
 const { registerSpritesIpc } = require('./src/features/sprites');
@@ -6838,288 +6841,32 @@ function wireIpc() {
   // ADP-844 — ofis bildirimlerinin ekran-dışı TEK yüzeyi mobil uygulamadır
   // (mobileGateway + /m/stream); main hiçbir dış mesajlaşma servisine bağlanmaz.
 
-  // ADP-335 — bildirim merkezi bu ikisini kullanır: mevcut hataları oku + log'u aç (tıklama).
-  ipcMain.handle('module:faults', () => ({ ok: true, faults: moduleFaults.slice(-20) }));
-
-  // ADP-901 — RENDERER tarafındaki bir yüzey degrade oldu (ofis tuvali GL bağlamını
-  // kaybetti, sahne çizmeyi bıraktı…). ADP-335'in sınırı yalnız MAIN'i kapsıyordu;
-  // Eren'in "ofis bembeyaz" vakasında uygulamanın o günkü log'unda TEK BİR İZ yoktu.
-  // Renderer'ın gönderdiği alanlar SANİTİZE edilir (log'a düşen her şey redaksiyondan
-  // geçer) ve `module` sabit 'renderer' kalır — renderer main'in modül adını taklit edemesin.
-  // OBS-02 — RENDERER YÜZEYİ ARTIK KÜRESEL. ADP-901 bu kanalı açtı ama yalnız birkaç
-  // `catch` bloğundan çağrılıyordu; yakalanmamış bir renderer hatası (beyaz ekran)
-  // hiçbir yere düşmüyordu. `src/app/components/GlobalErrorReporter.tsx` artık
-  // `window.onerror` + `unhandledrejection`'ı buraya bağlıyor — yeni bir IPC kanalı
-  // AÇILMADI, var olan kanal beslendi (paralel sistem kurma kuralı).
-  ipcMain.handle('module:reportRenderer', (_event, payload) => {
-    const f = payload && typeof payload === 'object' ? payload : {};
-    const clip = (v, n) => (v == null ? '' : String(v).slice(0, n));
-    // `level` renderer'dan gelebilir ama YALNIZ beyaz-listedeki değerler kabul edilir
-    // (renderer 'fatal' iddia edip alarmı kendi başına tetikleyemesin).
-    // HATA-16 — küme ÜÇE çıktı: 'info' (yüzey kendini onardı; zilde kalır, toast
-    // çıkmaz) · 'warning' (ayakta ama ters giden bir şey var) · 'error' (VARSAYILAN).
-    // Beyaz liste hâlâ KAPALI: bilinmeyen değer sessizce 'error'a düşer — bir arızayı
-    // sessizleştirmek, bir başarıyı kırmızı göstermekten pahalıdır.
-    const level = f.level === 'warning' || f.level === 'info' ? f.level : 'error';
-    // SEN-F1 — KURTARMA AŞAMASI BAĞLAMI. Bunlar Sentry'de ETİKET olur, o yüzden
-    // `level` ile aynı sertlikte: KAPALI KÜME. Renderer serbest etiket üretip
-    // hata takibinin kardinalitesini patlatamaz (ve etiketle veri sızdıramaz).
-    // HATA-06 — merdivene iki KABUK basamağı eklendi (reload-renderer,
-    // recreate-window). Küme HÂLÂ KAPALI: renderer serbest etiket üretemez.
-    const STAGES = new Set([
-      'initial', 'reinit', 'recreate-canvas', 'reload-renderer', 'recreate-window', 'static',
-    ]);
-    const RENDERERS = new Set(['webgl', 'canvas', 'none']);
-    const stage = STAGES.has(f.stage) ? f.stage : null;
-    const renderer = RENDERERS.has(f.renderer) ? f.renderer : null;
-    const attempt = Number.isFinite(f.attempt) ? Math.max(0, Math.min(99, Math.trunc(f.attempt))) : null;
-    reportModuleFault({
-      module: 'renderer',
-      label: clip(f.label, 60) || 'ui',
-      message: clip(f.message, 400) || 'bilinmeyen hata',
-      location: clip(f.location, 200) || null,
-      stopped: !!f.stopped,
-      level,
-      at: Date.now(),
-      ...(stage ? { stage } : {}),
-      ...(renderer ? { renderer } : {}),
-      ...(attempt != null ? { attempt } : {}),
-    }, { stack: clip(f.stack, 4000) || undefined });
-    return { ok: true };
+  // ADP-335, ADP-901, OBS-02, HATA-16 — DIAGNOSTICS IPC (Faz 3.5 — Sıra 11)
+  registerDiagnosticsIpc({
+    ipcMain,
+    getModuleFaults: () => moduleFaults,
+    reportModuleFault,
+    getLogPath: () => LOG_PATH,
+    shell,
   });
 
-  /**
-   * OBS-01 — RENDERER YÜZEYİNİN TEK ANALİTİK KAPISI ("hangi panel kullanılıyor").
-   *
-   * Neden yeni bir kanal: panel/sekme kullanımı YALNIZ renderer'ın bildiği bir
-   * olgudur ve main'de karşılığı olan bir sinyal yoktur (huninin üç adımı ve plan
-   * redleri aksine ZATEN main'deydi — onlar için yeni hiçbir şey açılmadı). Kanal
-   * `module:reportRenderer`ın analitik ikizidir ve aynı sertlikte:
-   *   • olay adı `analyticsSchema` kayıt defterinde OLMAK ZORUNDA,
-   *   • her özellik değeri kapalı kümeden geçer (serbest metin yok),
-   *   • ortak damga (sürüm/platform/katman) renderer'dan DEĞİL main'den gelir —
-   *     renderer kendi sürümünü/katmanını iddia edemez.
-   * Yani ele geçirilmiş bir renderer bile bu kanaldan içerik SIZDIRAMAZ: gövde
-   * şemanın ürettiği kadardır.
-   */
-  ipcMain.handle('analytics:track', (_event, payload) => {
-    try {
-      const p = payload && typeof payload === 'object' ? payload : {};
-      const name = typeof p.event === 'string' ? p.event : '';
-      // Renderer yalnız KENDİ yüzeyinin olaylarını yazabilir; huni/plan olaylarını
-      // main üretir ve renderer onları taklit edemez.
-      // HATA-06 — İKİNCİ İZİNLİ OLAY: kurtarma merdiveninin hangi basamağının
-      // GERÇEKTEN kurtardığı. Bu YALNIZ renderer'ın bildiği bir olgudur (basamağın
-      // kare bastığı ölçümü sayfanın içinde yapılır) ve main'de karşılığı yoktur.
-      // Kapı aynı sertlikte: iki alan da KAPALI KÜMEDEN geçer (analyticsSchema).
-      if (name === 'canvas_recovery_step') {
-        const res = analyticsNow().track('canvas_recovery_step', {
-          stage: analyticsSchema.coerce(
-            analyticsSchema.EVENTS.canvas_recovery_step.stage, String(p.stage || ''),
-          ) || 'other',
-          outcome: analyticsSchema.coerce(
-            analyticsSchema.EVENTS.canvas_recovery_step.outcome, String(p.outcome || ''),
-          ) || 'other',
-        });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // SEC-W3-B1b-S — SUNUCU KAYDETMEYİ ABONELİK YÜZÜNDEN REDDETTİ. Olgu
-      // YALNIZ renderer'da bilinir: ret, supabase-js çağrısının dönüşünde doğar
-      // ve main'de karşılığı yoktur (bulut senkronun kendi yolu AYRIDIR ve
-      // `syncQueue` üzerinden ölçülür). 19.09'da bu olay olmadığı için PROD'da
-      // 14 668 ret'e karşılık 0 telemetri satırı vardı. Tek alan, kapalı küme.
-      if (name === 'entitlement_write_blocked') {
-        const surface = analyticsSchema.coerce(
-          analyticsSchema.EVENTS.entitlement_write_blocked.surface, String(p.surface || ''),
-        ) || 'other';
-        const res = analyticsNow().track('entitlement_write_blocked', { surface });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // TOUR-02-A — GİRİŞ TURU ÖLÇÜMÜ. Bu iki olayın olgusu YALNIZ renderer'da
-      // bilinir (bir günlük maddesi hangi anda tamamlandı, panel açık mı) ve
-      // main'de karşılığı yoktur — canvas_recovery_step ile aynı gerekçe. Kapı
-      // aynı sertlikte: her alan analyticsSchema'nın KAPALI kümesinden geçer,
-      // geçmeyen düşer. Prompt/görev metni taşıyabilecek bir alan YOK.
-      if (name === 'onb.quest.done') {
-        const quest = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.quest.done'].quest, String(p.quest || ''),
-        );
-        if (!quest) return { ok: false, reason: 'bad-quest' };
-        const res = analyticsNow().track('onb.quest.done', {
-          quest,
-          seconds: analyticsSchema.coerce(analyticsSchema.EVENTS['onb.quest.done'].seconds, p.seconds) ?? 0,
-          required: p.required === true,
-        });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      if (name === 'onb.quest.panel') {
-        const action = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.quest.panel'].action, String(p.action || ''),
-        );
-        if (!action) return { ok: false, reason: 'bad-action' };
-        const res = analyticsNow().track('onb.quest.panel', { action });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // TOUR-P1-01 — "GÖSTER"E BASILDI VE NE OLDU. Kartın kök nedeni ölü bir
-      // düğmeydi; `outcome:'none'` panoda görülmeden hiçbir ölü düğme
-      // ölçülemez. İki alan da kapalı küme — geçmeyen olay HİÇ gönderilmez.
-      if (name === 'onb.quest.show') {
-        const quest = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.quest.show'].quest, String(p.quest || ''),
-        );
-        if (!quest) return { ok: false, reason: 'bad-quest' };
-        const outcome = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.quest.show'].outcome, String(p.outcome || ''),
-        );
-        if (!outcome) return { ok: false, reason: 'bad-outcome' };
-        const res = analyticsNow().track('onb.quest.show', { quest, outcome });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // TOUR-P1-01 — GERİYE DÖNÜK TAMAMLAMA koştu. Üç olgu `true/false/null`
-      // dizgisidir: "ölçülemedi" ile "yok" panoda AYRI görünmeli, yoksa ölçüm
-      // arızası kullanıcı davranışı gibi okunur.
-      if (name === 'onb.quest.backfill') {
-        const spec = analyticsSchema.EVENTS['onb.quest.backfill'];
-        const emitted = analyticsSchema.coerce(spec.emitted, p.emitted);
-        if (emitted === null || emitted === undefined) return { ok: false, reason: 'bad-emitted' };
-        const engine = analyticsSchema.coerce(spec.engine, String(p.engine || ''));
-        const office = analyticsSchema.coerce(spec.office, String(p.office || ''));
-        const board = analyticsSchema.coerce(spec.board, String(p.board || ''));
-        if (!engine || !office || !board) return { ok: false, reason: 'bad-fact' };
-        const res = analyticsNow().track('onb.quest.backfill', { emitted, engine, office, board });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // TOUR-P1-01 — Rehber'in ipucu düğmesi ve sonucu (`onb.quest.show` ikizi;
-      // iki yüzey aynı yorumlayıcıyı kullanıyor, ölçümü de aynı dilde konuşur).
-      if (name === 'onb.tour.hintAction') {
-        const spec = analyticsSchema.EVENTS['onb.tour.hintAction'];
-        const kind = analyticsSchema.coerce(spec.kind, String(p.kind || ''));
-        if (!kind) return { ok: false, reason: 'bad-kind' };
-        const outcome = analyticsSchema.coerce(spec.outcome, String(p.outcome || ''));
-        if (!outcome) return { ok: false, reason: 'bad-outcome' };
-        const res = analyticsNow().track('onb.tour.hintAction', { kind, outcome });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // TOUR-02-Q-F3 — REHBERİN KAPATILMASI (sözleşme §6 dördüncü satırı).
-      // Aynı gerekçe: "kullanıcı Rehber'i hangi adımda terk etti" YALNIZ
-      // renderer'ın bildiği bir olgudur. Kapı aynı sertlikte — üç alan da
-      // kapalı kümeden/sayıdan geçer, geçmeyen düşer; `step` ya da `via`
-      // tanınmazsa olay HİÇ gönderilmez (yanlış adıma yazılmış bir kopma
-      // noktası, hiç yazılmamış olandan daha kötüdür).
-      if (name === 'onb.guide.dismissed') {
-        const step = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.guide.dismissed'].step, String(p.step || ''),
-        );
-        if (!step) return { ok: false, reason: 'bad-step' };
-        const via = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.guide.dismissed'].via, String(p.via || ''),
-        );
-        if (!via) return { ok: false, reason: 'bad-via' };
-        const res = analyticsNow().track('onb.guide.dismissed', {
-          step,
-          via,
-          seconds: analyticsSchema.coerce(
-            analyticsSchema.EVENTS['onb.guide.dismissed'].seconds, p.seconds,
-          ) ?? 0,
-        });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      // ─── TOUR-02-Q-F5 — §6'nın KALAN OLAYLARI ────────────────────────────
-      // Bu beş olay renderer'da DOĞRU üretiliyordu ama burada dalları YOKTU:
-      // handler tanımadığı adı `not-allowed` ile düşürür, yani sözleşme §6'nın
-      // BİRİNCİ ("nerede kopuyorlar") ve ÜÇÜNCÜ ("hangi ipucu işe yarıyor")
-      // satırları hiç ölçülmüyordu — panoda bu, "kullanıcı hiç yapmadı" gibi
-      // okunur. Sıfır satır kusurun kendisini gizler.
-      //
-      // Yeni kanal AÇILMADI, yeni şema YAZILMADI: hepsi `analyticsSchema`'da
-      // zaten tanımlıydı. Kapı komşularla AYNI sertlikte — her alan kapalı
-      // kümeden/sayıdan geçer, tanınmayan bir kapalı-küme değeri olayı HİÇ
-      // göndertmez (yanlış adıma/ipucuna yazılmış bir ölçüm, hiç yazılmamış
-      // olandan daha kötüdür). Serbest metin alanı YOK.
-      if (name === 'onb.tour.step') {
-        const step = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.tour.step'].step, String(p.step || ''),
-        );
-        if (!step) return { ok: false, reason: 'bad-step' };
-        const phase = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.tour.step'].phase, String(p.phase || ''),
-        );
-        if (!phase) return { ok: false, reason: 'bad-phase' };
-        const mode = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.tour.step'].mode, String(p.mode || ''),
-        );
-        if (!mode) return { ok: false, reason: 'bad-mode' };
-        const res = analyticsNow().track('onb.tour.step', {
-          step,
-          phase,
-          mode,
-          seconds: analyticsSchema.coerce(
-            analyticsSchema.EVENTS['onb.tour.step'].seconds, p.seconds,
-          ) ?? 0,
-        });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      if (name === 'onb.tip.shown') {
-        const tip = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.tip.shown'].tip, String(p.tip || ''),
-        );
-        if (!tip) return { ok: false, reason: 'bad-tip' };
-        const res = analyticsNow().track('onb.tip.shown', { tip });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      if (name === 'onb.tip.dismissed') {
-        const tip = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.tip.dismissed'].tip, String(p.tip || ''),
-        );
-        if (!tip) return { ok: false, reason: 'bad-tip' };
-        const action = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.tip.dismissed'].action, String(p.action || ''),
-        );
-        if (!action) return { ok: false, reason: 'bad-action' };
-        const res = analyticsNow().track('onb.tip.dismissed', { tip, action });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      if (name === 'onb.topic.started') {
-        const topic = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.topic.started'].topic, String(p.topic || ''),
-        );
-        if (!topic) return { ok: false, reason: 'bad-topic' };
-        const from = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.topic.started'].from, String(p.from || ''),
-        );
-        if (!from) return { ok: false, reason: 'bad-from' };
-        const res = analyticsNow().track('onb.topic.started', { topic, from });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      if (name === 'onb.topic.done') {
-        const topic = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.topic.done'].topic, String(p.topic || ''),
-        );
-        if (!topic) return { ok: false, reason: 'bad-topic' };
-        const reason = analyticsSchema.coerce(
-          analyticsSchema.EVENTS['onb.topic.done'].reason, String(p.reason || ''),
-        );
-        if (!reason) return { ok: false, reason: 'bad-reason' };
-        const res = analyticsNow().track('onb.topic.done', {
-          topic,
-          reason,
-          steps: analyticsSchema.coerce(
-            analyticsSchema.EVENTS['onb.topic.done'].steps, p.steps,
-          ) ?? 0,
-          clean: p.clean === true,
-        });
-        return { ok: !!res.sent, reason: res.reason };
-      }
-      if (name !== 'panel_view') return { ok: false, reason: 'not-allowed' };
-      const panel = analyticsSchema.panelOf(p.panel);
-      const res = analyticsNow().track('panel_view', {
-        panel,
-        first_time: analyticsFirstTime(`panel:${panel}`),
-      });
-      return { ok: !!res.sent, reason: res.reason };
-    } catch {
-      return { ok: false, reason: 'internal' };
-    }
+  // OBS-01, HATA-06, TOUR-02, INT-OBS-01 — TELEMETRY & ANALYTICS IPC (Faz 3.5 — Sıra 11)
+  registerTelemetryIpc({
+    ipcMain,
+    analyticsNow,
+    analyticsSchema,
+    analyticsFirstTime,
+    supervisorFor,
+    vendorOnlyGate,
+    logLine,
+    telemetryTokenFor,
+    credentialGate,
+    telemetryProvisioning,
+    stampIntegrationVerified,
+    vendorSurface,
+    telemetryMod,
+    provisionStoreMod,
+    telemetryChannelMod,
   });
   // ─── TOUR-02-A — "İlk 10 Dakika" görev günlüğünün KALICILIĞI ───────────────
   // Main DUMB IO'dur: iki HAM kaydı okur, birleşmiş kaydı iki yüzeye yazar.
@@ -7146,11 +6893,6 @@ function wireIpc() {
   ipcMain.handle('onboarding:tips:save', (_event, tips) => {
     try { return onboardingStore.saveTips(tips); }
     catch (err) { return { ok: false, error: String((err && err.code) || 'internal') }; }
-  });
-  ipcMain.handle('module:openLog', async () => {
-    try { await shell.openPath(LOG_PATH); return { ok: true, path: LOG_PATH }; } catch (err) {
-      return { ok: false, error: String((err && err.message) || err) };
-    }
   });
 
   // ─── ADP-390 (G9) — CrewPane hesabı yüzeyi (Ayarlar → Hesap) ────────────────
@@ -7623,112 +7365,7 @@ function wireIpc() {
     dispatchSleep,
     logLine,
   });
-  // ─── INT-OBS-01 — TELEMETRİ OTOMATİK KURULUMU ──────────────────────────────
-  // Renderer'dan gelen tek şey `service` (+ opsiyonel org seçimi). JETON RENDERER'DAN
-  // GELMEZ: kasadan main tarafında çözülür. Böylece "Bağla"ya basmak, sırrı bir daha
-  // IPC sınırından geçirmeyi GEREKTİRMEZ (ADP-586 kırmızı çizgisi burada da geçerli).
-  const PROVISION_SERVICES = new Set(['sentry', 'posthog']);
 
-  // ═══ BR-04 (ADR §6) — VENDOR/MÜŞTERİ AYRIMI: ASIL KAPI BURADA ═══════════════
-  //
-  // Bu akış MÜŞTERİNİN İŞİ DEĞİL: bizim ürün telemetrimizin projelerini
-  // (crewpane-prod · crewpane-dev · crewpane-com — provisionApi.DEFAULT_PROJECT_SLUGS)
-  // MÜŞTERİNİN Sentry/PostHog organizasyonunda AÇAR ve DSN'leri oraya bağlar.
-  // Yani müşterinin bağladığı hesapla bizim vendor kurulumumuz TAM OLARAK BURADA
-  // karışırdı: müşterinin kotası bizim telemetrimizle yanar, bizim projelerimiz
-  // onun panosunda görünür, onun anahtarı bizim adımıza YAZMA yapar.
-  //
-  // UI'ı gizlemek YETMEZ (renderer bir bug/devtools ile bu kanalı yine çağırabilir):
-  // kapı MAIN'de kapanır. `isCustomerBuild()` env OKUMAZ (ADP-646) → müşteri
-  // CREWPANE_INSTANCE=dev diyerek bu kapıyı AÇAMAZ.
-  const VENDOR_ONLY = {
-    ok: false,
-    code: 'vendor-only',
-    message: 'Bu kurulum akışı CrewPane’in kendi telemetrisi içindir ve bu yapıda kapalıdır.',
-  };
-  /** @returns {null|object} null = geç; nesne = REDDET (aynı şekilli hata cevabı). */
-  function vendorOnlyGate() {
-    return vendorSurface.isCustomerSurface() ? VENDOR_ONLY : null;
-  }
-
-  /** Renderer girdisini daralt — serbest metin YOK, yalnız beklenen biçim. */
-  function provisionInput(raw) {
-    const input = raw && typeof raw === 'object' ? raw : {};
-    const service = typeof input.service === 'string' ? input.service.trim() : '';
-    if (!PROVISION_SERVICES.has(service)) return null;
-    const clean = (v) => (typeof v === 'string' ? v.trim().slice(0, 200).replace(/[^A-Za-z0-9._-]/g, '') : null);
-    return { service, orgSlug: clean(input.orgSlug) || null, teamSlug: clean(input.teamSlug) || null };
-  }
-
-  ipcMain.handle('telemetry:provision', (_event, raw) =>
-    supervisorFor('telemetry-provision').runAsync(
-      'provision',
-      async () => {
-        const denied = vendorOnlyGate();
-        if (denied) { logLine('telemetry-provision: müşteri build’inde REDDEDİLDİ (vendor-only)'); return denied; }
-        const input = provisionInput(raw);
-        if (!input) return { ok: false, code: 'unknown-service', message: 'Bilinmeyen servis.' };
-        const token = telemetryTokenFor(input.service);
-        if (!token) {
-          // Sessiz başarısızlık yasak: neyin eksik olduğunu ve nereden ekleneceğini söyle.
-          return {
-            ok: false,
-            code: 'not-connected',
-            message: credentialGate.missingMessageFor(input.service),
-          };
-        }
-        const res = await telemetryProvisioning().provisioner.connect({ ...input, token });
-        logLine(`telemetry-provision: ${input.service} sonuç=${res.ok ? 'OK' : res.code}`);
-        return res;
-      },
-      { ok: false, code: 'error', message: 'Kurulum çalıştırılamadı.' },
-    ));
-
-  // Doğrulama: GERÇEK olay gönder + panoda göründüğünü API'den OKU. Kanal kilidi
-  // gereği YALNIZ içinde bulunulan kanalın projesine yazar (telemetryProvision).
-  ipcMain.handle('telemetry:verify', (_event, raw) =>
-    supervisorFor('telemetry-provision').runAsync(
-      'verify',
-      async () => {
-        const denied = vendorOnlyGate();
-        if (denied) { logLine('telemetry-verify: müşteri build’inde REDDEDİLDİ (vendor-only)'); return denied; }
-        const input = provisionInput(raw);
-        if (!input) return { ok: false, code: 'unknown-service', message: 'Bilinmeyen servis.' };
-        const token = telemetryTokenFor(input.service);
-        if (!token) return { ok: false, code: 'not-connected', message: credentialGate.missingMessageFor(input.service) };
-        const out = await telemetryProvisioning().provisioner.verify(input.service, token);
-        // BR-01 (ADR §2.4) — GERÇEK bir okuma başarılı olduysa anahtarın çalıştığı
-        // kanıtlanmıştır; keşif cevabındaki `lastVerifiedAt` bunu ajana taşır.
-        if (out && out.ok) await stampIntegrationVerified(input.service);
-        return out;
-      },
-      { ok: false, code: 'error', message: 'Doğrulama çalıştırılamadı.' },
-    ));
-
-  // Durum yüzeyi (F4) — SIR İÇERMEZ (yalnız maskeli değerler + proje/kanal adları).
-  ipcMain.handle('telemetry:provisionStatus', () =>
-    supervisorFor('telemetry-provision').runAsync(
-      'status',
-      async () => {
-        // BR-04 — durum yüzeyi de vendor-only: müşteri build'inde bu ekran HİÇ
-        // çizilmediği için veri de üretilmez (boş liste = "böyle bir yüzey yok").
-        if (vendorSurface.isCustomerSurface()) return { ok: true, channel: null, services: [], vendorOnly: true };
-        const services = await telemetryProvisioning().provisioner.status();
-        // INT-OBS-02 — hub kartı yalnız store'u değil ÇALIŞAN kaynağı da yansıtır:
-        // anahtar `~/.crewpane/telemetry.env`e elle yazılmış olabilir (eski/geçici yol)
-        // ve telemetri ORADAN akıyor olabilir; store boş diye "Kurulmadı" demek yanlış
-        // durum bildirir. Kopya env veriyoruz: loadDsnEnvFromCrewPane verilen nesneye
-        // yazar, process.env mutasyona uğramaz. Renderer'a yalnız VARLIK gider (boolean).
-        const legacyEnv = telemetryMod.loadDsnEnvFromCrewPane({ env: { ...process.env } });
-        const presence = provisionStoreMod.envPresence(legacyEnv);
-        return {
-          ok: true,
-          channel: telemetryChannelMod.resolveChannel(),
-          services: services.map((s) => ({ ...s, envKeys: presence[s.service] || null })),
-        };
-      },
-      { ok: false, channel: null, services: [] },
-    ));
 
   // ═══════════════════════════════════════════════════════════════════════
   // B-01 (Faz D) — İNCELEME → MERGE YÜZEYİ (B-02/B-03 kart UI'sı bunu tüketir)
