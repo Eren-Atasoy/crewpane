@@ -23,7 +23,6 @@ const { app, BrowserWindow, ipcMain, shell, dialog, screen, globalShortcut, Noti
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const crypto = require('node:crypto'); // ADP-293 — mobil query requestId'leri
 const { spawn, execFile } = require('node:child_process');
 
 const instancePaths = require('./src/config/instancePaths.cjs');
@@ -43,6 +42,7 @@ const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 // ── Bootstrap (Faz 3.1): Erken adımların sırayla çalıştırılması ──────────────
 const { runBootstrap } = require('./src/main/bootstrap/index.js');
 const { registerPrefsIpc, createSyncService } = require('./src/features/sync');
+const { createMemoryService } = require('./src/features/memory');
 const { createMobileService } = require('./src/features/mobile');
 const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
@@ -143,12 +143,8 @@ const skillVersions = require('./src/agents/skillVersions.cjs'); // SK-08 — ya
 const skillShare = require('./src/agents/skillShare.cjs'); // SK-08 — dışa/içe aktarım (içe aktarım HER ZAMAN taslağa)
 const skillGuard = require('./src/agents/skillGuard.cjs'); // SK-08 — onay damgası denetimi + yazma-yolu nöbetçisi
 const builtinSkills = require('./src/agents/builtinSkills.cjs'); // SKL-B6 — gömülü katalog → kanonik depo KURULUM boğazı
-const memoryIndexService = require('./src/memory/memoryIndexService.cjs'); // ADP-870 — hafıza RAG indeksi (arka plan çocuk süreç)
-const searchIndexService = require('./src/memory/searchIndexService.cjs'); // SEARCH-2 — genel arama indeksi (rapor/hafıza/görev/oturum)
-const memorySearchService = require('./src/memory/memorySearchService.cjs'); // ADP-871 — hibrit arama (kelime + anlam)
 const memoryEmbedInstall = require('./src/memory/memoryEmbedInstall.cjs'); // ADP-900 — ONAYLI gömme motoru kurulumu
 const memoryEmbedder = require('./src/memory/memoryEmbedder.cjs'); // ADP-870 — gömme motorunun kullanılabilirlik raporu
-const memoryEmbedHosted = require('./src/memory/memoryEmbedHosted.cjs'); // WIN-W6A — yerel motor yokken barındırılan gömme + kasa köprüsü
 const memoryRecall = require('./src/memory/memoryRecall.cjs'); // ADP-862 — arama UCU (kaynak+alıntı, maskeli, uydurmasız) + bağlam seçici
 const memoryTaskBlock = require('./src/memory/memoryTaskBlock.cjs'); // D-07 — AŞAMA B: göreve-göre seçki (sorgu = iş metni)
 const engineMemoryScope = require('./src/agents/engineMemoryScope.cjs'); // MEM-SCOPE-01 — MOTORUN indeksi için aynı iki aşama
@@ -1571,187 +1567,35 @@ let appBaseUrl = null;
 // did-attach-webview, cleared on destroy. Reachable ONLY in main (never the guest
 // or the renderer) so headed automation stays main-gated.
 let appWindowGuest = null;
-// ADP-870 — hafıza RAG indeksleme yöneticisi (tekil, TEMBEL). Tembel olması önemli:
-// uygulama açılışında hiçbir maliyet doğurmaz; ilk `memoryIndex:*` çağrısında kurulur.
-// İlerleme olayları renderer'a 'memoryIndex:event' ile push edilir (pencere yoksa yutulur).
-let memoryIndexerSingleton = null;
-function memoryIndexer() {
-  if (!memoryIndexerSingleton) {
-    memoryIndexerSingleton = memoryIndexService.createIndexService({
-      repoRoot: REPO_ROOT,
-      logLine,
-      // WIN-W6A — yerel model yokken indeks de barındırılan motorla kurulsun
-      // (yoksa indeks vektörsüz kalır ve arama sonsuza kadar kelime katmanında).
-      hostedKeyEnv: hostedEmbedKeyEnv,
-      onEvent: (payload) => {
-        try {
-          if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('memoryIndex:event', payload);
-        } catch {
-          /* pencere kapanıyor */
-        }
-      },
-    });
-  }
-  return memoryIndexerSingleton;
-}
-
-// SEARCH-2 — GENEL ARAMA İNDEKSİ (tekil, TEMBEL; memoryIndexer ile AYNI desen).
-// ⚠️ AYRI DB: ADP-900'ün hafıza indeksine rapor/oturum eklemek onun parmak izini
-// bozar ve kullanıcıya 21 dakikalık yeniden gömme ödetir (ADP-900 §5). Bu indeks
-// salt kelime (FTS5), vektör YOK — dolayısıyla model/indirme yolu da yok.
-let searchIndexSingleton = null;
-let searchIndexRootKey = '';
-function searchIndexer() {
-  const root = agentWorkspaceRoot || '';
-  // Çalışma alanı değiştiyse servis de değişir (her kökün indeksi ayrı dosyada).
-  if (searchIndexSingleton && searchIndexRootKey !== root) {
-    try {
-      searchIndexSingleton.dispose();
-    } catch {
-      /* kapanıyor */
-    }
-    searchIndexSingleton = null;
-  }
-  if (!searchIndexSingleton) {
-    const key = crypto.createHash('sha1').update(String(root || 'no-workspace')).digest('hex').slice(0, 12);
-    searchIndexRootKey = root;
-    searchIndexSingleton = searchIndexService.createSearchIndexService({
-      dbFile: path.join(instancePaths.instanceHome(os.homedir()), 'search-index', `${key}.db`),
-      repoRoot: REPO_ROOT,
-      workspaceRoot: root,
-      // TEST DİKİŞİ: defterlerin kökü. e2e bunu geçici bir dizine pinler — aksi
-      // hâlde test, KULLANICININ GERÇEK 4,5 GB oturum geçmişini indeksler: hem
-      // yavaş hem de bir testin dokunmaması gereken veri.
-      home: process.env.CREWPANE_SEARCH_HOME || os.homedir(),
-      sessionsEnabled: agentSettings.readSettings().memorySearch.sessionsIndexed !== false,
-      logLine,
-      onEvent: (payload) => {
-        try {
-          if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('searchIndex:event', payload);
-        } catch {
-          /* pencere kapanıyor */
-        }
-      },
-    });
-  }
-  return searchIndexSingleton;
-}
-
-/**
- * WIN-W6A — ÇATALLANAN GÖMME ÇOCUKLARINA SIR KÖPRÜSÜ.
- *
- * Gömme işi `fork` + `ELECTRON_RUN_AS_NODE` ile doğan çocukta koşar; orada
- * `require('electron')` YOKTUR, yani `safeStorage` KASASI OKUNAMAZ. Kasadaki API
- * anahtarını yalnız ANA süreç çözebilir — bu yüzden köprü BURADA, main'de durur
- * (servis modülleri kimlik kapısını require etmez; gerekçesi
- * memoryIndexService.cjs'teki seam notunda: paketleme kapanışı).
- *
- * Yerel gömme modeli kuruluysa hosted hiç devreye girmez ve bu fonksiyon `{}` döner.
- * Sır loglanmaz, IPC'de dolaşmaz — yalnız kendi çocuğumuzun `env`ine girer.
- */
-function hostedEmbedKeyEnv() {
-  try {
-    return memoryEmbedHosted.hostedKeyEnv();
-  } catch (err) {
-    logLine(`memoryEmbed: barındırılan anahtar köprüsü kurulamadı (${err.message}) — çocuk kapıyı kendisi deneyecek`);
-    return {};
-  }
-}
-
-// ADP-871 — hafıza HİBRİT ARAMA servisi (tekil, TEMBEL). İndeksleyiciden AYRI:
-// indeksleme dakikalar süren toplu iş, arama ise etkileşimli. Gömme çocuğu ilk
-// aramada ısınır ve 5 dk boştalıkta kapanır (RAM geri döner).
-let memorySearcherSingleton = null;
-function memorySearcher() {
-  if (!memorySearcherSingleton) {
-    memorySearcherSingleton = memorySearchService.createSearchService({
-      repoRoot: REPO_ROOT,
-      logLine,
-      // ADP-900 — kullanıcı anlam katmanını kapatabilir (model diskte kalsa bile).
-      // Ayar HER ÇAĞRIDA okunur: kapatma anında etkili olsun, restart gerekmesin.
-      semanticEnabled: () => agentSettings.readSettings().memorySearch?.semanticEnabled !== false,
-      hostedKeyEnv: hostedEmbedKeyEnv,
-    });
-  }
-  return memorySearcherSingleton;
-}
-
-// ADP-900 — ONAYLI GÖMME MOTORU KURULUMU (tekil, TEMBEL). İlerleme renderer'a
-// 'memoryEmbed:event' ile gider. Kurulum yöneticisi ONAY DAMGASI olmadan tek bayt
-// indirmez (memoryEmbedInstall.consentMatches) — kapı burada değil ORADA, çünkü
-// renderer'a güvenilemez.
-let memoryEmbedInstallerSingleton = null;
-function memoryEmbedInstaller() {
-  if (!memoryEmbedInstallerSingleton) {
-    memoryEmbedInstallerSingleton = memoryEmbedInstall.createInstaller({
-      repoRoot: REPO_ROOT,
-      logLine,
-      onEvent: (payload) => {
-        try {
-          if (appWindow && !appWindow.isDestroyed()) appWindow.webContents.send('memoryEmbed:event', payload);
-        } catch {
-          /* pencere kapanıyor */
-        }
-      },
-    });
-  }
-  return memoryEmbedInstallerSingleton;
-}
-
-// ADP-872 — spawn'daki hibrit RAG'ın ANLAM katmanı. Spawn senkrondur ve 543 MB'lık
-// gömme modelini bekleyemez; bu yüzden spawn kelime katmanıyla koşar ve sorgu
-// vektörünü ARKA PLANDA ısıtır (memorySearchService.warmQuery → disk önbelleği).
-// Sonraki spawn iki katmanlı (RRF) olur. Hata yutulur: hafıza bir pane açılışını
-// asla bloklayamaz.
-agentRunner.setSpawnMemoryWarm(({ workspaceRoot, query }) => {
-  try {
-    memorySearcher()
-      .warmQuery({ workspaceRoot, query })
-      .catch((err) => logLine(`memorySearch: spawn ısıtma başarısız: ${err.message}`));
-  } catch (err) {
-    logLine(`memorySearch: spawn ısıtma başlatılamadı: ${err.message}`);
-  }
+// ── ADP-870/871/872/900/D-07 — HAFIZA VE ARAMA SERVİSİ (src/features/memory/memoryService.js - Faz 3.6.35)
+const memoryService = createMemoryService({
+  repoRoot: REPO_ROOT,
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  getAppWindow: () => appWindow,
+  logLine: (line) => logLine(line),
+  agentRunner,
+  agentSettings,
+  transcriptProbe,
 });
 
-/* ───────────────────────────────────────────────────────────────────────────
-   D-07 (K4) — HAFIZA KULLANIM ÖLÇÜMÜ: enjekte edilen kayıt İŞE YARADI MI?
-   ───────────────────────────────────────────────────────────────────────────
-   D-04'ün raporu bu ölçümü ELLE yapmıştı (transkriptte kaydın adı/dosyası geçiyor
-   mu). Burası onu ürüne koyar: pane'in oturumu bitince defterdeki AÇIK enjeksiyonlar
-   transkripte karşı yoklanır.
+function memoryIndexer() {
+  return memoryService.memoryIndexer();
+}
 
-   🔴 "ÖLÇEMEDİM" ≠ "KULLANILMADI": transkript çözülemiyorsa (cwd/sessionId yok,
-   dosya okunamıyor) probe `null` döner ve kayıt AÇIK KALIR — ölçülmemiş bir şeyi
-   "kullanılmadı" diye yazmak, sonraki seçkiyi haksız yere budardı.
-   🔴 Kullanım = ATIF (slug'ın metinde geçmesi). Etki ölçülemez; bu yüzden
-   davranışsal sınıf (memoryTargeting.BEHAVIORAL_TYPES) cezadan MUAFtır.        */
-function settleMemoryUsage(opts = {}) {
-  try {
-    const ledger = agentRunner.memoryLedger();
-    if (!ledger) return null;
-    const res = ledger.settle(
-      (entry) => {
-        if (!entry || !entry.cwd || !entry.sessionId) return null; // ölçemedim
-        const file = transcriptProbe.resolveTranscriptFile(entry.cwd, entry.sessionId);
-        if (!file) return null;
-        const tail = transcriptProbe.readTail(file);
-        if (tail === null) return null;
-        return (entry.slugs || []).filter((s) => tail.includes(s));
-      },
-      {
-        filter: opts.paneId ? (e) => e.paneId === opts.paneId : undefined,
-        // 7 günden eski ve HÂLÂ ölçülemeyen kayıt defteri şişirmesin (sayaca girmez).
-        maxAgeMs: 7 * 24 * 60 * 60 * 1000,
-      },
-    );
-    if (res && (res.settled || res.unmeasured)) {
-      logLine(`memory ledger: ${res.settled} enjeksiyon kapandı, ${res.used} kullanım, ${res.unmeasured} ölçülemedi`);
-    }
-    return res;
-  } catch (err) {
-    logLine(`memory ledger settle failed: ${err.message}`);
-    return null;
-  }
+function searchIndexer() {
+  return memoryService.searchIndexer();
+}
+
+function memorySearcher() {
+  return memoryService.memorySearcher();
+}
+
+function memoryEmbedInstaller() {
+  return memoryService.memoryEmbedInstaller();
+}
+
+function settleMemoryUsage(opts) {
+  return memoryService.settleMemoryUsage(opts);
 }
 
 // ADP-150 (multi-tab) — every live <webview> guest, keyed by its webContents id.
@@ -3647,8 +3491,8 @@ app.whenReady().then(async () => {
     scheduleAnnounceChecks,
     scheduleChangelogChecks,
     scheduleAutoMemoryIndex,
-    memoryIndexerSingleton,
-    searchIndexSingleton,
+    memoryIndexerSingleton: memoryService.memoryIndexerSingleton,
+    searchIndexSingleton: memoryService.searchIndexSingleton,
     jarvisVoice,
     notifyScreenshotsMovedOnce,
     runDoctorNow,
