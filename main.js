@@ -34,7 +34,6 @@ const mixedTargetGuard = require('./src/config/mixedTargetGuard.cjs'); // ENV-01
 const crewpaneEnv = require('./src/config/crewpaneEnv.cjs'); // ADP-244 Faz 3 — env ikizleri (tek türetme noktası)
 const envProfileModule = require('./src/config/envProfile.cjs');
 const singleInstanceLock = require('./src/core/singleInstanceLock.cjs');
-const deepLinkArgv = require('./src/services/deepLinkArgv.cjs');
 const { renameWithRetrySync } = require('./platform/atomicWrite.cjs');
 const safeStorageIdentity = require('./src/security/safeStorageIdentity.cjs');
 const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
@@ -1844,7 +1843,7 @@ function notifyScreenshotsMovedOnce() {
 
 // ─── ADP-390 (ADR-027 / G9) — CrewPane hesabı + CrewPane seat ────────────────
 // Kurulum ve boğazlar src/features/auth/service.js içinde modülerleştirildi (Faz 3.6.8).
-const { createAuthService, createPlanLimitService, createApiKeyService } = require('./src/features/auth');
+const { createAuthService, createPlanLimitService, createApiKeyService, createAuthUrlService } = require('./src/features/auth');
 const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
 // ADP-780-B — bu kopyanın URL şeması (prod: crewpane · dev: crewpane-dev · test: crewpane-test).
 const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
@@ -2089,101 +2088,29 @@ function codeIndexFreshness(repoPath, indexedSha) {
 /** CIDX-1 — koşan indeksleme işleri (slug → child). Aynı projeye İKİ koşum yok. */
 const codeIndexJobs = new Map();
 
-// Callback URL'i app hazır olmadan gelebilir (LaunchServices app'i BU URL için açar) →
-// sıraya al, gate ayağa kalkınca işle. Kaybolan callback = "giriş çalışmıyor" demek.
-const pendingAuthUrls = [];
-// ADP-719 — açılışta ölçülen şema sahiplik durumu (crewpane:schemeHealth okur).
-let schemeVerdict = null;
-/**
- * ADP-954 — ŞEMA KIYASI HARF-DUYARSIZ + DÜŞEN URL SESSİZ DÜŞMEZ.
- *
- * İki ölçülmüş kusur vardı:
- *   1. Kıyas harf-DUYARLIYDI. `deepLinkArgv` bilerek harf-duyarsız kıyaslıyor
- *      (RFC 3986 §3.1: şema harf-duyarsızdır) ve URL'i BOZMADAN veriyor —
- *      yani `CrewPane://auth/callback?...` biçiminde bir dönüş köprüden
- *      geçiyor, sonra BURADA sessizce düşüyordu. Windows'ta taşıyıcı registry/
- *      kabuk olduğu için şemanın harf düzenini bağlantı metni belirler; macOS'ta
- *      LaunchServices normalize ettiği için bu sınıf orada hiç görünmüyordu.
- *   2. Eşleşmeyen URL HİÇ LOGLANMIYORDU → kullanıcı "hiçbir şey olmuyor" der,
- *      logda tek satır yok, teşhis imkânsız. Sorgu dizesi loglanmaz (`code`
- *      tek kullanımlık bir sırdır) — yalnız şema/yol kısmı yazılır.
- */
-function handleAuthUrl(url) {
-  if (typeof url !== 'string' || !url) return;
-  if (!url.toLowerCase().startsWith(APP_URL_PREFIX.toLowerCase())) {
-    logLine(`⛔ giriş dönüşü YOKSAYILDI — şema eşleşmedi (beklenen ${APP_URL_PREFIX}, `
-      + `gelen ${url.split('?')[0]})`);
-    return;
-  }
-  if (!seatGate) { pendingAuthUrls.push(url); return; }
-  seatGate.handleUrl(url).catch((e) => logLine(`seatGate handleUrl error: ${e.message}`));
-}
-function drainPendingAuthUrls() {
-  while (pendingAuthUrls.length) handleAuthUrl(pendingAuthUrls.shift());
-}
-
-// ADP-801 — PAKETLİ OTOMASYON OTURUMU OS-YÖNLENDİRMELİ GİRİŞ DÖNÜŞÜNÜ TÜKETMEZ.
-// Aynı bundle id'nin birden çok süreci varken OS URL'i hangisine vereceğini bize
-// sormaz; dönüş bir test kopyasına düşerse `code` TEK KULLANIMLIK olduğu için orada
-// yanar ve kullanıcı "giriş dönüşü gelmedi" görür — sessizce. Tüketmiyoruz ve SEBEBİ
-// loga yazılıyor: kullanıcı bağlantıyı kendi penceresine yapıştırarak
-// (crewpane:pasteCallback) girişi tamamlayabilir.
-//
-// ⚠️ Yalnız PAKETLİ koşuda: paketsiz e2e'de OS yönlendirmesi zaten YOKTUR
-// (ADP-719 talep etmez, ADP-382 `open scheme://` = -600) → oradaki tek kaynak
-// adp520'nin `app.emit('open-url', …)` DİKİŞİdir ve o giriş akışını ölçüyor.
-// Paketli bir auth spec'i yazılırsa CREWPANE_E2E_ALLOW_AUTH_URL=1 ile açar.
-//
-// ADP-833 — aynı kural OS'un ARGV ile getirdiği dönüş için de geçerli (Windows):
-// karar tek yerde yaşasın diye buraya çıkarıldı; open-url ve argv aynı kapıdan geçer.
-function osAuthUrlBlockedReason(url) {
-  if (app.isPackaged && IS_AUTOMATED_SESSION
-      && process.env.CREWPANE_E2E_ALLOW_AUTH_URL !== '1'
-      && String(url || '').startsWith(APP_URL_PREFIX)) {
-    return `otomasyon oturumu (${AUTOMATED_SESSION_REASON})`;
-  }
-  return null;
-}
-
-// ADP-833 (ADR-W6) — WINDOWS DEEP-LINK KÖPRÜSÜ. macOS'ta giriş dönüşü `open-url`
-// olayıyla gelir; Windows'ta ÖYLE BİR OLAY YOKTUR — OS uygulamayı URL'i komut
-// satırına ekleyerek açar. İki taşıyıcı var, ikisi de BURAYA bağlanır:
-//   (a) soğuk açılış → `process.argv` (aşağıda, whenReady içinde),
-//   (b) uygulama açıkken → OS yeni bir süreç açar; o süreç kilide takılır ve
-//       argv'sini `focus-request.json`a bırakır → birinci kopya `focusWindow`
-//       kancasında bu fonksiyonu çağırır (main.js üstü).
-// Chromium'un `second-instance` olayı BİLEREK kullanılmıyor: dahili kilit
-// `userData` kapsamlıdır (ölçüldü, ADP-832 §2.1) ve dev/test/prod aynı userData'yı
-// paylaştığı için onları birbirine bağlardı. O karar korunuyor; köprü onun üstünde.
-// `function` (hoisted) + TEMBEL kurulum: `focusWindow` kancası main.js'in ilk
-// satırlarında kurulan kilitten çağrılabiliyor, yani bu noktadan ÖNCE. Şema öneki
-// de `APP_URL_PREFIX` sabitinden değil `appScheme.cjs`ten okunuyor (aynı değer,
-// TDZ yok — o sabit zaten `appSchemePrefix()` ile doldurulur).
-let deepLinkConsumer = null;
-function consumeArgvDeepLink(argv, source) {
-  if (!deepLinkConsumer) {
-    deepLinkConsumer = deepLinkArgv.createDeepLinkConsumer({
-      prefix: () => require('./src/core/appScheme.cjs').appSchemePrefix(),
-      deliver: (url) => handleAuthUrl(url),
-      blocked: (url) => osAuthUrlBlockedReason(url),
-      log: (line) => logLine(line),
-      defer: setImmediate, // gerekçe: createDeepLinkConsumer jsdoc'u (TDZ)
-    });
-  }
-  return deepLinkConsumer(argv, source);
-}
-
-app.on('open-url', (event, url) => {
-  event.preventDefault();
-  logLine(`open-url: ${String(url).split('?')[0]}`);
-  const blocked = osAuthUrlBlockedReason(url);
-  if (blocked) {
-    logLine(`⛔ open-url REDDEDİLDİ — ${blocked}. `
-      + 'ADP-801: bu dönüş kullanıcının kopyasına ait; test süreci tüketmez.');
-    return;
-  }
-  handleAuthUrl(url);
+// ── ADP-719/801/833/954 — AUTH URL & DEEP LINK SERVICE (src/features/auth/authUrlService.js - Faz 3.6.36)
+const authUrlService = createAuthUrlService({
+  app,
+  appUrlPrefix: APP_URL_PREFIX,
+  getSeatGate: () => seatGate,
+  isAutomatedSession: IS_AUTOMATED_SESSION,
+  automatedSessionReason: AUTOMATED_SESSION_REASON,
+  logLine: (line) => logLine(line),
 });
+
+let schemeVerdict = null;
+
+function handleAuthUrl(url) {
+  return authUrlService.handleAuthUrl(url);
+}
+
+function drainPendingAuthUrls() {
+  return authUrlService.drainPendingAuthUrls();
+}
+
+function consumeArgvDeepLink(argv, source) {
+  return authUrlService.consumeArgvDeepLink(argv, source);
+}
 
 // (ADP-440 — bölge overlay'i, tray penceresi, annotator ve kısayolları kaldırıldı.)
 
