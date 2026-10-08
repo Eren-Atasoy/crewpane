@@ -354,16 +354,11 @@ const clipboardImageRoute = require('./src/services/clipboardImageRoute.cjs'); /
 // ─── ADP-584/585/586 — Entegrasyon Merkezi (Dalga 0) ─────────────────────────
 const integrationCatalog = require('./src/mcp/integrationCatalog.cjs'); // ADP-584/588 — servis şablonları (tek kaynak)
 const credentialGate = require('./src/security/requireCredential.cjs'); // ADP-628 — anahtar çözümlemesinin TEK boğazı
-const { createCredentialVault } = require('./src/security/credentialVault.cjs'); // ADP-584 — şifreli anahtar deposu
-const { createIntegrationResolver } = require('./src/mcp/integrationResolver.cjs'); // ADP-585 — spawn-anı çözümleme
-const { buildIntegrationsStatus } = require('./src/mcp/integrationStatus.cjs'); // BR-01 — ajanın keşif cevabı
-const { createIntegrationIpc } = require('./src/mcp/integrationIpc.cjs'); // ADP-586 — IPC sınırı (doğrulama + maske)
 // MCP-COST-01 — MCP cocuk sureclerinin envanteri + yetim bicmesi (ORPHAN-ELECTRON-01
 // cekirdegini CAGIRIR, yeniden yazmaz) ve "otomatik acilmasin" isareti.
 const mcpProcess = require('./src/mcp/mcpProcess.cjs');
 const integrationAutostart = require('./src/mcp/integrationAutostart.cjs');
 const { createSecretRedactor } = require('./src/security/secretRedactor.cjs'); // ADP-586 — log/ekran/notify maskeleme
-const mcpProbe = require('./src/mcp/mcpProbe.cjs'); // ADP-586 — "bağlantıyı test et" (gerçek MCP handshake)
 
 // ADP-586 — SIR MASKELEME DEFTERİ. Süreç ömrü boyunca tek örnek; `logLine`, pane
 // çıktısı, transcript IPC'leri ve notify yazımı buradan geçer. Defter yalnız iki
@@ -4218,161 +4213,37 @@ function rememberWorkspaceRoot(root) {
   }
 }
 
-// ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (vault → resolver → IPC) ──
-// TEK örnek, TEMBEL kurulum: `safeStorage` app hazır olmadan güvenilir yanıt vermez
-// (seatGate ile aynı duruş), ayrıca entegrasyon kullanmayan bir kullanıcıda vault
-// dosyasına hiç dokunulmaz. Üç katman ayrı dosyalarda: depolama (credentialVault) —
-// politika (integrationResolver) — sınır/doğrulama (integrationIpc).
-let integrationsCore = null;
+// ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
+const { createIntegrationService } = require('./src/features/services');
+
+const integrationService = createIntegrationService({
+  instancePaths,
+  safeStorage: require('electron').safeStorage,
+  logLine,
+  secretRedactor,
+  credentialGate,
+  repoRoot: REPO_ROOT,
+  vendorSurface,
+  engineAuth,
+  getPtys: () => ptys,
+  agentRunner,
+  paneCapabilityMatrix,
+});
+
 function integrations() {
-  if (integrationsCore) return integrationsCore;
-  const vault = createCredentialVault({
-    safeStorage: require('electron').safeStorage,
-    homeDir: instancePaths.crewpaneHome(), // instance-aware (~/.crewpane | -dev | -test)
-    log: (line) => logLine(line),
-  });
-  const resolver = createIntegrationResolver({ vault, log: (line) => logLine(line) });
-  const ipc = createIntegrationIpc({
-    vault,
-    catalog: integrationCatalog,
-    redactor: secretRedactor,
-    probe: mcpProbe.probeMcpServer,
-    // Probe child'ının taban env'i: uygulamanın env'i (PATH/HOME — `npx` bunlarsız
-    // koşmaz). integrationIpc bu tabandan CREWPANE_SECRET_* değerlerini ELER
-    // (Kural 2: test edilen servis başka bir servisin anahtarını görmez).
-    baseEnv: process.env,
-    // ADP-848-B — anahtarı BAŞKA yüzey yöneten servisler (bugün: ElevenLabs).
-    // Bağlı hesaplar ekranı aynı değeri MASKELİ gösterir; ikinci bir depo YOK.
-    // Sır bu fonksiyondan da dışarı çıkmaz — yalnız bayrak + maske döner.
-    externalStatus: (service) => {
-      const r = credentialGate.resolveCredential(service, { rootDir: REPO_ROOT });
-      if (!r.ok) return { connected: false, masked: null };
-      return { connected: true, masked: integrationCatalog.maskSecret(r.secret, service) };
-    },
-    // BR-04 (ADR §6) — vendor/müşteri yüzey ayrımı. Fonksiyon veriyoruz (değer değil):
-    // karar her `list()` çağrısında taze alınır, kurulum sırasına bağlı bir yalan olmaz.
-    isVendorSurface: () => vendorSurface.isVendorSurface(),
-    log: (line) => logLine(line),
-  });
-  integrationsCore = { vault, resolver, ipc };
-  return integrationsCore;
+  return integrationService.integrations();
 }
-
-/**
- * ENG-08 — motor API anahtarı deposu (ADP-584 vault'unun ince görünümü).
- * MODÜL DÜZEYİNDE: hem spawn boğazı (pane env'i) hem Ayarlar IPC'si AYNI depodan
- * okumak zorunda — iki kopya "Ayarlar kayıtlı der, pane anahtarı görmez" ayrışması
- * demek olurdu. Vault tembel kurulur; hata → `null` (engineAuth dürüstçe
- * 'vault-unavailable' der, sessiz başarı YOK).
- */
 function engineKeyStore() {
-  try { return engineAuth.createVaultApiKeyStore(integrations().vault); } catch { return null; }
+  return integrationService.engineKeyStore();
 }
-
-/**
- * BR-01 (ADR-INT-BRIDGE §2) — AJANIN KEŞİF CEVABI.
- *
- * Üç kaynağı birleştirir ve cevabı SAF bir fonksiyona (integrationStatus.cjs) kurdurur:
- *   • katalog        — tam liste (bağlı OLMAYANLAR da döner; "bağlarsan yaparım" cümlesi
- *                      ancak böyle kurulabilir),
- *   • vault.list()   — `toMeta` görünümü: sır YOK, yalnız kapsam/ortam/beyan/damgalar,
- *   • canlı pane     — çağıranın bağlamı (motor/proje/ortam) ve spawn anında ONA
- *                      enjekte edilen servisler.
- *
- * 🔴 Pane bağlamı ÇAĞIRANIN BEYANINDAN alınmaz (ADP-717 dersi): ajan kendi env'ini
- * değiştirebilir; doğru kaynak spawn anında yazılan pane kaydıdır. Ajan pane defterinde
- * bulunamazsa `known:false` → `toolsLiveInThisPane` UYDURULMAZ (null döner).
- */
 async function integrationsStatusFor(req = {}) {
-  const agentId = typeof req.agentId === 'string' ? req.agentId.trim() : '';
-  let paneEntry = null;
-  if (agentId) {
-    for (const e of ptys.values()) {
-      if (e && e.agentId === agentId) { paneEntry = e; break; }
-    }
-  }
-  const paneIntegrations = (paneEntry && paneEntry.integrations) || null;
-  const paneEngine = paneEntry ? paneEntry.command : null;
-  // ENG-21 (G4) — HÜKÜM TEK EVDEN. Ajanın gördüğü cevap ile pane'in gerçeği aynı
-  // fiilden türesin diye enjeksiyon kararı SPAWN YOLUYLA AYNI fonksiyondan okunur
-  // (`agentRunner.integrationsInjectable` → `paneCapabilityMatrix.mcpCanCarrySecrets`).
-  // Motoru bilmiyorsak (pane defterde yok) hüküm `null` kalır — "çalışmaz" DEMEZ.
-  let integrationsInjectable = null;
-  let integrationsReason = null;
-  if (paneEngine) {
-    try {
-      integrationsInjectable = agentRunner.integrationsInjectable(paneEngine) === true;
-    } catch {
-      integrationsInjectable = null; // ölçemedik → iddia etmeyiz
-    }
-    if (integrationsInjectable === false) {
-      // Gerekçe de defterden: rozet metniyle ajana söylenen cümle AYNI kaynaktan.
-      try {
-        const cell = (paneCapabilityMatrix.buildMatrix(paneEngine) || {}).integrations;
-        integrationsReason = (cell && cell.reason) || null;
-      } catch {
-        integrationsReason = null;
-      }
-    }
-  }
-  const pane = {
-    agentId: agentId || null,
-    engine: paneEngine,
-    // MCP-LAZY-01 — profil kapisinin bu pane'de kestikleri (spawn aninda yazildi).
-    gated: (paneIntegrations && Array.isArray(paneIntegrations.gated)) ? paneIntegrations.gated : [],
-    projectId: paneIntegrations ? paneIntegrations.projectId : null,
-    env: paneIntegrations ? paneIntegrations.env : 'dev',
-    known: !!paneEntry,
-    integrationsInjectable,
-    integrationsReason,
-  };
-
-  let records = [];
-  let vaultAvailable = true;
-  try {
-    const { vault } = integrations();
-    vaultAvailable = vault.isAvailable();
-    // `list()` SIR DÖNMEZ (toMeta) — keşif ucu vault'a ikinci bir kimlik yolu açmaz.
-    if (vaultAvailable) records = await vault.list();
-  } catch (e) {
-    logLine(`integrations status: vault okunamadı (${e.message}) — katalog yine de döner`);
-    vaultAvailable = false;
-  }
-
-  return buildIntegrationsStatus({
-    catalog: integrationCatalog,
-    records,
-    pane,
-    injectedServices: paneIntegrations ? paneIntegrations.services : null,
-    vaultAvailable,
-  });
+  return integrationService.integrationsStatusFor(req);
 }
-
-/**
- * BR-01 (ADR §2.4) — "bu anahtar GERÇEKTEN çalıştı" damgası, telemetri doğrulaması
- * yolundan. İkinci damga kaynağı (integ:test) integrationIpc içindedir; ikisi de
- * YALNIZ başarılı bir el sıkışmadan sonra yazar. Anahtar Ayarlar'dan geliyorsa
- * (vault kaydı yok) damga atılmaz — sessizce ve dürüstçe atlanır.
- */
 async function stampIntegrationVerified(service) {
-  try {
-    const { vault } = integrations();
-    if (!vault.isAvailable()) return;
-    const id = await vault.resolveId(service, {}); // secret'a dokunmadan (resolveId)
-    if (id) await vault.markVerified(id);
-  } catch (e) {
-    logLine(`integrations: doğrulama damgası atılamadı service=${service} (${e.message})`);
-  }
+  return integrationService.stampIntegrationVerified(service);
 }
-
-/** Spawn yolunda kullanılan resolver — kurulum patlarsa spawn ASLA bloklanmaz. */
 function integrationResolverOrNull() {
-  try {
-    return integrations().resolver;
-  } catch (e) {
-    logLine(`integrations resolver init failed: ${e.message}`);
-    return null;
-  }
+  return integrationService.integrationResolverOrNull();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
