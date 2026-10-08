@@ -248,17 +248,24 @@ function _buildHandAndMobileDeps(ctx) {
   };
 }
 
-function _buildSkillAndSupervisorDeps(ctx) {
+function _resolveBrowserDeps(ctx) {
+  const bs = ctx.browserService;
+  if (!bs) return {};
   return {
-    runBrowserAction: ctx.runBrowserAction,
-    browserGate: ctx.browserGate,
-    browserGuests: ctx.browserGuests,
-    isOwnedGuest: ctx.isOwnedGuest,
-    guestOwners: ctx.guestOwners,
+    runBrowserAction: (val) => bs.runBrowserAction(val),
+    browserGate: () => bs.browserGate(),
+    browserGuests: bs.browserGuests,
+    isOwnedGuest: (id) => bs.isOwnedGuest(id),
+    guestOwners: bs.guestOwners,
+    agentGuests: bs.agentGuests,
+    lastUnownedGuest: () => bs.lastUnownedGuest(),
+  };
+}
+
+function _buildSkillAndSupervisorDeps(ctx) {
+  const out = Object.assign(_resolveBrowserDeps(ctx), {
     setAppWindowGuest: ctx.setAppWindowGuest,
     getAppWindowGuest: ctx.getAppWindowGuest,
-    agentGuests: ctx.agentGuests,
-    lastUnownedGuest: ctx.lastUnownedGuest,
     integrations: ctx.integrations,
     planDenial: ctx.planDenial,
     mcpProcess: ctx.mcpProcess,
@@ -270,6 +277,20 @@ function _buildSkillAndSupervisorDeps(ctx) {
     spawn: ctx.spawn,
     appI18n: ctx.appI18n,
     notifyGate: ctx.notifyGate,
+  });
+  const browserKeys = [
+    'runBrowserAction',
+    'browserGate',
+    'browserGuests',
+    'isOwnedGuest',
+    'guestOwners',
+    'agentGuests',
+    'lastUnownedGuest',
+  ];
+  for (const k of browserKeys) {
+    if (ctx[k] !== undefined) out[k] = ctx[k];
+  }
+  Object.assign(out, {
     requireSeatOrThrow: ctx.requireSeatOrThrow,
     openJarvisWidgetWindow: ctx.openJarvisWidgetWindow,
     closeJarvisWidgetWindow: ctx.closeJarvisWidgetWindow,
@@ -316,7 +337,8 @@ function _buildSkillAndSupervisorDeps(ctx) {
     composeFail: ctx.composeFail,
     composeAutonomy: ctx.composeAutonomy,
     sampleLeaderGate: ctx.sampleLeaderGate,
-  };
+  });
+  return out;
 }
 
 function buildMobileAndSkillDeps(ctx) {

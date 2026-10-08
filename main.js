@@ -1221,47 +1221,18 @@ function settleMemoryUsage(opts) {
   return memoryService.settleMemoryUsage(opts);
 }
 
-// ADP-150 (multi-tab) — every live <webview> guest, keyed by its webContents id.
-// appWindowGuest is the ACTIVE tab's guest; the renderer reports the active tab via
-// 'browser:setActiveGuest'. We ONLY ever set appWindowGuest to an id present here —
-// the app renderer can never be selected as a CDP target.
-const browserGuests = new Map();
+// ── ADP-095/333/341/394/396/399/884 — BAŞLIKLI TARAYICI OTOMASYONU SERVİSİ (src/features/services/browserService.js - Faz 3.6.24)
+const { createBrowserService } = require('./src/features/services');
 
-// ADP-333 — SEKME SAHİPLİĞİ. Eren'in vakası: ajan sekme-1'de koşuyor, Eren sekme-2'yi
-// açıyor, ajanın SONRAKİ işlemi EREN'IN sekmesinde çalışıyor (gezinti bozuluyor, üstelik
-// ajan yanlış sayfada tıklıyor → sessiz hatalı işlem). Kök neden: her ajan işlemi
-// `appWindowGuest`e (= AKTİF SEKME) gidiyordu; aktif sekmeyi ise KULLANICI değiştiriyor.
-//
-// Kural: **ajan tarafında "aktif sekme" diye bir kavram YOKTUR.** Her ajan kendi sekmesine
-// (guest webContents id) kilitlenir. Sekmesi yoksa/kapandıysa KENDİNE YENİ sekme açar —
-// kullanıcının sekmesine asla girmez. "Aktif sekme" yalnız İNSAN yolunda kullanılır
-// (Jarvis'in "geri git"i, patronun baktığı sayfayı kasteder).
-const guestOwners = new Map(); // guest webContents id → agentId
-const agentGuests = new Map(); // agentId → guest webContents (sahiplenilen sekme)
-
-// ── ADP-396 — İNSAN YOLUNUN HEDEFİ SAHİPLİĞE BAĞLIDIR (kaçak kapatıldı) ──────────
-//
-// ADP-333 ajanı KULLANICININ sekmesinden korudu; ama ters yön korunmamıştı: her guest
-// attach'ında `appWindowGuest = guest` KOŞULSUZ yapılıyordu. Ajan arka planda kendi
-// sekmesini açar açmaz, agentId TAŞIMAYAN insan yolunun (Jarvis sesli komutları,
-// renderer'ın browser:action'ı) hedefi de o GÖRÜNMEZ sekme oluyordu → Jarvis "tıkladım"
-// diyor, Eren'in baktığı sayfada hiçbir şey olmuyor (ADP-392 K4).
-//
-// Kural: paylaşılan "aktif hedef" değişkeni ZAMANA (son attach kazanır) değil SAHİPLİĞE
-// bağlanır. SAHİPLİ (ajan) bir guest, SAHİPSİZ (insan) yolun hedefi OLAMAZ — hiçbir yoldan.
-const isOwnedGuest = (id) => guestOwners.has(id);
-
-/** İnsan yoluna uygun son sekme (sahipsiz). Ajan sekmelerine ASLA düşmez. */
-function lastUnownedGuest() {
-  const unowned = [...browserGuests.values()].filter((g) => !g.isDestroyed() && !isOwnedGuest(g.id));
-  return unowned.length ? unowned[unowned.length - 1] : null;
-}
-
-// Sahiplik attach'tan SONRA (renderer'ın dom-ready'sinde, browser:setTabOwner ile) bildirilir;
-// yani attach ANINDA "bu kimin sekmesi?" bilinmez. Bu sayaç, main'in KENDİ istediği ajan
-// sekmesini (resolveAgentGuest) o pencerede tanır → attach insan hedefini kirletmez. İkinci
-// savunma katmanı setTabOwner'daki geri-alma (kaçak penceresi kapanır).
-let pendingAgentTabs = 0;
+const browserService = createBrowserService({
+  getAppWindow: () => appWindow,
+  logLine,
+  saveBrowserShot: (b64, tag) => mediaService.saveBrowserShot(b64, tag),
+  getAppWindowGuest: () => appWindowGuest,
+  setAppWindowGuest: (g) => { appWindowGuest = g; },
+  browserCdp,
+  browserGateMod,
+});
 
 // ADP-475 — crash instrumentation & main stall monitor (src/features/system/crashWatchdogService.js - Faz 3.6.9)
 const { createCrashWatchdogService } = require('./src/features/system');
@@ -1607,7 +1578,6 @@ function relaunchForAccountChange(nextKey, reason) {
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
 const {
   createIntegrationService,
-  createBrowserService,
   createWorkspaceFileService,
   createCodeIndexService,
   createWorkspaceRootService,
@@ -1994,15 +1964,9 @@ function _buildMobileAndVoiceIpcDeps() {
     announcements,
     updateCheck,
     noteQuit,
-    runBrowserAction,
-    browserGate,
-    browserGuests,
-    isOwnedGuest,
-    guestOwners,
+    browserService,
     setAppWindowGuest: (g) => { appWindowGuest = g; },
     getAppWindowGuest: () => appWindowGuest,
-    agentGuests,
-    lastUnownedGuest,
     integrations,
     planDenial,
     mcpProcess,
@@ -2195,35 +2159,7 @@ function rebuildAndRelaunch(event) { return rebuildService.rebuildAndRelaunch(ev
 // Windows
 // ---------------------------------------------------------------------------
 
-// ── ADP-095/333/341/394/396/399/884 — BAŞLIKLI TARAYICI OTOMASYONU SERVİSİ (src/features/services/browserService.js - Faz 3.6.24)
-const browserService = createBrowserService({
-  getAppWindow: () => appWindow,
-  logLine,
-  saveBrowserShot: (b64, tag) => saveBrowserShot(b64, tag),
-  browserGuests,
-  guestOwners,
-  agentGuests,
-  getAppWindowGuest: () => appWindowGuest,
-  setAppWindowGuest: (g) => { appWindowGuest = g; },
-  isOwnedGuest,
-  lastUnownedGuest,
-  incPendingAgentTabs: () => { pendingAgentTabs++; },
-  decPendingAgentTabs: () => { if (pendingAgentTabs > 0) pendingAgentTabs--; },
-  browserCdp,
-  browserGateMod,
-});
 
-function browserGate() {
-  return browserService.browserGate();
-}
-
-async function probeBrowserTarget(value) {
-  return browserService.probeBrowserTarget(value);
-}
-
-async function runBrowserAction(value) {
-  return browserService.runBrowserAction(value);
-}
 
 // ── Pencere Yönetimi (Faz 3.3): BrowserWindow yönetimi src/main/windows altında ──
 windowManager = createWindowManager({
@@ -2266,25 +2202,20 @@ windowManager = createWindowManager({
   reportsWatcher,
   activeWorktreePaths,
   mappedProjectRootsForReports,
-  browserGuests,
+  browserGuests: browserService.browserGuests,
   ghostGuests: () => browserService.ghostGuests,
-  guestOwners,
-  agentGuests,
-  getPendingAgentTabs: () => pendingAgentTabs,
+  guestOwners: browserService.guestOwners,
+  agentGuests: browserService.agentGuests,
+  getPendingAgentTabs: () => browserService.pendingAgentTabs,
   getAppWindowGuest: () => appWindowGuest,
   setAppWindowGuest: (g) => { appWindowGuest = g; },
-  lastUnownedGuest,
+  lastUnownedGuest: () => browserService.lastUnownedGuest(),
   getHandControl: () => handControl,
   stopHandControl,
   broadcastHandControlStatus,
 });
 
-// ADP-095 — write a CDP base64 PNG screenshot to a temp file; return its path.
-// WIN-IMG-01 — TTL YOK: aynı oturum deposundan geçer (ajanın kanıt-screenshot'ları
-// da geç okunabilir; "5 dk yeter" varsayımı burada da geçersizdi).
-function saveBrowserShot(base64, tag) {
-  return mediaService.saveBrowserShot(base64, tag);
-}
+
 
 function createAppWindow(url) { return windowManager.createAppWindow(url); }
 
@@ -2828,9 +2759,9 @@ const delegationBridgeService = createDelegationBridgeService({
   resolveWindow: () => appWindow,
   logLine,
   ipcMain,
-  runBrowserAction,
-  probeBrowserTarget,
-  getBrowserGate: () => browserGate(),
+  runBrowserAction: (val) => browserService.runBrowserAction(val),
+  probeBrowserTarget: (val) => browserService.probeBrowserTarget(val),
+  getBrowserGate: () => browserService.browserGate(),
   recycleWorkerPanes,
   telemetryBump: (key) => telemetryBump(key),
   listPanesForControl,

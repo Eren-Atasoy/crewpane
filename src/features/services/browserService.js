@@ -120,9 +120,9 @@ const DEFAULT_BROWSER_DEPS = {
   saveBrowserShot: () => {},
   getAppWindowGuest: () => null,
   setAppWindowGuest: () => {},
-  lastUnownedGuest: () => null,
-  incPendingAgentTabs: () => {},
-  decPendingAgentTabs: () => {},
+  lastUnownedGuest: null,
+  incPendingAgentTabs: null,
+  decPendingAgentTabs: null,
   browserCdp: defaultBrowserCdp,
   browserGateMod: defaultBrowserGateMod,
 };
@@ -138,15 +138,60 @@ class BrowserService {
     this._agentGuests = opts.agentGuests || new Map();
     this._getAppWindowGuest = opts.getAppWindowGuest;
     this._setAppWindowGuest = opts.setAppWindowGuest;
-    this._isOwnedGuest = opts.isOwnedGuest || ((id) => this._guestOwners.has(id));
+    this._isOwnedGuest = opts.isOwnedGuest || ((id) => this.isOwnedGuest(id));
     this._lastUnownedGuest = opts.lastUnownedGuest;
     this._incPendingAgentTabs = opts.incPendingAgentTabs;
     this._decPendingAgentTabs = opts.decPendingAgentTabs;
+    this._pendingAgentTabs = typeof opts.pendingAgentTabs === 'number' ? opts.pendingAgentTabs : 0;
     this._browserCdp = opts.browserCdp;
     this._browserGateMod = opts.browserGateMod;
 
     this.ghostGuests = new Set();
     this.ghostTimer = null;
+  }
+
+  get browserGuests() {
+    return this._browserGuests;
+  }
+
+  get guestOwners() {
+    return this._guestOwners;
+  }
+
+  get agentGuests() {
+    return this._agentGuests;
+  }
+
+  get pendingAgentTabs() {
+    return this._pendingAgentTabs;
+  }
+
+  isOwnedGuest(id) {
+    return this._guestOwners.has(id);
+  }
+
+  lastUnownedGuest() {
+    if (typeof this._lastUnownedGuest === 'function') {
+      return this._lastUnownedGuest();
+    }
+    const unowned = [...this._browserGuests.values()].filter((g) => !g.isDestroyed() && !this.isOwnedGuest(g.id));
+    return unowned.length ? unowned[unowned.length - 1] : null;
+  }
+
+  incPendingAgentTabs() {
+    this._pendingAgentTabs++;
+    if (typeof this._incPendingAgentTabs === 'function') {
+      this._incPendingAgentTabs();
+    }
+  }
+
+  decPendingAgentTabs() {
+    if (this._pendingAgentTabs > 0) {
+      this._pendingAgentTabs--;
+    }
+    if (typeof this._decPendingAgentTabs === 'function') {
+      this._decPendingAgentTabs();
+    }
   }
 
   sendGhost(guestId, on) {
@@ -202,7 +247,7 @@ class BrowserService {
     if (!win || win.isDestroyed()) {
       throw new Error('uygulama penceresi kapalı — ajan sekmesi açılamıyor');
     }
-    this._incPendingAgentTabs();
+    this.incPendingAgentTabs();
     try {
       win.webContents.send('browser:agent-tab', { agentId, url: 'about:blank' });
       const deadline = Date.now() + 10000;
@@ -215,7 +260,7 @@ class BrowserService {
         await new Promise((r) => setTimeout(r, 150));
       }
     } finally {
-      this._decPendingAgentTabs();
+      this.decPendingAgentTabs();
     }
   }
 
@@ -224,9 +269,9 @@ class BrowserService {
     if (agentId) return this.resolveAgentGuest(agentId);
 
     let guest = this._getAppWindowGuest();
-    if (guest && !guest.isDestroyed() && this._isOwnedGuest(guest.id)) {
+    if (guest && !guest.isDestroyed() && this.isOwnedGuest(guest.id)) {
       this._logLine(`[adp396] insan hedefi SAHİPLİ guest'e işaret ediyordu (${this._guestOwners.get(guest.id)}) → sahipsiz sekmeye dönülüyor`);
-      guest = this._lastUnownedGuest();
+      guest = this.lastUnownedGuest();
       this._setAppWindowGuest(guest);
     }
     if (!guest || guest.isDestroyed()) {
