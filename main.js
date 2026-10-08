@@ -74,7 +74,7 @@ const {
   registerAgentxDraftIpc,
   registerDelegationIpc,
 } = require('./src/features/agents');
-const { registerPtyIpc } = require('./src/features/terminal');
+const { registerPtyIpc, registerPanesIpc } = require('./src/features/terminal');
 const { registerVoiceIpc } = require('./src/features/voice');
 let windowManager = null;
 
@@ -6626,16 +6626,19 @@ function wireIpc() {
     logLine,
   });
 
-  // ADP-028 — attach to an EXISTING pane instead of spawning a new one. Returns
-  // the rolling replay buffer + the current cumulative byte `seq` so the
-  // attaching <Terminal> can repaint recent scrollback and then dedupe any live
-  // `pty:data` it already received (events with seq <= the returned seq). The
-  // pane keeps streaming via the normal `pty:data` broadcast — attach does not
-  // re-route anything, it just hands over the backlog. Unknown paneId → ok:false.
-  // ADP-734 Kapı 2 — "N pane kurtarılabilir" teklifini UYGULA. Teklif diskte
-  // (live-panes.recoverable.json) durduğu için pencere kapanıp açılsa da geçerlidir.
-  ipcMain.handle('panes:restoreRecoverable', (event) =>
-    acceptRecoverablePanes(BrowserWindow.fromWebContents(event.sender)));
+  // ── Panes & Pane Management IPC Yüzeyi (Faz 3.5 — Sıra 11) ─────────────────
+  registerPanesIpc({
+    ipcMain,
+    BrowserWindow,
+    acceptRecoverablePanes,
+    tmuxWindows,
+    paneViewState,
+    broadcastPaneView,
+    paneDraft,
+    broadcastPaneDraft,
+    getPaneAskRuntime: () => paneAskRuntime,
+    logLine,
+  });
 
   // ── Voice & Jarvis IPC Yüzeyi (Faz 3.5 — Sıra 10) ─────────────────────────
   registerVoiceIpc({
@@ -6664,18 +6667,7 @@ function wireIpc() {
     logLine,
   });
 
-  // ADP-136 — auto-switch the operator's tmux window to the team Jarvis is about to
-  // delegate to (so the work is SEEN starting). Best-effort: tmux/session/window
-  // absent → typed no-op result, never throws. Pure mapping in tmuxWindows.cjs.
-  ipcMain.handle('tmux:selectWindow', (_event, department) => {
-    try {
-      const res = tmuxWindows.selectWindowForDepartment(department);
-      logLine(`tmux:selectWindow dept=${department ?? '-'} ok=${res.ok} target=${res.target ?? '-'} reason=${res.reason ?? '-'}`);
-      return res;
-    } catch (err) {
-      return { ok: false, reason: 'error', error: String((err && err.message) || err) };
-    }
-  });
+
 
 
 
@@ -6692,27 +6684,7 @@ function wireIpc() {
   });
 
 
-  // ADP-712 — PANE GÖRÜNÜM DURUMU (okunabilir mod). Aynı pane'in iki görünümü
-  // (ızgara hücresi + ayrı pencere) TEK tercihi paylaşsın diye durum main'de
-  // yaşar ve her değişim TÜM pencerelere yayınlanır ("pty tek, iki görünüm").
-  ipcMain.handle('paneView:get', (_event, paneId) => paneViewState.getPaneView(paneId));
-  ipcMain.handle('paneView:set', (_event, payload) => {
-    const p = payload && typeof payload === 'object' ? payload : {};
-    const res = paneViewState.setPaneView(p.paneId, p);
-    if (res.ok && res.changed) broadcastPaneView(res.paneId, res.readable);
-    return res;
-  });
 
-  // ADP-786 — GÖNDERİLMEMİŞ PROMPT TASLAĞI. Aynı gerekçe, aynı desen: taslak
-  // renderer'da yaşarsa pencere (ayrı renderer) ve mod (koşullu mount) değişimi
-  // onu SİLER — kullanıcının yazdığı metin veri kaybına dönüşür.
-  ipcMain.handle('paneDraft:get', (_event, paneId) => paneDraft.getPaneDraft(paneId));
-  ipcMain.handle('paneDraft:set', (_event, payload) => {
-    const p = payload && typeof payload === 'object' ? payload : {};
-    const res = paneDraft.setPaneDraft(p.paneId, p.text);
-    if (res.ok && res.changed) broadcastPaneDraft(res.paneId, res.text);
-    return res;
-  });
 
   // ── Agent X Draft IPC Yüzeyi (Faz 3.5 — Sıra 8) ────────────────────────────
   registerAgentxDraftIpc({
@@ -12413,17 +12385,7 @@ jarvisConv.onChange((event) => {
   if (event.status === 'expired') return; // bizim kapatmamız (close) — yankı
   void paneAskRuntime.onMirrorResolved(event.approvalId, event.status, event.choice || null);
 });
-ipcMain.handle('paneAsk:list', () => paneAskRuntime.list());
-ipcMain.handle('paneAsk:answer', (_e, p) => {
-  const o = p && typeof p === 'object' ? p : {};
-  return paneAskRuntime.answer({
-    askId: String(o.askId || ''),
-    choiceId: typeof o.choiceId === 'string' && o.choiceId ? o.choiceId : null,
-    text: typeof o.text === 'string' ? o.text : '',
-    via: 'card',
-  });
-});
-ipcMain.handle('paneAsk:dismiss', (_e, askId) => paneAskRuntime.dismiss(String(askId || '')));
+
 /** SSE dinleyicileri (gateway subscribe eder; pty/renderer olayları buraya düşer). */
 const mobileSubscribers = new Set();
 function emitMobileEvent(event) {
