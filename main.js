@@ -35,7 +35,6 @@ const crewpaneEnv = require('./src/config/crewpaneEnv.cjs'); // ADP-244 Faz 3 �
 const envProfileModule = require('./src/config/envProfile.cjs');
 const { crewpaneIdConfig } = require('./src/config/crewpaneId.cjs');
 const singleInstanceLock = require('./src/core/singleInstanceLock.cjs');
-const { renameWithRetrySync } = require('./platform/atomicWrite.cjs');
 const safeStorageIdentity = require('./src/security/safeStorageIdentity.cjs');
 const schemeOwnership = require('./src/core/schemeOwnership.cjs'); // ADP-719
 const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
@@ -134,18 +133,13 @@ const updateCheck = require('./src/services/updateCheck.cjs'); // ADP-533 — Fa
 const announcements = require('./src/services/announcements.cjs'); // ADP-675 — uygulama-içi duyuru feed'i (normalize + hedefleme)
 const updateChannel = require('./src/services/updateChannel.cjs'); // ADP-620 — yayın kanalı (stable=müşteri | beta=önce biz)
 const reportsWatcher = require('./src/services/reportsWatcher.cjs'); // ADP-298 — rapor dizinleri değişince renderer'a olay
-const skillEngineSync = require('./src/agents/skillEngineSync.cjs'); // SKL-B0 — eşitleme TETİĞİ (açılış/kök değişimi/elle) + durum özeti
-const builtinSkills = require('./src/agents/builtinSkills.cjs'); // SKL-B6 — gömülü katalog → kanonik depo KURULUM boğazı
 const crewpanePaths = require('./src/config/crewpanePaths.cjs'); // ADP-233 — <workspace>/.crewpane/{tasks,results} yol sözleşmesi
 // ADP-705 — pane⇄oturum çapası. `/clear` claude'da YENİ bir oturum (yeni uuid, yeni
 // jsonl) açar ve bunu bize SÖYLEMEZ; pty defterindeki `--session-id` o an BAYAT olur.
 // Bayat id ile okunan transcript "prompt yok" der → GERÇEKTEN ÇALIŞAN worker
 // `undelivered` YALANIYLA öldürülürdü (2026-07-28'in beş vakasının ölçülmüş kök nedeni).
 // B-01 (GIT-BACKBONE-SPEC) — görev ↔ branch ↔ proje omurgası (izole worktree).
-const worktreeStore = require('./src/services/worktreeStore.cjs');
 const worktreeService = require('./src/services/worktreeService.cjs');
-const projectRepos = require('./src/config/projectRepos.cjs');
-const codeIndexStore = require('./src/services/codeIndex.cjs'); // CIDX-1 — kod indeksi ayarı (şema + ikili keşfi + tazelik)
 const mergeService = require('./src/services/mergeService.cjs');
 const delegationQueueStore = require('./src/agents/delegationQueueStore.cjs'); // QUEUE-PERSIST — kuyruk+paused kalıcılığı
 // ADP-659 — OTOPILOT SÜREKLİLİĞİ: uçuştaki delegasyonların MAIN-side kalıcı gözcüsü.
@@ -207,8 +201,6 @@ const stdioGuard = require('./src/core/stdioGuard.cjs'); // ADP-303 — EPIPE/de
 const notifyLog = require('./src/services/notifyLog.cjs'); // ADP-538 — in-app worker completion → .agent-notifications DONE/FAIL satırı
 const moduleGuard = require('./src/agents/moduleGuard.cjs'); // ADP-335 — modül hata sınırı (bir bug uygulamayı çökertmesin)
 const teamComposeCore = require('./src/agents/teamCompose.cjs'); // TC-01 — takım kurucu: rol süzgeci, tavanlar, onay jetonu, geri alma günlüğü
-const workspaceOnboarding = require('./src/agents/workspaceOnboarding.cjs'); // ADP-232-C — ilk-açılış "çalışma alanı seç" çekirdeği
-const workspaceSwitch = require('./src/agents/workspaceSwitch.cjs'); // ADP-232-B — canlı çalışma alanı geçişi (grandfather) çekirdeği
 const engineCheck = require('./src/agents/engineCheck.cjs'); // ADP-463-B — setup sihirbazı motor/CLI probu (uyarı-only)
 const engineAuth = require('./src/agents/engineAuth.cjs'); // ADP-597 — abonelikle giriş (claude/codex oturumu Ayarlar'dan)
 const firstRunDoctor = require('./src/agents/firstRunDoctor.cjs'); // ADP-625 — ilk açılış sağlık kontrolü (ADP-616 §5.4)
@@ -820,9 +812,7 @@ const authService = createAuthService({
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
 const {
   createIntegrationService,
-  createWorkspaceFileService,
-  createCodeIndexService,
-  createWorkspaceRootService,
+  createWorkspaceServicesBundle,
 } = require('./src/features/services');
 
 const integrationService = createIntegrationService({
@@ -839,18 +829,6 @@ const integrationService = createIntegrationService({
   paneCapabilityMatrix,
 });
 
-
-
-// ── CIDX-1 — KOD İNDEKSİ SERVİSİ (src/features/services/codeIndexService.js - Faz 3.6.37)
-const codeIndexService = createCodeIndexService({
-  codeIndexStore,
-  projectRepos,
-  worktreeStore,
-  agentSettings,
-  crewpaneHome: () => crewpaneHome(),
-  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-  logLine,
-});
 
 
 // ── ADP-719/801/833/954 — AUTH URL & DEEP LINK SERVICE (src/features/auth/authUrlService.js - Faz 3.6.36)
@@ -890,109 +868,34 @@ function registerJarvisShortcut() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// ADP-082 (ADR-006 Karar 1) — workspace file bridge for the embedded code editor.
-// ---------------------------------------------------------------------------
-// Whitelisted, root-guarded fs surface (same disiplin as ptyApi's command
-// whitelist + image:saveTemp's bounds): the sandboxed renderer never touches fs
-// directly — only read/write/list through this channel, and ONLY inside the
-// workspace root. Path-traversal (`..`), absolute escapes, and symlink-escapes are
-// all rejected before any fs call. Size-capped.
-// ADP-202/203 — the file bridge below reads the SAME live `agentWorkspaceRoot`
-// binding (declared near the top); the old `WORKSPACE_ROOT` alias is gone so a
-// live switch (ADP-232-B) can never leave the two out of sync.
-const FILE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB — editor opens source files, not blobs
-
-// ADP-103 — "open any folder". The workspace is ALWAYS an active root; the user can
-// add MORE roots, but ONLY by picking them in the OS directory dialog (file:openDialog,
-// below). read/write/list are guarded to stay inside SOME active root — an arbitrary
-// absolute path the user never picked (e.g. /etc/passwd) is still rejected. This keeps
-// the sandbox model intact: capability is granted per explicit user choice, not per
-// renderer-supplied path. Roots live in this main-side allow-list only (the renderer
-// cannot mutate it except through the dialog handler, which forces a real picker).
-// ADP-232-C — agentWorkspaceRoot may be NULL (packaged + first run not completed). No
-// root → no default active root; every resolver below guards on it and denies with
-// a clear reason instead of throwing/mis-rooting into the bundle.
 const {
   gitBranchCache,
   GIT_BRANCH_TTL_MS,
   invalidateGitBranchCache,
 } = require('./src/shared/utils');
 
-// ── ADP-103/232-B/232-C/852 — ÇALIŞMA ALANI KÖK VE GEÇİŞ SERVİSİ (src/features/services/workspaceRootService.js - Faz 3.6.38)
-const workspaceRootService = createWorkspaceRootService({
+// ── ADP-WORKSPACE-BUNDLE — ÇALIŞMA ALANI & DOSYA SERVİSLERİ PAKETİ (src/features/services/workspaceServicesBundle.js - Faz 3.6.63)
+const {
+  codeIndexService,
+  workspaceRootService,
+  workspaceFileService,
+} = createWorkspaceServicesBundle({
   app,
   BrowserWindow,
-  workspaceOnboarding,
-  workspaceSwitch,
+  dialog,
+  ptys,
   agentSettings,
-  builtinSkills,
-  skillEngineSync,
-  invalidateGitBranchCache,
+  crewpaneHome: () => crewpaneHome(),
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   setAgentWorkspaceRoot: (val) => { agentWorkspaceRoot = val; },
-  workspacePlanDenial: (root) => planLimitService.workspacePlanDenial(root),
-  rememberWorkspaceRoot: (root) => planLimitService.rememberWorkspaceRoot(root),
+  planLimitService: () => (typeof planLimitService !== 'undefined' ? planLimitService : null),
+  invalidateGitBranchCache,
+  appI18n,
   logLine,
   repoRoot: REPO_ROOT,
   forceFirstRun: FORCE_FIRST_RUN,
 });
 
-// ── ADP-103/108/109/437 — ÇALIŞMA ALANI DOSYA VE KALICILIK SERVİSİ (src/features/services/workspaceFileService.js - Faz 3.6.27)
-const workspaceFileService = createWorkspaceFileService({
-  activeRoots: workspaceRootService.activeRoots,
-  getWorkspaceRoot: () => agentWorkspaceRoot,
-  getUserDataPath: () => app.getPath('userData'),
-  ptys,
-  dialog,
-  appI18n,
-  fileMaxBytes: FILE_MAX_BYTES,
-  logLine: (line) => logLine(line),
-  renameWithRetry: renameWithRetrySync,
-});
-
-
-// ADP-487 — tek-aktif-pane-per-agent: bir agentId'nin CANLI (exit olmamış) pane'i
-// varsa döndür, yoksa null. `restoreLivePanes`'in kendi "double-spawn guard"ı
-// (ADP-133 deseni, satır ~3740) ile AYNI kontrol — burada yeniden kullanılabilir
-// hale getirildi ki TEK bir yerden (bu fonksiyon) hem restore hem canlı spawn IPC'si
-// aynı gerçeği sorgulasın.
-/** ADP-896 — görev kapısının okuduğu canlı-pane görünümü (saf karar main'de kalsın). */
-/**
- * ENG-OPENCODE-DB-01 (C4) — canlı pane'lerin ürün-üretimi yerel depo dosyaları
- * (`ptys[*].isolationFile`, null'lar düşer). İkiz kapısının TEK girdisi; kararın
- * kendisi `taskClaim.decideIsolationTwin` (saf) → `agentRunner.applyPaneIsolationEnv`.
- */
-
-
-/**
- * ADP-595 — the codex custom-provider REGISTRY as the renderer sees it. The renderer
- * (çalışan formu: motor × sağlayıcı × model) must NOT keep its own list — it reads
- * THIS, whose single source is `electron/providers.cjs` (ADP-580). Adding a provider
- * there makes it appear in the UI with no renderer change.
- *
- * SECRET-SAFE: only `hasKey` (presence), never the key itself — the ADP-580 discipline.
- * `needsShim` + `adapterReady` are STATE, not names: the UI derives "kullanılabilir mi"
- * from them (ADP-594's responses→chat adapter must be listening before a needsShim
- * provider can serve a request). A name-based hardcode in the UI is forbidden.
- */
-/**
- * AGENT-MODEL-01 — MOTOR BAŞINA MODEL + EFOR SEÇENEKLERİ (ajan formu bunu çizer).
- *
- * NEDEN MAIN'DE: katalog kaynaklarından biri bir DOSYA (`~/.codex/models_cache.json`);
- * renderer diske bakamaz. Ayrıca EFOR beyaz listesinin tek kaynağı engineRegistry'dir
- * ve o da main tarafındadır. İkisini burada BİRLEŞTİRİP göndermek, UI'ın iki kuralı
- * kopyalamasını (ve zamanla ıraksamasını) engeller.
- *
- * 🪤 EFOR KÜMESİ MODEL BAŞINA: codex kataloğu her model için
- * `supported_reasoning_levels` taşır ve bu motorun taşıyıcı kümesiyle KESİŞTİRİLİR
- * (`modelCatalog.effortChoices`). Kesişim boşsa UI efor seçicisini HİÇ çizmez —
- * uygulanamayacak bir kontrol sunmak, bu kod tabanının yasakladığı sessiz
- * başarısızlıktır.
- *
- * `usable`: aiProvidersPayload ile AYNI kural — spawn'ın kendi biçim-whitelist'i
- * (`agentRunner.sanitizeModel`) sorulur, UI kural KOPYALAMAZ.
- */
 // ── SKL-B3 / ADP-595 / AGENT-MODEL-01 — API Anahtarları ve Model Katalog Servisi (src/features/auth/apiKeyService.js - Faz 3.6.28)
 const apiKeyService = createApiKeyService({
   engineRegistry,
@@ -1033,15 +936,11 @@ function _collectWindowWorkspaceDeps() {
     workspaceRootService,
     agentWorkspaceRoot,
     faultService,
-    workspaceOnboarding,
-    worktreeStore,
-    projectRepos,
     mergeService,
     worktreeService,
     REPO_ROOT,
     gitBranchCache,
     GIT_BRANCH_TTL_MS,
-    codeIndexStore,
     codeIndexService,
     invalidateGitBranchCache,
     mediaService,
@@ -1096,8 +995,6 @@ function _collectMobileVoiceAndSystemDeps() {
     jarvisVoice,
     instancePaths,
     jarvisConv,
-    skillEngineSync,
-    builtinSkills,
     delegationQueueStore,
     teamComposeCore,
     teamComposeService,

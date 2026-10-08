@@ -65,6 +65,12 @@ const defaultStaticModules = {
   teamScope: require('../../agents/teamScope.cjs'),
   livePaneRegistry: require('../../agents/livePaneRegistry.cjs'),
   capabilityRegistry: require('../../agents/capabilityRegistry.cjs'),
+  codeIndexStore: require('../../services/codeIndex.cjs'),
+  projectRepos: require('../../config/projectRepos.cjs'),
+  worktreeStore: require('../../services/worktreeStore.cjs'),
+  workspaceOnboarding: require('../../agents/workspaceOnboarding.cjs'),
+  builtinSkills: require('../../agents/builtinSkills.cjs'),
+  skillEngineSync: require('../../agents/skillEngineSync.cjs'),
 };
 
 /**
