@@ -2778,7 +2778,7 @@ function notifyScreenshotsMovedOnce() {
 
 // ─── ADP-390 (ADR-027 / G9) — CrewPane hesabı + CrewPane seat ────────────────
 // Kurulum ve boğazlar src/features/auth/service.js içinde modülerleştirildi (Faz 3.6.8).
-const { createAuthService, createPlanLimitService } = require('./src/features/auth');
+const { createAuthService, createPlanLimitService, createApiKeyService } = require('./src/features/auth');
 const { crewpaneIdConfig, gateOverrides } = require('./src/config/crewpaneId.cjs');
 // ADP-780-B — bu kopyanın URL şeması (prod: crewpane · dev: crewpane-dev · test: crewpane-test).
 const { appScheme, appSchemePrefix } = require('./src/core/appScheme.cjs');
@@ -3505,161 +3505,33 @@ function dedupeSpawnForAgent(opts, why) {
  * `usable`: aiProvidersPayload ile AYNI kural — spawn'ın kendi biçim-whitelist'i
  * (`agentRunner.sanitizeModel`) sorulur, UI kural KOPYALAMAZ.
  */
+// ── SKL-B3 / ADP-595 / AGENT-MODEL-01 — API Anahtarları ve Model Katalog Servisi (src/features/auth/apiKeyService.js - Faz 3.6.28)
+const apiKeyService = createApiKeyService({
+  engineRegistry,
+  modelCatalog,
+  providers,
+  credentialGate,
+  agentRunner,
+  repoRoot: REPO_ROOT,
+  logLine: (line) => logLine(line),
+});
+
 function engineModelCatalogPayload() {
-  const out = {};
-  for (const id of engineRegistry.engineIds()) {
-    const cat = modelCatalog.catalogFor(id);
-    const effortCap = engineRegistry.capability(id, 'effort');
-    const engineEfforts = effortCap && Array.isArray(effortCap.values) ? [...effortCap.values] : [];
-    out[id] = {
-      source: cat.source,
-      // Katalog dosyası okunamadı/boş (codex hiç koşmamış) → UI "liste alınamadı"
-      // diyebilsin; "model yok" ile "liste gelmedi" AYNI ŞEY DEĞİLDİR.
-      stale: cat.stale,
-      engineEfforts,
-      models: cat.models.map((m) => ({
-        id: m.id,
-        label: m.label,
-        // Bizim metnimiz SÖZLÜK ANAHTARI olarak gider (renderer çevirir); motorun
-        // kendi metni ham geçer. İkisi bir arada → karışık dilli liste olurdu.
-        descriptionKey: m.descriptionKey || null,
-        description: m.description || null,
-        defaultEffort: m.defaultEffort || null,
-        efforts: modelCatalog.effortChoices(engineEfforts, m),
-        usable: !!agentRunner.sanitizeModel(m.id),
-      })),
-    };
-  }
-  return out;
+  return apiKeyService.engineModelCatalogPayload();
 }
 
 function aiProvidersPayload(settings) {
-  const adapterReady = !!process.env.CREWPANE_ADAPTER_PORT;
-  // ENG-OPENAI-COMPAT-01 — kullanıcının KENDİ ucu defterin SONUNA eklenir. Ayarlar
-  // kapıdan geçmiş satırı saklar (agentSettings), o yüzden burada ek doğrulama YOK;
-  // satır yoksa (null) liste bugünküyle BİREBİR aynıdır.
-  const custom = (settings && settings.customProvider) || null;
-  return providers.allProviders(custom).map((p) => ({
-    id: p.id,
-    label: p.label,
-    settingsKey: p.settingsKey,
-    needsShim: p.needsShim,
-    // Kullanıcının eklediği satır mı (UI "düzenle/sil" sunar, ürünün satırlarına
-    // sunmaz) + ADRESİ. Adres SIR DEĞİLDİR; anahtar ASLA buraya girmez.
-    custom: p.custom === true,
-    baseUrl: p.custom === true ? p.baseUrl : null,
-    hasKey: !!(settings && settings.apiKeys && settings.apiKeys[p.settingsKey]),
-    // ADP-595 — model listesi (ajan formundaki model seçicisi bunu çizer).
-    // `usable`: bu model id'si spawn'da GERÇEKTEN uygulanabilir mi? agentRunner'ın
-    // KENDİ biçim-whitelist'i (ADP-565 sanitizeModel) sorulur — UI kural KOPYALAMAZ.
-    // Kanıtlanmış tuzak: whitelist '/' kabul etmiyor, dolayısıyla registry'deki
-    // 'moonshotai/kimi-k2-instruct' gibi id'ler spawn'da SESSİZCE düşerdi (model yok →
-    // withProvider da no-op → sağlayıcı hiç uygulanmaz). UI böyle bir modeli seçilemez
-    // gösterir; kural agentRunner'da düzelirse (ADP-585/594 sahibi) burası kendiliğinden
-    // doğruyu söyler.
-    models: p.models.map((m) => ({
-      id: m.id,
-      label: m.label,
-      usable: !!agentRunner.sanitizeModel(m.id),
-    })),
-    // ADP-595 — bu sağlayıcı ŞU AN koşturulabilir mi (durumdan türer, isimden değil):
-    // shim gerektirmeyen sağlayıcı her zaman hazır; gerektiren yalnız adapter ayaktaysa.
-    ready: p.needsShim ? adapterReady : true,
-    adapterRequired: p.needsShim,
-    adapterReady,
-  }));
+  return apiKeyService.aiProvidersPayload(settings);
 }
 
-/**
- * SKL-B3 (K-8) — ÜRÜNÜN KENDİ API anahtarları (bugün: Gemini) Ayarlar'a nasıl görünür.
- *
- * 🔴 BU LİSTE `aiProvidersPayload` DEĞİLDİR ve onunla karıştırılmamalıdır:
- *   • aiProviders  = codex'in ALTINDAKİ sağlayıcılar (Groq/DeepSeek/Kimi) — bir PANE
- *                    açar, `-c model_provider` ile koşar.
- *   • appApiKeys   = ürünün KENDİ yaptığı API çağrıları (video araştırma skill'i).
- *                    Pane açmaz, motor değildir; yalnız bir anahtar taşır.
- * Gemini'yi sağlayıcı listesine koymak, kullanıcıya codex'i Gemini ile koşturabilecekmiş
- * gibi bir buton çizerdi (Gemini uç noktası OpenAI-Responses konuşmaz → 404). Ayrı liste
- * bu sessiz başarısızlığı YAPISAL olarak imkânsız kılar.
- *
- * SIR-GÜVENLİ: yalnız `hasKey` (varlık) + `source` (KAYNAK ADI) döner; anahtarın kendisi
- * renderer'a ASLA geçmez. `source` kullanıcıya "bu değer nereden geliyor" diyebilmek
- * içindir (Ayarlar mı, elle yazılmış keys.env mi) — K-8'in şeffaflık yarısı.
- *
- * İsim-bazlı dal YOK: kartlar `productCard: true` BEYAN eden kayıtlardan türer, yani
- * ikinci bir ürün anahtarı eklemek requireCredential.cjs'te tek satırdır.
- */
 function appApiKeysPayload() {
-  return Object.values(credentialGate.SERVICES)
-    .filter((s) => s.productCard)
-    .map((s) => {
-      const r = credentialGate.resolveCredential(s.id, { rootDir: REPO_ROOT });
-      return {
-        id: s.id,
-        label: s.label,
-        settingsKey: s.settingsKey,
-        settingsField: s.settingsField,
-        keyLabel: s.keyLabel || null,
-        keyUrl: s.keyUrl || null,
-        feature: s.feature,
-        hasKey: r.ok === true,
-        source: r.ok ? r.source : null,
-        // Doğrulama düğmesi yalnız GERÇEK bir uç nokta beyan eden kayıtta çizilir —
-        // olmayan bir doğrulama vaat edilmez (ADP-749 içtihadı).
-        canVerify: !!s.verify,
-      };
-    });
+  return apiKeyService.appApiKeysPayload();
 }
 
-/**
- * SKL-B3 — "Doğrula": anahtarı GERÇEKTEN sağlayıcıya sorar (sessiz "kaydedildi"
- * rozetinin yerine geçen şey). Üç kural:
- *   1. Anahtar MAIN'de kalır: renderer ne gönderir ne alır — kapıdan çözülür.
- *   2. Anahtar BAŞLIKLA gider (`verify.header`), URL sorgusuna ASLA (sorgu dizesi
- *      proxy/erişim kayıtlarına düşer).
- *   3. Dönen metin sırdan ARINDIRILIR ve log satırı yalnız servis + kaynak + HTTP
- *      kodu taşır.
- */
-async function verifyAppApiKey(service) {
-  const spec = credentialGate.SERVICES[service];
-  if (!spec || !spec.verify) return { ok: false, reason: 'unsupported' };
-  const r = credentialGate.resolveCredential(spec.id, { rootDir: REPO_ROOT });
-  if (!r.ok) return { ok: false, reason: 'no-key', message: r.message, settingsTarget: r.settingsTarget || null };
-  // Sırrı dönen HİÇBİR metinde bırakma (sağlayıcı gövdesi bugün anahtarı yansıtmıyor
-  // ama bu bir SÖZ değil; ikinci katman ucuz).
-  const scrub = (t) => String(t == null ? '' : t).split(r.secret).join('«gizli»').slice(0, 300);
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 15000);
-  try {
-    const headerValue = spec.verify.headerFormat
-      ? `${spec.verify.headerFormat} ${r.secret}`
-      : r.secret;
-    const res = await fetch(spec.verify.url, {
-      method: 'GET',
-      headers: { [spec.verify.header]: headerValue },
-      signal: ac.signal,
-    });
-    let count = null;
-    let detail = '';
-    try {
-      const body = await res.json();
-      const list = spec.verify.countPath ? body[spec.verify.countPath] : null;
-      if (Array.isArray(list)) count = list.length;
-      if (!res.ok) detail = scrub((body && body.error && body.error.message) || '');
-    } catch {
-      /* gövde JSON değil → yalnız HTTP kodu konuşur */
-    }
-    logLine(`appkey verify service=${spec.id} source=${r.source} http=${res.status}`);
-    if (!res.ok) return { ok: false, reason: 'rejected', status: res.status, detail, source: r.source };
-    return { ok: true, source: r.source, status: res.status, count };
-  } catch (e) {
-    // Ağ yok / zaman aşımı: "anahtar geçersiz" demek YALAN olurdu — ÖLÇEMEDİK.
-    logLine(`appkey verify service=${spec.id} source=${r.source} ÖLÇEMEDİ`);
-    return { ok: false, reason: 'unreachable', detail: scrub(e && e.message), source: r.source };
-  } finally {
-    clearTimeout(timer);
-  }
+function verifyAppApiKey(service) {
+  return apiKeyService.verifyAppApiKey(service);
 }
+
 
 function wireIpc() {
   wireAppIpc({
