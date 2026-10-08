@@ -225,55 +225,19 @@ const integrityCheck = require('./src/security/integrityCheck.cjs');
 // TELEMETRİ DE BURADAN ÇIKAR: "ölçtüm" ile "raporladım" tek yerde kalsın diye.
 // İkisi ayrı yerlerde olsaydı, biri koşup diğeri koşmadığında kaç kopyanın
 // kurcalandığı sorusu sessizce yanlış cevaplanırdı.
-let integrityReportCache = null;
+const { createIntegrityService } = require('./src/security');
+const integrityService = createIntegrityService({
+  integrityCheck,
+  tamperSignals,
+  instancePaths,
+  isCustomerBuild: () => require('./src/config/buildChannel.cjs').isCustomerBuild(),
+  resourcesPath: process.resourcesPath || null,
+  logLine: (line) => logLine(line),
+  analyticsNow: () => analyticsNow(),
+  obsReporterNow: () => obsReporterNow(),
+});
 function integrityReportOnce() {
-  if (integrityReportCache) return integrityReportCache;
-  let report;
-  try {
-    report = integrityCheck.run({
-      packagedBaked: instancePaths.packagedBuild(),
-      bakedBuild: instancePaths.bakedBuildType(),
-      // `buildChannel` bu dosyada DAHA AŞAĞIDA bağlanıyor (const, TDZ). Bu
-      // fonksiyon tembel çağrıldığı için bugün sorun çıkmaz — ama sırayı bir
-      // gün değiştiren kişiye bu bağımlılığı bırakmamak için burada alınır.
-      customerBuild: require('./src/config/buildChannel.cjs').isCustomerBuild(),
-      // Paketli uygulamada `Resources` burasıdır; paketsiz koşuda kalkan zaten
-      // ilk koşulda (packagedBuild !== true) devreye girer ve buraya gelinmez.
-      resources: process.resourcesPath || null,
-    });
-  } catch (e) {
-    // Ölçüm arızası bir BULGU DEĞİLDİR: rapor gönderilmez, zorlama olmaz.
-    logLine(`integrity: ölçüm atlandı (${e && e.message})`);
-    report = { status: integrityCheck.STATUS.SKIPPED, reason: 'measure_failed', jws: null, root: null };
-  }
-  integrityReportCache = report;
-
-  if (report.status === integrityCheck.STATUS.MISMATCH) {
-    const file = integrityCheck.primaryFile(report);
-    logLine(`integrity: AYRIŞMA — değişen=${report.changed.length} eksik=${report.missing.length} `
-      + `eklenen=${report.added.length} (${report.durationMs} ms)`);
-    // SEC-W1-C1 şeması: kapalı küme `reason`, YALNIZ dosya ADI, PII yok.
-    // `signature` hâlâ 'unknown' — ölçtüğümüz şey MANİFEST imzasıdır, paketin
-    // işletim sistemi imzası değil; ölçmediğimizi 'valid' yazmak yalan olurdu.
-    const event = { reason: tamperSignals.REASONS.UNPACKED_HASH_MISMATCH, signature: 'unknown' };
-    if (file) event.file = file;
-    try { analyticsNow().track('tamper', event); } catch { /* analitik hata üretmez */ }
-    try {
-      obsReporterNow().capture({
-        surface: 'main',
-        module: 'tamper',
-        label: event.reason,
-        message: `paket bütünlüğü tutarsız: ${event.reason}`,
-        level: 'warning',
-        tamper: true,
-      });
-    } catch { /* hata takibi hata üretmez */ }
-  } else if (report.status === integrityCheck.STATUS.OK) {
-    logLine(`integrity: paket doğrulandı (${report.durationMs} ms)`);
-  } else {
-    logLine(`integrity: denetim koşmadı (${report.reason})`);
-  }
-  return integrityReportCache;
+  return integrityService.integrityReportOnce();
 }
 const analyticsSchema = require('./telemetry/analyticsSchema.cjs');
 // INT-OBS-01 — tek jetondan otomatik kurulum (org bul → proje aç → anahtar çek →

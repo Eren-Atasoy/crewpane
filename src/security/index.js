@@ -24,4 +24,7 @@ module.exports = {
   get secretRedactor() { return require(path.join(__dirname, "secretRedactor.cjs")); },
   get spendGuard() { return require(path.join(__dirname, "spendGuard.cjs")); },
   get tamperSignals() { return require(path.join(__dirname, "tamperSignals.cjs")); },
+  get integrityService() { return require(path.join(__dirname, "integrityService.js")); },
+  get createIntegrityService() { return require(path.join(__dirname, "integrityService.js")).createIntegrityService; },
+  get IntegrityService() { return require(path.join(__dirname, "integrityService.js")).IntegrityService; },
 };
