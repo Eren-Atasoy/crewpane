@@ -12,6 +12,7 @@ const { registerWorkspaceIpc } = require('./workspaceIpc');
 const { createIntegrationService } = require('./integrationService');
 const { createBrowserService, BrowserService } = require('./browserService');
 const { createWorkspaceFileService, WorkspaceFileService } = require('./workspaceFileService');
+const { createCodeIndexService, CodeIndexService } = require('./codeIndexService');
 
 module.exports = {
   createIntegrationService,
@@ -19,6 +20,8 @@ module.exports = {
   BrowserService,
   createWorkspaceFileService,
   WorkspaceFileService,
+  createCodeIndexService,
+  CodeIndexService,
   registerWorktreeIpc,
   registerBrowserIpc,
   registerIntegIpc,

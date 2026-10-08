@@ -1986,7 +1986,7 @@ function relaunchForAccountChange(nextKey, reason) {
 //   • BL-01 köprü `/sprint` → dalga tavanı (REDDETMEZ, dalgayı KISITLAR + söyler)
 
 // ─── ADP-584/585/586 — Entegrasyon Merkezi çekirdeği (src/features/services/integrationService.js - Faz 3.6.12)
-const { createIntegrationService, createBrowserService, createWorkspaceFileService } = require('./src/features/services');
+const { createIntegrationService, createBrowserService, createWorkspaceFileService, createCodeIndexService } = require('./src/features/services');
 
 const integrationService = createIntegrationService({
   instancePaths,
@@ -2018,75 +2018,26 @@ function integrationResolverOrNull() {
   return integrationService.integrationResolverOrNull();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CIDX-1 — KOD İNDEKSİ (proje başına aç/kapa, VARSAYILAN KAPALI)
-// ═══════════════════════════════════════════════════════════════════════════
-// Politika + şema `codeIndex.cjs`te (Electron'suz, test edilebilir); burada YALNIZ
-// main'in yapabildiği iki şey var: ayarı okumak (renderer'a güvenilmez) ve ikiliyi
-// kullanıcının makinesinde ARAMAK. Enjeksiyonun kendisi agentRunner'ın MEVCUT
-// `mcpRegisterArgs` → additive `--mcp-config` zincirinden geçer; burada yeni bir yol
-// YOK. Çözümleyici kurulamazsa `null` döner ve spawn bugünkü davranışını korur.
+// ── CIDX-1 — KOD İNDEKSİ SERVİSİ (src/features/services/codeIndexService.js - Faz 3.6.37)
+const codeIndexService = createCodeIndexService({
+  codeIndexStore,
+  projectRepos,
+  worktreeStore,
+  agentSettings,
+  crewpaneHome: () => crewpaneHome(),
+  getAgentWorkspaceRoot: () => agentWorkspaceRoot,
+  logLine,
+});
 function codeIndexResolverOrNull() {
-  try {
-    return codeIndexStore.createResolver({
-      readSettings: () => agentSettings.readSettings(),
-      env: process.env,
-      homedir: os.homedir(),
-      log: logLine,
-    });
-  } catch (e) {
-    logLine(`kod indeksi çözümleyicisi kurulamadı: ${e.message}`);
-    return null;
-  }
+  return codeIndexService.codeIndexResolverOrNull();
 }
-
-/**
- * CIDX-1 — bir projenin YEREL deposu (Ayarlar→Projeler ile AYNI çözümleyici).
- * Renderer yol dayatamaz (G-1): slug verir, yolu main çözer.
- */
 function codeIndexRepoPath(slug) {
-  try {
-    const repo = projectRepos.resolveProjectRepo(slug, agentWorkspaceRoot, {
-      settings: agentSettings.readSettings(), store: worktreeStore, homedir: crewpaneHome(), log: () => {},
-    });
-    return repo ? repo.repoPath : null;
-  } catch { return null; }
+  return codeIndexService.codeIndexRepoPath(slug);
 }
-
-/**
- * CIDX-1 — TAZELİK ÖLÇÜMÜ (CIDX-0'ın P0'ı burada ürüne bağlanıyor).
- *
- * `index_status` "ready" der ve `head_sha` gösterir — ama o sha CANLI PROBE'dur,
- * indeksin sha'sı DEĞİLDİR (CIDX-0 §3.2: `projects` tablosunda commit alanı yok).
- * Yani araca sorarak "bayat mı?" sorusu YANITLANAMAZ. Bu yüzden indeksi biz
- * kurarken sha'yı KENDİ defterimize yazıyoruz ve tazeliği burada, git ile ölçüyoruz.
- * Ölçülemiyorsa sonuç 'unknown' olur — "taze" diye YUVARLANMAZ (sessiz yalan yok).
- */
 function codeIndexFreshness(repoPath, indexedSha) {
-  if (!repoPath || !indexedSha) return codeIndexStore.freshness({ indexedSha: indexedSha || null });
-  const git = (args) => {
-    try {
-      return require('node:child_process')
-        .execFileSync('git', ['-C', repoPath, ...args], { encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] })
-        .trim();
-    } catch { return null; }
-  };
-  const headSha = git(['rev-parse', 'HEAD']);
-  if (!headSha) return codeIndexStore.freshness({ indexedSha });
-  // Değişen dosya = indekslenen commit'ten bugüne DOKUNULMUŞ olanlar + henüz
-  // commit'lenmemiş çalışma ağacı. İkincisi olmadan paylaşımlı ağaçta çalışan bir
-  // ajan "taze" rozetine bakıp bayat satır aralığı alırdı.
-  const committed = git(['diff', '--name-only', `${indexedSha}..HEAD`]);
-  const dirty = git(['status', '--porcelain', '--untracked-files=no']);
-  if (committed === null && dirty === null) return { ...codeIndexStore.freshness({ indexedSha }), headSha };
-  const files = new Set();
-  for (const line of (committed || '').split('\n')) { const f = line.trim(); if (f) files.add(f); }
-  for (const line of (dirty || '').split('\n')) { const f = line.slice(3).trim(); if (f) files.add(f); }
-  return { ...codeIndexStore.freshness({ indexedSha, headSha, changedFiles: [...files] }), headSha };
+  return codeIndexService.codeIndexFreshness(repoPath, indexedSha);
 }
-
-/** CIDX-1 — koşan indeksleme işleri (slug → child). Aynı projeye İKİ koşum yok. */
-const codeIndexJobs = new Map();
+const codeIndexJobs = codeIndexService.codeIndexJobs;
 
 // ── ADP-719/801/833/954 — AUTH URL & DEEP LINK SERVICE (src/features/auth/authUrlService.js - Faz 3.6.36)
 const authUrlService = createAuthUrlService({
