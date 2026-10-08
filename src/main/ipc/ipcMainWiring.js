@@ -56,6 +56,14 @@ const defaultStaticModules = {
   paneContextScope: require('../../terminal/paneContextScope.cjs'),
   engineMemoryScope: require('../../agents/engineMemoryScope.cjs'),
   clipboardHistoryCore: require('../../services/clipboardHistory.cjs'),
+  spendGuard: require('../../security/spendGuard.cjs'),
+  tokenUsage: require('../../services/tokenUsage.cjs'),
+  tokenCost: require('../../services/tokenCost.cjs'),
+  leaderComposer: require('../../agents/leaderComposer.cjs'),
+  transcriptProbe: require('../../services/transcriptProbe.cjs'),
+  leaderRefreshPolicy: require('../../agents/leaderRefreshPolicy.cjs'),
+  teamScope: require('../../agents/teamScope.cjs'),
+  livePaneRegistry: require('../../agents/livePaneRegistry.cjs'),
 };
 
 /**

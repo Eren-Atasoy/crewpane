@@ -12,8 +12,10 @@ const { createPaneQueryService, PaneQueryService, captureScreenTail } = require(
 const { createPaneAskService, PaneAskService, PANE_ASK_MIRROR_MAX } = require('./paneAskService');
 const { createPaneTranscriptService, PaneTranscriptService } = require('./paneTranscriptService');
 const { createPaneBudgetService, PaneBudgetService } = require('./paneBudgetService');
+const { createTerminalServicesBundle } = require('./terminalServicesBundle');
 
 module.exports = {
+  createTerminalServicesBundle,
   createPaneAskService,
   PaneAskService,
   PANE_ASK_MIRROR_MAX,

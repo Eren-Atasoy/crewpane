@@ -51,20 +51,7 @@ const { createMainIpcWiring } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
 const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
-const {
-  createPaneRestoreService,
-  createPtyResumeService,
-  createPtyIsolationService,
-  createPtySpawnService,
-  createPaneControlService,
-  createPaneDispatchService,
-  createPaneQueryService,
-  createPaneAskService,
-  createPaneTranscriptService,
-  createPaneBudgetService,
-  PANE_ASK_MIRROR_MAX,
-  REFRESH_SUBMIT_GAP_MS,
-} = require('./src/features/terminal');
+const { createTerminalServicesBundle } = require('./src/features/terminal');
 const { createDelegationSupervisorService } = require('./src/features/agents');
 const { createJarvisConversationService } = require('./src/features/voice');
 const { createBackendEnvService } = require('./src/features/services');
@@ -127,7 +114,6 @@ const browserCdp = require('./src/services/browserCdp.js'); // ADP-095 — heade
 const browserGateMod = require('./src/security/browserGate.cjs'); // ADP-341 — risk kapısı (izin + audit + DURDUR)
 const demoSitePath = require('./src/config/demoSitePath.cjs'); // DEMO-04 — tanıtım turunun örnek sitesinin yol boğazı
 const jarvisVoice = require('./src/voice/jarvisVoice.js'); // ADP-121 (ADR-009) — voice core (STT/brain/TTS)
-const livePaneRegistry = require('./src/agents/livePaneRegistry.cjs'); // ADP-192 — restart-resume registry
 const engineCoerce = require('./src/agents/engineCoerce.cjs'); // ENG-05 — motor değeri kapısı (bilinmeyen → null + log)
 const engineRegistry = require('./src/agents/engineRegistry.cjs'); // ENG-04/07 — motor descriptor defteri (reset komutu + yetenek beyanı)
 const paneCapabilityMatrix = require('./src/terminal/paneCapabilityMatrix.cjs'); // ENG-10 — descriptor beyanı → kullanıcı-yüzü yetenek matrisi (rozetler)
@@ -142,7 +128,6 @@ const helperReaper = require('./src/core/helperReaper.cjs'); // ADP-727 — yard
 const installReset = require('./src/security/installReset.cjs'); // RESET-01 — kurulum sıfırlama ÇEKİRDEĞİ (tek silme boğazı)
 const resetGate = require('./src/security/resetGate.cjs'); // RESET-03 — sıfırlamanın KARAR katmanı (saf; birim testli)
 const quitFunnel = require('./src/core/quitFunnel.cjs'); // HATA-14 — tek kapanış hunisi (karar + fren + adım sırası)
-const paneKill = require('./src/terminal/paneKill.cjs'); // TASK-MRDXOGZJDQLJG — quit-aware explicit pane kill
 const agentSettings = require('./src/agents/agentSettings.cjs'); // ADP-203 — user settings (~/.crewpane/settings.json)
 const appI18n = require('./i18n/index.cjs'); // ADP-888 — ana sürecin ARAYÜZ DİLİ katmanı (diyalog/bildirim metinleri)
 const updateCheck = require('./src/services/updateCheck.cjs'); // ADP-533 — Faz 1 güncelleme bildirimi (yalnız bildir + tarayıcıda indir)
@@ -152,17 +137,11 @@ const reportsWatcher = require('./src/services/reportsWatcher.cjs'); // ADP-298 
 const skillEngineSync = require('./src/agents/skillEngineSync.cjs'); // SKL-B0 — eşitleme TETİĞİ (açılış/kök değişimi/elle) + durum özeti
 const builtinSkills = require('./src/agents/builtinSkills.cjs'); // SKL-B6 — gömülü katalog → kanonik depo KURULUM boğazı
 const crewpanePaths = require('./src/config/crewpanePaths.cjs'); // ADP-233 — <workspace>/.crewpane/{tasks,results} yol sözleşmesi
-const transcriptProbe = require('./src/services/transcriptProbe.cjs'); // ADP-280 — teslim-doğrulama transcript probu
-const codexRolloutProbe = require('./src/mcp/codexRolloutProbe.cjs'); // ENG-02 — aynı probun codex defteri (rollout) dalı
-const tokenUsage = require('./src/services/tokenUsage.cjs'); // ADP-887 — pane'in jeton/maliyet ölçümü (motor defterleri)
-const tokenCost = require('./src/services/tokenCost.cjs'); // TOK-A/B — fiyat + ölçüm sabitlerinin TEK kaynağı (modelPricing.json)
 // ADP-705 — pane⇄oturum çapası. `/clear` claude'da YENİ bir oturum (yeni uuid, yeni
 // jsonl) açar ve bunu bize SÖYLEMEZ; pty defterindeki `--session-id` o an BAYAT olur.
 // Bayat id ile okunan transcript "prompt yok" der → GERÇEKTEN ÇALIŞAN worker
 // `undelivered` YALANIYLA öldürülürdü (2026-07-28'in beş vakasının ölçülmüş kök nedeni).
-const paneSessionAnchor = require('./src/terminal/paneSessionAnchor.cjs');
 // B-01 (GIT-BACKBONE-SPEC) — görev ↔ branch ↔ proje omurgası (izole worktree).
-const taskCodeMod = require('./src/agents/taskCode.cjs');
 const worktreeStore = require('./src/services/worktreeStore.cjs');
 const worktreeService = require('./src/services/worktreeService.cjs');
 const projectRepos = require('./src/config/projectRepos.cjs');
@@ -215,26 +194,18 @@ const integrityService = createIntegrityService({
 // kanal başına yaz → doğrulama olayı) + sonucun şifreli defteri.
 // ADP-692 — enjeksiyon kapısı (insan varlığı + composer hükmü); `pty:writeGuarded` bunu
 // main'de, yazımla AYNI senkron blokta koşturur → araya tuş basımı GİREMEZ.
-const leaderComposer = require('./src/agents/leaderComposer.cjs');
 // LDR-F1 — LİDER TAZELEME KAPISI (saf çekirdek: kip · soğuma · backoff · rozet hükmü ·
 // geri-yükleme metni). Karar YENİDEN ÜRETİLMEZ: `dispatchPolicy.decide` ne diyorsa odur,
 // bu modül yalnız "o karar liderde ŞU AN uygulanabilir mi" sorusunu cevaplar (LDR-R1 §5).
-const leaderRefreshPolicy = require('./src/agents/leaderRefreshPolicy.cjs');
 // LDR-F1 — lider rol slug'larının TEK KAYNAĞI (agentRunner + renderer ile AYNI dosya).
-const leaderRole = require('./src/agents/leaderRole.cjs');
 // ENT-F1 — ana sürecin TESLİM-DOĞRULAMALI yazım primitifi. ENT-R1 §3 ölçtü:
 // `writePromptToPane` (devir özeti) ve `/clear` dizisi metni yazıp 400 ms sonra
 // `\r` basıyor ve HİÇBİR ŞEY doğrulamıyordu — canlı log'da 22 sıfırlamanın 4'ü
 // "TUTMAMIŞ". Aynı primitif supervisor'ın iki yolunu da besliyor (tek uygulama).
-const { createDeliverPrompt } = require('./src/agents/deliverPrompt.cjs');
 // AXP-03 — Agent X'ten ajana prompt teslimi + makbuz (deliverToPane + transcript probu üstüne).
-const agentxDeliverMod = require('./src/agents/agentxDeliver.cjs');
-const paneAskMod = require('./src/terminal/paneAsk.cjs'); // ASK-CARD-01 — liderin karar sorusu → kart + "cevap bekliyor"
 const stdioGuard = require('./src/core/stdioGuard.cjs'); // ADP-303 — EPIPE/dead-stream guard (no crash dialog)
 const notifyLog = require('./src/services/notifyLog.cjs'); // ADP-538 — in-app worker completion → .agent-notifications DONE/FAIL satırı
 const moduleGuard = require('./src/agents/moduleGuard.cjs'); // ADP-335 — modül hata sınırı (bir bug uygulamayı çökertmesin)
-const paneControl = require('./src/terminal/paneControl.cjs'); // ADP-303 — lider pane kontrolü (kapsam + öz-koruma)
-const teamScope = require('./src/agents/teamScope.cjs'); // ADP-717 — takım kapsamı: delege + yönetim TEK karar
 const teamComposeCore = require('./src/agents/teamCompose.cjs'); // TC-01 — takım kurucu: rol süzgeci, tavanlar, onay jetonu, geri alma günlüğü
 const workspaceOnboarding = require('./src/agents/workspaceOnboarding.cjs'); // ADP-232-C — ilk-açılış "çalışma alanı seç" çekirdeği
 const workspaceSwitch = require('./src/agents/workspaceSwitch.cjs'); // ADP-232-B — canlı çalışma alanı geçişi (grandfather) çekirdeği
@@ -247,11 +218,6 @@ const crashWatchdog = require('./src/core/crashWatchdog.cjs'); // ADP-475 — cr
 const crashJournal = require('./src/core/crashJournal.cjs'); // CRASH-R1 — kapanış defteri (sebep + zaman + sinyal), açılışta geri okunur
 const nextServerPolicy = require('./src/config/nextServerPolicy.cjs'); // SMOKE-ISO-01 — Next beklenmedik ölürse: 1 kez kaldır, sonra kapat
 const jarvisWidget = require('./src/voice/jarvisWidget.cjs'); // ADP-816 — taşınabilir ses widget'ı (saf karar katmanı)
-const paneBudgetStore = require('./src/terminal/paneBudgetStore.cjs'); // TOK-C — pane bütçesi + otomatik duraklatma defteri
-const spendGuard = require('./src/security/spendGuard.cjs'); // TOK-C (D-02 v2) — "bu yazım parayı harcar mı, bütçe izin veriyor mu"
-const dispatchPolicy = require('./src/agents/dispatchPolicy.cjs'); // TOK-B (D-03) — "sürdür mü, taze oturum mu" kararının SAF çekirdeği
-const paneViewState = require('./src/terminal/paneViewState.cjs'); // ADP-712 — pane görünüm durumu (okunabilir mod) pencereler arası tek gerçek
-const paneDraft = require('./src/terminal/paneDraft.cjs'); // ADP-786 — gönderilmemiş prompt taslağı pencereler/mod arası tek gerçek
 // ─── ADP-584/585/586 — Entegrasyon Merkezi (Dalga 0) ─────────────────────────
 const integrationCatalog = require('./src/mcp/integrationCatalog.cjs'); // ADP-584/588 — servis şablonları (tek kaynak)
 const credentialGate = require('./src/security/requireCredential.cjs'); // ADP-628 — anahtar çözümlemesinin TEK boğazı
@@ -609,105 +575,63 @@ const startupGate = createStartupGate({
   logPath: () => (typeof LOG_PATH !== 'undefined' ? LOG_PATH : ''),
 });
 
-// ── ADP-192/734/761/905 — PANE GERİ YÜKLEME VE KURTARMA SERVİSİ (src/features/terminal/paneRestoreService.js - Faz 3.6.20)
-const paneRestoreService = createPaneRestoreService({
+const livePaneRegistry = require('./src/agents/livePaneRegistry.cjs'); // ADP-192 — restart-resume registry
+const transcriptProbe = require('./src/services/transcriptProbe.cjs'); // ADP-280 — teslim-doğrulama transcript probu
+const teamScope = require('./src/agents/teamScope.cjs'); // ADP-717 — takım kapsamı: delege + yönetim TEK karar
+
+const ptys = new Map();
+
+// ── ADP-TERM-BUNDLE — TERMİNAL & PTY SERVİSLERİ PAKETİ (src/features/terminal/terminalServicesBundle.js - Faz 3.6.61)
+const {
+  paneRestoreService,
+  ptyResumeService,
+  ptyIsolationService,
+  ptySpawnService,
+  paneControlService,
+  paneTranscriptService,
+  paneBudgetService,
+  paneDispatchService,
+  paneAskService,
+  paneQueryService,
+} = createTerminalServicesBundle({
+  ptys,
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
-  reportModuleFault: (fault) => (typeof faultService !== 'undefined' && faultService ? faultService.reportModuleFault(fault) : null),
-  planDenial: (feature, current, opts) => planLimitService.planDenial(feature, current, opts),
-  spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
   getAppWindow: () => appWindow,
-  ptys,
+  reportModuleFault: (fault) => (typeof faultService !== 'undefined' && faultService ? faultService.reportModuleFault(fault) : null),
+  planLimitService: () => (typeof planLimitService !== 'undefined' ? planLimitService : null),
   isRestoreDisabled: () => RESTORE_DISABLED,
   isAppProbe: () => APP_PROBE,
   getMode: () => MODE,
-});
-
-// ── ADP-limit/428/545/938 — PTY OTOMATİK DEVAM VE BİLDİRİM SERVİSİ (src/features/terminal/ptyResumeService.js - Faz 3.6.21)
-const ptyResumeService = createPtyResumeService({
-  ptys,
-  getAppWindow: () => appWindow,
-  crewpaneHome: () => crewpaneHome(),
-  logLine: (line) => logLine(line),
-  enforcePaneBudget: (opts) => paneBudgetService.enforcePaneBudget(opts),
-  respawnOptsFromEntry: (entry, ctx) => paneRestoreService.respawnOptsFromEntry(entry, ctx),
-  paneEngineResolver: paneRestoreService.paneEngineResolver,
-  spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
-  killPane: (id, entry, aid, reason) => paneControlService.killPane(id, entry, aid, reason),
   isAutoresumeDisabled: () => AUTORESUME_DISABLED,
-  isAppProbe: () => APP_PROBE,
-  getMode: () => MODE,
   limitResume02: LIMIT_RESUME_02,
   probeClaudeCliVersion: () => probeClaudeCliVersion(),
   getClaudeCliVersionCache: () => claudeCliVersionCache,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   isPackaged: () => app.isPackaged,
   repoRoot: REPO_ROOT,
-  getDepartmentDirs: () => agentSettings.readSettings().departmentDirs,
-});
-
-// ── B-01/B-02/ADP-761/ADP-896 — GÖREV İZOLASYONU VE PANE TEKİLLEŞTİRME (src/features/terminal/ptyIsolationService.js - Faz 3.6.23)
-const ptyIsolationService = createPtyIsolationService({
-  ptys,
-  crewpaneHome: () => crewpaneHome(),
-  logLine: (line) => logLine(line),
-  getWorkspaceRoot: () => agentWorkspaceRoot,
-  readSettings: () => agentSettings.readSettings(),
-  appI18n: { t: (k) => appI18n.t(k), getLocale: () => appI18n.getLocale() },
-});
-
-// ── ADP-003/013/694/852/WIN-01 — PTY PROCESS & EVENT YAŞAM DÖNGÜSÜ SERVİSİ (src/features/terminal/ptySpawnService.js - Faz 3.6.23b)
-const ptySpawnService = createPtySpawnService({
-  ptys,
-  getAppWindow: () => appWindow,
-  crewpaneHome: () => crewpaneHome(),
-  logLine: (line) => logLine(line),
-  getWorkspaceRoot: () => agentWorkspaceRoot,
-  readSettings: () => agentSettings.readSettings(),
-  appI18n: { t: (k) => appI18n.t(k), getLocale: () => appI18n.getLocale() },
-  planDenial: (feature, current, opts) => planLimitService.planDenial(feature, current, opts),
-  dedupeSpawnForAgent: (opts, why) => ptyIsolationService.dedupeSpawnForAgent(opts, why),
-  resolveTaskWorktreeSync: (opts) => ptyIsolationService.resolveTaskWorktreeSync(opts),
-  liveIsolationFiles: () => ptyIsolationService.liveIsolationFiles(),
-  integrationResolverOrNull: () => integrationService.integrationResolverOrNull(),
-  codeIndexResolverOrNull: () => codeIndexService.codeIndexResolverOrNull(),
-  getDelegationBridge: () => (delegationBridgeService ? delegationBridgeService.getBridge() : null),
-  publicSupabaseEnv: () => backendEnvService.publicSupabaseEnv(),
-  engineKeyStore: () => integrationService.engineKeyStore(),
-  reportModuleFault: (fault) => (typeof faultService !== 'undefined' && faultService ? faultService.reportModuleFault(fault) : null),
-  settleMemoryUsage: (opts) => memoryService.settleMemoryUsage(opts),
-  scheduleSupervisorSweep: (delayMs) => delegationSupervisorService.scheduleSupervisorSweep(delayMs),
+  getDepartmentDirs: () => (typeof agentSettings !== 'undefined' ? agentSettings.readSettings().departmentDirs : []),
+  readSettings: () => (typeof agentSettings !== 'undefined' ? agentSettings.readSettings() : {}),
+  appI18n,
+  integrationService: () => (typeof integrationService !== 'undefined' ? integrationService : null),
+  codeIndexService: () => (typeof codeIndexService !== 'undefined' ? codeIndexService : null),
+  getDelegationBridge: () => (typeof delegationBridgeService !== 'undefined' && delegationBridgeService ? delegationBridgeService.getBridge() : null),
+  publicSupabaseEnv: () => (typeof backendEnvService !== 'undefined' ? backendEnvService.publicSupabaseEnv() : {}),
+  memoryService: () => (typeof memoryService !== 'undefined' ? memoryService : null),
+  delegationSupervisorService: () => (typeof delegationSupervisorService !== 'undefined' ? delegationSupervisorService : null),
   sendPaneEvent: (win, paneId, channel, payload) => (windowManager ? windowManager.sendPaneEvent(win, paneId, channel, payload) : null),
-  sessionAnchor: { forget: (id) => paneTranscriptService.sessionAnchor.forget(id) },
-  dispatchStore: { clear: (id) => paneDispatchService.dispatchStore.clear(id) },
-  dispatchApplied: { delete: (id) => paneDispatchService.dispatchApplied.delete(id) },
-  leaderRefreshState: { delete: (id) => (paneDispatchService && paneDispatchService.leaderRefreshState ? paneDispatchService.leaderRefreshState.delete(id) : undefined) },
+  jarvisWidgetAlive: () => (windowManager ? windowManager.jarvisWidgetAlive() : false),
   invalidateGitBranchCache: (dir) => invalidateGitBranchCache(dir),
   isQuitting: () => Boolean(app.isQuitting),
   isAutotest: () => AUTOTEST,
-  isRestoreDisabled: () => RESTORE_DISABLED,
   hasMobileSubscribers: () => (typeof mobileService !== 'undefined' && mobileService && mobileService.mobileSubscribers ? mobileService.mobileSubscribers.size > 0 : false),
-  emitMobileEvent: (evt) => mobileService.emitMobileEvent(evt),
-  getPaneAskRuntime: () => (typeof paneAskRuntime !== 'undefined' ? paneAskRuntime : null),
-});
-
-// ── ADP-303/717/737 — LİDER PANE KONTROLÜ & WORKER DÖNGÜSÜ SERVİSİ (src/features/terminal/paneControlService.js - Faz 3.6.26)
-const paneControlService = createPaneControlService({
-  ptys,
-  getAppWindow: () => appWindow,
-  crewpaneHome: () => crewpaneHome(),
-  logLine: (line) => logLine(line),
-  getPtyResumeService: () => ptyResumeService,
+  emitMobileEvent: (evt) => (typeof mobileService !== 'undefined' && mobileService ? mobileService.emitMobileEvent(evt) : null),
   getJarvisConv: () => (typeof jarvisConv !== 'undefined' ? jarvisConv : null),
   appVersion: () => app.getVersion(),
-  isQuitting: () => Boolean(app.isQuitting),
-  engineRegistry,
-  livePaneRegistry,
-  paneControl,
-  paneKill,
-  agentRunner,
-  teamScope,
+  secretRedactor: () => (typeof secretRedactor !== 'undefined' ? secretRedactor : null),
+  BrowserWindow,
   agentSettings,
+  agentRunner,
 });
 
 const faultService = createFaultService({
@@ -757,85 +681,6 @@ const FAULT_INJECT = String(process.env.CREWPANE_FAULT_INJECT || '').split(',').
 
 // ADP-013 (ADR-002): the entry is now an agent-aware binding, not just a child.
 // The runtime binding (paneId↔agentId↔child) lives HERE — process-authoritative
-// and ephemeral by design (children die on app quit; the durable "which agent
-// belongs in which slot" lives in employees.pane + localStorage, owned by the
-// renderer). One entry per live terminal across all windows:
-//   { child, win, agentId, department, command, label, cwd, pid, startedAt,
-//     lastDataAt }
-const ptys = new Map();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ADP-705 — PANE⇄OTURUM ÇAPASI & ENG-02 — TESLİM PROBU (src/features/terminal/paneTranscriptService.js - Faz 3.6.43)
-// ─────────────────────────────────────────────────────────────────────────────
-const paneTranscriptService = createPaneTranscriptService({
-  ptys,
-  paneSessionAnchor,
-  transcriptProbe,
-  codexRolloutProbe,
-  livePaneRegistry,
-  crewpaneHome: () => crewpaneHome(),
-  logLine: (line) => logLine(line),
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TOK-C (D-02 v2) — HARCAMA FRENİ VE BÜTÇE SERVİSİ (src/features/terminal/paneBudgetService.js - Faz 3.6.43)
-// ─────────────────────────────────────────────────────────────────────────────
-const paneBudgetService = createPaneBudgetService({
-  ptys,
-  currentSessionId: (id) => paneTranscriptService.currentSessionId(id),
-  paneBudgetStore,
-  tokenUsage,
-  spendGuard,
-  getAppWindow: () => appWindow,
-  logLine: (line) => logLine(line),
-});
-
-/* ───────────────────────────────────────────────────────────────────────────
-   TOK-B (D-03) — DAĞITIM POLİTİKASI: "aynı pane'de sürdür" mü "taze oturum" mu
-   ───────────────────────────────────────────────────────────────────────────
-   TOK-OPT-01'in kuralı bugüne kadar liderin KAFASINDAYDI ve elle uygulanıyordu:
-   bayat/dev bir oturuma yeni iş yazmak, TOK-OPT-01 ölçümünde olay başına medyan
-   $3,45 (437 olay = $1.894) tutuyordu. Burası o kuralı ÜRÜNE koyar:
-
-     ölçüm  → `tokenUsage` (kartın gördüğü defterin AYNISI: son isteğin bağlamı,
-              boşta geçen dakika, tekilleştirilmiş istek sayısı)
-     eşik   → `modelPricing.contextEconomics.dispatch` (koda gömülü sayı YOK)
-     karar  → `dispatchPolicy.decide` (saf, kimlik körü)
-     uygula → renderer'ın dağıtım yolları (delegasyon + board görevi) plan alır;
-              'refresh' gelirse `pty:dispatchRefresh` tek istekle DEVİR ÖZETİ
-              alır, `/clear` yazar, özeti yeni prompt'un başına verir.
-
-   🔴 D-02'nin dersi burada da geçerli: karar SESSİZ olamaz. Her plan ve her
-   tazeleme log'a düşer, kartta görünür ve `pty:dispatch-event` ile renderer'a
-   gider — "ajanın hafızası sebepsiz silinmiş" hâli bu ürünün en pahalı yalanı
-   olurdu.                                                                    */
-
-// ── LDR-F1 / ENT-F1 — PANE DISPATCH & LEADER REFRESH SERVICE (src/features/terminal/paneDispatchService.js - Faz 3.6.33)
-const paneDispatchService = createPaneDispatchService({
-  ptys,
-  tokenUsage,
-  tokenCost,
-  dispatchPolicy,
-  currentSessionId: (paneId) => paneTranscriptService.currentSessionId(paneId),
-  logLine: (line) => logLine(line),
-  enforcePaneBudget: (opts) => paneBudgetService.enforcePaneBudget(opts),
-  spendGuard,
-  leaderRefreshPolicy,
-  leaderRole,
-  agentSettings,
-  delegationSupervisorService,
-  leaderComposer,
-  transcriptProbe,
-  secretRedactor,
-  getAppWindow: () => appWindow,
-  createDeliverPrompt,
-  agentxDeliverMod,
-  authorizeTeamScope: (opts) => paneControlService.authorizeTeamScope(opts),
-  jarvisWidgetAlive: () => (windowManager ? windowManager.jarvisWidgetAlive() : false),
-  labelTaskCodeOf: (label) => paneQueryService.labelTaskCodeOf(label),
-  sessionAnchor: paneTranscriptService.sessionAnchor,
-});
-
 // PANE-CAP-01 — ADP-264'ün SABİT canlı-pane tavanı (MAX_LIVE_PANES = 24) KALDIRILDI.
 //
 // Gerekçe ölçüldü (02.09): 4 takım 24 pane'e ulaşınca `pty:spawn rejected:
@@ -906,24 +751,6 @@ const crashWatchdogService = createCrashWatchdogService({
 });
 
 
-
-// ── ADP-013/386/905/MCP-COST-01 — PANE QUERY & LIFECYCLE SERVICE (src/features/terminal/paneQueryService.js - Faz 3.6.34)
-const paneQueryService = createPaneQueryService({
-  ptys,
-  agentRunner,
-  taskCodeMod,
-  mcpProcess,
-  paneKill,
-  livePaneRegistry,
-  crewpaneHome: () => crewpaneHome(),
-  getPtyResumeService: () => ptyResumeService,
-  paneViewState,
-  paneDraft,
-  paneBudgetStore,
-  logLine: (line) => logLine(line),
-  isQuitting: () => Boolean(app.isQuitting),
-  isAutotest: () => AUTOTEST,
-});
 
 // ---------------------------------------------------------------------------
 // ADP-440 — Screenshots özelliği AgentShot'a TAŞINDI (ayrı ürün).
@@ -1287,13 +1114,8 @@ function _collectTerminalExecutionDeps() {
     resourceGovernorService,
     agentRunner,
     engineDelegation,
-    spendGuard,
-    leaderComposer,
-    transcriptProbe,
     mobileTranscript,
-    tokenUsage,
     modelDetect,
-    livePaneRegistry,
   };
 }
 
@@ -1345,9 +1167,7 @@ function _collectMobileVoiceAndSystemDeps() {
     backendEnvService,
     installReset,
     resetGate,
-    leaderRefreshPolicy,
     updateChannel,
-    teamScope,
     appLocaleService,
     engineCheck,
     capabilityRegistry,
@@ -1506,21 +1326,6 @@ const jarvisConversationService = createJarvisConversationService({
   emitMobileEvent: (event) => mobileService.emitMobileEvent(event),
 });
 const jarvisConv = jarvisConversationService.conversation;
-
-// ── ASK-CARD-01 (FB-1009) — LİDERİN KARAR SORUSU & PANE ASK SERVİSİ (src/features/terminal/paneAskService.js - Faz 3.6.40)
-const paneAskService = createPaneAskService({
-  paneAskMod,
-  cleanPaneTail: (buf, max) => delegationBridgeMod.cleanPaneTail(buf, max),
-  BrowserWindow,
-  ptys,
-  deliverToPane: (p, t, o) => paneDispatchService.deliverToPane(p, t, o),
-  getJarvisConv: () => jarvisConv,
-  appI18n,
-  logLine,
-  submitGapMs: REFRESH_SUBMIT_GAP_MS,
-  mirrorMax: PANE_ASK_MIRROR_MAX,
-});
-const paneAskRuntime = paneAskService.runtime;
 
 mobileService = createMobileService({
   app,
