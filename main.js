@@ -47,7 +47,7 @@ const { createMobileService } = require('./src/features/mobile');
 const { wireIpc: wireAppIpc } = require('./src/main/ipc');
 const { createWindowManager } = require('./src/main/windows');
 const { createNextServerManager } = require('./src/main/server');
-const { createLifecycleManager, createStartupGate } = require('./src/main/lifecycle');
+const { createLifecycleManager, createStartupGate, createAppBootService } = require('./src/main/lifecycle');
 const { createPaneRestoreService, createPtyResumeService, createPtyIsolationService, createPtySpawnService, createPaneControlService } = require('./src/features/terminal');
 const { createDelegationSupervisorService, supervisorFingerprint } = require('./src/features/agents');
 let windowManager = null;
@@ -4336,355 +4336,85 @@ function scanE2EResidueAtStartup() {
 app.whenReady().then(async () => {
   const gate = await startupGate.runStartupGate(process.argv);
   if (!gate.proceed) return;
-  // ADP-734 Kapı 2 — defter küçülme nöbeti: yedek zaten kayıt modülünde alınır;
-  // burada LOG'a basılır ve defter BOŞALIYORSA kullanıcıya teklif edilir. Sessiz
-  // bir "7 pane → 0" yazımı bir daha yaşanmasın.
-  // ENG-05 — defterlere bilinmeyen bir motor yazılmaya çalışıldığında (yazım hatası,
-  // bozuk kayıt, HENÜZ tanınmayan yeni motor) satır `crewpane-shell.log`'a düşsün.
-  // Saf modül log bilmez; gözlemci dikişi burada takılır.
-  engineCoerce.setUnknownEngineObserver((info) => {
-    logLine(`ENG-05 ${info.message}`);
-  });
-  livePaneRegistry.setShrinkObserver((info) => {
-    logLine(
-      `live-panes KÜÇÜLDÜ ${info.prev}→${info.next} (sebep=${info.reason}) yedek=${info.backup ?? '-'}`,
-    );
-    if (info.next === 0 && info.reason !== 'consume') {
-      try {
-        const entries = Object.entries(info.panes || {}).map(([paneId, e]) => ({ paneId, ...e }));
-        offerRecoverablePanes(appWindow, entries, {
-          reason: `registry-emptied:${info.reason}`,
-          backup: info.backup,
-        });
-      } catch { /* teklif best-effort */ }
-    }
-  });
-  startCrashWatchdog(); // ADP-475 — running from boot so a heavy-build death has ticks leading into it
-  // ADP-475 — app-LEVEL catch-all (covers GPU/utility processes too, not just the
-  // app window's renderer). Logged unconditionally, in ADDITION to the per-window
-  // render-process-gone handler below (which also drives the reload recovery) —
-  // this one never reloads anything itself, it's pure redundant evidence.
-  app.on('child-process-gone', (_e, details) => {
-    logLine(`CHILD PROCESS GONE: ${JSON.stringify(details)}`);
-  });
-  scanE2EResidueAtStartup();
-  // MCP-COST-01 — ACILIS SUPURMESI. Onceki oturum cokerek olduyse (CRASH-0243-03
-  // gecesi gibi) motorlarin MCP cocuklari geride kalmis olabilir: sahibi yok, is
-  // yapmiyor, bellek tutuyor. Yalniz ATA ZINCIRINDE CANLI MOTOR OLMAYAN ve
-  // 60 sn'den yasli surecler biçilir — yeni restore edilen bir pane'in MCP'si
-  // yas kapisina takilir. `ps` okunamazsa hicbir sey iddia edilmez, hicbir sey
-  // olmez. Acilisi BEKLETMEZ (fire-and-forget).
-  startupSweepService.scheduleMcpOrphanReap();
-  startupSweepService.sweepOrphanHelpers({
+
+  const appBootService = createAppBootService({
+    engineCoerce,
+    livePaneRegistry,
+    offerRecoverablePanes,
+    getAppWindow: () => appWindow,
+    logLine,
+    startCrashWatchdog,
+    app,
+    scanE2EResidueAtStartup,
+    startupSweepService,
+    ensureSpawnHelperExecutable,
+    rehydrateGrantedRoots,
     crewpaneHome,
     repoRoot: REPO_ROOT,
     standaloneDir,
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
-  });
-  ensureSpawnHelperExecutable();
-  rehydrateGrantedRoots(); // ADP-109 — re-grant folders the user opened before (restore)
-
-  // ADP-390 — `crewpane://` şemasını bu app'e kaydet + hesabı depodan yükle.
-  // Paketsiz (dev) Electron'da OS yönlendirmesi güvenilmez (`open scheme://` = -600,
-  // ADP-382 kanıtı) — dev'de callback e2e dikişinden (crewpane:handleUrl) gelir;
-  // gerçek yönlendirme kanıtı PAKETLİ app'e aittir (build.protocols → CFBundleURLTypes).
-  //
-  // ADP-719 — DEV KAYDI KALDIRILDI (ölçülmüş zarar): buradaki `else` dalı
-  // `process.execPath` ile kaydediyordu; paketsiz koşuda bu ÇIPLAK Electron
-  // ikilisidir ve LaunchServices'e `com.github.Electron` default handler olarak
-  // yazılıyordu. Ölçüm (com.apple.launchservices.secure.plist):
-  //     LSHandlerURLScheme "crewpane" → LSHandlerRoleAll "com.github.electron"
-  // Yani KURULU CrewPane yerine bir Electron ikilisi giriş dönüşünü alıyordu
-  // ve dev süreci ölünce kayıt silinmiyordu. Artık dev'de talep edilmez;
-  // sahiplik alındı mı diye ayrıca DOĞRULANIR (claim ≠ sahiplik).
-  schemeOwnership.claimAndVerify({
-    // ADP-780-B — kanal başına AYRI şema: dev DMG artık `crewpane-dev`i talep eder,
-    // prod'un `crewpane`ini ÇALMAZ. Ölçülen bug (ADP-764 §1.2) tam olarak buydu.
-    app, scheme: APP_URL_SCHEME, log: logLine,
-    allowDevClaimEnv: 'CREWPANE_ALLOW_DEV_PROTOCOL_CLAIM',
-    // ADP-801 — e2e/ajan koşusu insan kanalının şemasını SAHİPLENMEZ.
-    automated: IS_AUTOMATED_SESSION,
-    automatedReason: AUTOMATED_SESSION_REASON,
-    // LX-SCHEME-01 — Linux'ta bu çağrı `.desktop` kaydını da KURAR (idempotent).
-    // Açılışı BEKLETMEZ: `.then` ile bağlı, `await` edilmiyor.
-    platform: process.platform,
-  }).then((v) => { schemeVerdict = v; })
-    .catch((e) => logLine(`scheme ownership check error: ${e && e.message}`));
-  // ADP-592 — keychain kapsamı değiştiyse (ilk 0.2.14 açılışı) eski blob'lar artık
-  // ÇÖZÜLEMEZ. Silmiyoruz: `.bak`'a alıp markörü yazıyoruz, böylece "neden çıkış
-  // yaptım?" sorusu logda cevaplı ve dosya geri dönülebilir. İdempotent.
-  try {
-    logLine(`safeStorage keychain kapsamı: "${safeStorageIdentity.keychainServiceName(SAFE_STORAGE_SCOPE)}"`);
-    // LX-SCHEME-01 (HATA-11 D6) — SIR SAKLAMA GERÇEĞİ. Eskiden yalnız yukarıdaki
-    // kapsam adı loglanıyordu; seçilen arka uç ve kullanılabilirlik HİÇ yazılmıyordu.
-    // Linux'ta `basic_text`e düşen bir müşteride oturum saklanamaz (credentialVault
-    // düz metni reddeder) ve bugün bu HİÇBİR LOGDA görünmüyordu.
-    // LX-SAFESTORAGE-01 — ölçüm ARTIK TEK BOĞAZDAN geçiyor: hüküm bir kez alınır,
-    // bellekte tutulur ve üç yüzey (seatGate yazma kapısı · giriş duvarı uyarısı ·
-    // Ayarlar→Sistem Durumu satırı) AYNI nesneyi okur. Log satırı DEĞİŞMEDİ.
-    secretBackendState.initSecretBackendState({
-      safeStorage: require('electron').safeStorage,
-      platform: process.platform,
-      log: logLine,
-    });
-    safeStorageIdentity.migrateAuthBlobs({
-      homeDir: instancePaths.instanceHome(), // ADP-703 — auth/ cihaz kökünde (seatGate ile aynı)
-      scope: SAFE_STORAGE_SCOPE,
-      log: (line) => logLine(line),
-    });
-  } catch (e) { logLine(`keychain scope migration error: ${e.message}`); }
-  initSeatGate();
-  // ADP-703 — HESAP KÖKÜNÜ BAĞLA. Pencereden, bridge'den, pane restore'dan ve her
-  // veri modülünden ÖNCE: `CREWPANE_ACCOUNT` pin'i buradan sonra spawn edilen HER
-  // çocuğa miras geçer (ADP-206'nın CREWPANE_INSTANCE deseni). Bekleme yalnız disk
-  // okumasıdır (seatGate.init ağa çıkmaz), yani açılış gecikmesi ölçülebilir değil.
-  await bindAccountRoot('boot').catch((e) => logLine(`[account] bağlama hatası: ${e.message}`));
-  // ADP-852 v3 — P0: hesap pin'i YENİ yazıldı, ayar önbelleği YENİ düştü. Modül
-  // yüklenirken (pin'den ÖNCE) çözülmüş `agentWorkspaceRoot` bu ana kadar YANLIŞ
-  // dosyadan geliyordu; pencereler açılmadan ÖNCE burada düzeltilir.
-  try { reresolveWorkspaceRootAfterAccountBind(); }
-  catch (e) { logLine(`workspace: yeniden çözme hatası: ${e.message}`); }
-  // SYNC-F1-6 — senkron motorunu ŞİMDİ çöz: kökler bu satırdan ÖNCE kesinleşmez
-  // (hesap pin'i + workspace yeniden çözümü). Tercih KAPALIYSA hiçbir şey kurulmaz.
-  try {
-    const st = syncRuntime.refresh({ tickNow: true });
-    logLine(`[sync] açılış: ${st.enabled ? `AÇIK (workspace=${st.setup.workspaceKey})` : `kapalı (${st.setup.reason})`}`);
-  } catch (e) { logLine(`[sync] açılış bağlaması hatası: ${e.message}`); }
-  // SYNC-F1-7 — AÇILIŞTA İKİ YÖN:
-  //   1. `prefsApplySoon()` — geçen oturumda İNMİŞ ama uygulanmamış bir doküman
-  //      olabilir (uygulama anı ile kapanış çakışmışsa). Uygulama idempotenttir.
-  //   2. `prefsProjectNow('boot')` — bu cihazın ayarları henüz hiç yansımadıysa
-  //      (ilk açılış, ya da özellik yeni geldi) projeksiyon ŞİMDİ doğar; aksi
-  //      hâlde ilk taşıma bir sonraki ayar değişikliğine kadar beklerdi.
-  // Sıra ÖNEMLİ: önce uygula (uzak taze değer kazansın), sonra yansıt.
-  try { prefsApplySoon(); prefsProjectNow('boot'); }
-  catch (e) { logLine(`[prefs] açılış bağlaması hatası: ${e.message}`); }
-  // SKL-B6 — GÖMÜLÜ KATALOĞU KUR, SONRA eşitle. Sıra önemlidir: tohumlama kanonik
-  // depoya yazar, `syncSkillEngineViews` o depoyu motor dizinlerine bağlar. Ters
-  // sırada yeni kurulan skill bir sonraki açılışa kadar hiçbir motorda GÖRÜNMEZDİ.
-  seedBuiltinSkills('boot');
-  // SKL-B0 — kök artık KESİN: motor skill dizinlerini burada eşitle. Yayın fiilini
-  // beklemek, defter büyüdüğünde eklenen motorların dizinini hiç kurmuyordu.
-  syncSkillEngineViews('boot');
-  // ADP-833 (ADR-W6) — SOĞUK AÇILIŞ: OS uygulamayı DEEP-LINK İÇİN açtıysa URL
-  // `process.argv`dedir (Windows'ta `open-url` gibi bir olay YOKTUR). darwin
-  // BİLEREK dışarıda: orada dönüş her zaman `open-url` ile gelir ve argv'yi ayrıca
-  // okumak bugünkü macOS davranışını değiştirme riski taşır (bit-bit korunuyor).
-  if (process.platform !== 'darwin') consumeArgvDeepLink(process.argv, 'cold-start-argv');
-  drainPendingAuthUrls();
-
-  wireIpc();
-  // PANE-CAP-01 — kaynak bekçisi örneklemesi. `wireIpc()`ten SONRA: ilk ölçüm
-  // `onChange` ile renderer'a kart itebilir ve o kanalın ucu burada kurulur.
-  // Zamanlayıcı `unref`li — açılışı da çıkışı da geciktirmez.
-  try {
-    startResourceGovernorSampling();
-  } catch (err) {
-    // Bekçi bir KOLAYLIKTIR; ölçemezsek uygulama sınırsız çalışır (fail-open).
-    logLine(`resourceGovernor başlatılamadı: ${err.message} — bekçisiz devam`);
-  }
-
-  // (ADP-440 — adshot:// frozen-frame protokolü overlay ile birlikte kaldırıldı.)
-
-  if (MODE === 'spike') {
-    createSpikeWindow();
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createSpikeWindow();
-    });
-    if (AUTOTEST) {
-      setTimeout(() => {
-        logLine('autotest watchdog timeout — quitting');
-        noteQuit('watchdog', 'autotest-timeout');
-        app.quit();
-      }, 20000);
-    }
-    return;
-  }
-
-  // PROV-01 — Groq'un /responses ucu codex 0.147'nin gövdesini reddediyor (providers.cjs
-  // başındaki ölçüme bakın). Sanitize eden yerel geçişi burada başlatıyoruz; portu
-  // ANCAK dinlemeye başladıktan sonra env'e yazıyoruz, çünkü providers.effectiveBaseUrl
-  // o env'in varlığına bakarak yönlendirme yapıyor. Başlatma düşerse env yazılmaz ⇒
-  // istekler doğrudan Groq'a gider (bugünkü davranış) — sessiz kırılma yok, yalnız log.
-  groqShim.startGroqShim({ log: logLine }).then(({ port }) => {
-    process.env.CREWPANE_GROQ_SHIM_PORT = String(port);
-    logLine(`[groq-shim] 127.0.0.1:${port} — Groq istekleri buradan temizlenerek geçecek`);
-  }).catch((err) => {
-    logLine(`[groq-shim] başlatılamadı (${err.message}) → Groq'a DOĞRUDAN gidilecek`);
+    schemeOwnership,
+    appUrlScheme: APP_URL_SCHEME,
+    isAutomatedSession: IS_AUTOMATED_SESSION,
+    automatedSessionReason: AUTOMATED_SESSION_REASON,
+    setSchemeVerdict: (v) => { schemeVerdict = v; },
+    safeStorageIdentity,
+    safeStorageScope: SAFE_STORAGE_SCOPE,
+    secretBackendState,
+    instanceHome: instancePaths.instanceHome(),
+    initSeatGate,
+    bindAccountRoot,
+    reresolveWorkspaceRootAfterAccountBind,
+    syncRuntime,
+    prefsApplySoon,
+    prefsProjectNow,
+    seedBuiltinSkills,
+    syncSkillEngineViews,
+    consumeArgvDeepLink,
+    drainPendingAuthUrls,
+    wireIpc,
+    startResourceGovernorSampling,
+    createSpikeWindow,
+    BrowserWindow,
+    autotest: AUTOTEST,
+    noteQuit,
+    groqShim,
+    providers,
+    adapter,
+    registerJarvisShortcut,
+    scheduleHandControlWarmup,
+    stopHandControl,
+    scheduleUpdateChecks,
+    startHeartbeat,
+    scheduleAnnounceChecks,
+    scheduleChangelogChecks,
+    scheduleAutoMemoryIndex,
+    memoryIndexerSingleton,
+    searchIndexSingleton,
+    jarvisVoice,
+    notifyScreenshotsMovedOnce,
+    runDoctorNow,
+    doctorService,
+    telemetryMod,
+    agentSettings,
+    telemetryProvisioning,
+    obsReporterNow,
+    telemetryChannelMod,
+    analyticsNow,
+    analyticsFirstTime,
+    tamperSignals,
+    faultInject: FAULT_INJECT,
+    supervisorFor,
+    externalUrl: process.env.CREWPANE_EXTERNAL_URL,
+    mode: MODE,
+    createAppWindow,
+    startBridge,
+    startMobile,
+    startNextServer,
   });
 
-  // ADP-594 — start Responses→ChatCompletions adapter if needsShim:true providers exist
-  if (providers.allProviders().some(p => p.needsShim)) {
-    adapter.startAdapter().then(({ port }) => {
-      logLine(`[adapter] started on 127.0.0.1:${port}`);
-    }).catch((err) => {
-      logLine(`[adapter] start failed: ${err.message}`);
-    });
-  }
-
-  // ADP-121 (ADR-009) — Jarvis activation hotkey (toggle).
-  registerJarvisShortcut();
-  // HAND-A2 — açılış ısınması: gizli tespit penceresi kamerasız yüklenir,
-  // GPU shader'ları boş kanvasla derlenir (kamera ışığı YANMAZ).
-  scheduleHandControlWarmup();
-  app.on('before-quit', () => {
-    // Kapanışta kaynak kalmaz: kamera kapanır, basılı buton bırakılır; gizli
-    // pencere app ile ölür (kalıcı süreç YOK — D mimarisinin varlık nedeni).
-    try { stopHandControl('uygulama kapanıyor'); } catch { /* kapanış yarışı zararsız */ }
-  });
-  // ADP-533 — açılış + ~6 saat periyodik güncelleme kontrolü (sessiz-hata sözleşmesi).
-  scheduleUpdateChecks();
-  // ADP-715/845 — TELEMETRİ. Sırayla: (1) hata takibi kablosu — ADP-845 K1 gereği
-  // SDK/DSN yok, yani bugün `enabled:false` döner ve TEK OLAY GİTMEZ; kablonun
-  // doğru dosyada olması yarın DSN verildiğinde tek satırla açılabilmesi içindir.
-  // (2) heartbeat — bugün gerçekten veri üreten kısım.
-  try {
-    const t = telemetryMod.initTelemetry({
-      version: app.getVersion(),
-      config: agentSettings.readSettings(),
-      // INT-OBS-01 — Entegrasyon Merkezi'nden kurulan anahtarlar da buradan görünür.
-      deps: { provisionStore: telemetryProvisioning().store },
-    });
-    logLine(`telemetry: hata-takibi ${t.enabled ? `AÇIK (${t.channel})` : `kapalı (${t.reason})`}`);
-  } catch (e) {
-    logLine(`telemetry: init atlandı (${e && e.message})`);
-  }
-  // OBS-02 — hata takibi (Sentry) durumunu AÇIKÇA logla. "Kapalı" kelimesi de bir
-  // bilgidir: destek "log'da telemetry satırı ne diyor?" diye sorabilsin.
-  try {
-    const r = obsReporterNow();
-    logLine(`obs: sentry ${r.enabledNow() ? 'AÇIK' : 'kapalı'} (kanal=${telemetryChannelMod.resolveChannel()}, sürüm=${app.getVersion()}, ${process.platform}/${process.arch})`);
-  } catch { /* raporlayıcı zaten kendi içinde güvenli */ }
-
-  // ─── OBS-01 — ANALİTİK: durum satırı + huninin İLK ADIMI ──────────────────
-  // Durum satırı Sentry'ninkiyle aynı sebeple var: destek "log'da analytics satırı
-  // ne diyor?" diye sorabilsin. `app_opened` huninin girişidir — `first_run` bu
-  // kurulumun ilk açılışını işaretler, yani "kaç kişi kurdu → kaç kişi ilk ajanını
-  // çalıştırdı" sorusunun paydası.
-  try {
-    const a = analyticsNow();
-    logLine(`analytics: posthog ${a.enabledNow() ? 'AÇIK' : 'kapalı'} (kanal=${telemetryChannelMod.resolveChannel()}, sürüm=${app.getVersion()})`);
-    a.track('app_opened', { first_run: analyticsFirstTime('app_opened') });
-  } catch { /* analitik zaten kendi içinde güvenli */ }
-
-  // ─── SEC-W1-C1 — KURCALAMA SİNYALİ ────────────────────────────────────────
-  // Ölçüm `tamperSignals.detect()`te (saf, DI'lı, birim testli); burada yalnız
-  // MUSLUKLARA bağlanır: PostHog'a bir `tamper` olayı, Sentry'ye `tamper=true`
-  // etiketli bir kayıt. İkisi ayrı sorulara cevap verir — "kaç kopya" (analitik)
-  // ve "bu çökme kurcalanmış bir kopyadan mı" (hata takibi).
-  //
-  // Sinyal YOKSA tek satır bile koşmaz: sağlam müşteri paketinde, dev/test
-  // DMG'sinde ve bare-run'da `detect()` null döner (bkz. modül başlığındaki
-  // yanlış-pozitif tablosu).
-  //
-  // 🔴 BURAYA BİR "SELFTEST" ENV BAYRAĞI EKLENMEZ. SEC-W1-A1 müşteri paketinden
-  // env okuyan kaçış dallarını FİZİKSEL olarak söktü; ölçüm kolaylığı için bir
-  // gün sonra yenisini koymak o kararı geri alırdı. Kapının KIRMIZI verebildiği
-  // başka türlü ölçülüyor: birim testte dört kol + paketin GERÇEK dosyalarıyla
-  // süreç seviyesinde kırmızı/yeşil kolları (SEC-W1-C1 raporu §2.2).
-  try {
-    const finding = tamperSignals.detect();
-    if (finding) {
-      logLine(`tamper: TUTARSIZLIK — ${finding.reason} (imza=${finding.signature})`);
-      try { analyticsNow().track('tamper', finding); } catch { /* analitik hata üretmez */ }
-      try {
-        obsReporterNow().capture({
-          surface: 'main',
-          module: 'tamper',
-          label: finding.reason,
-          message: `paket bütünlüğü tutarsız: ${finding.reason}`,
-          level: 'warning',
-          tamper: true,
-        });
-      } catch { /* hata takibi hata üretmez */ }
-    }
-  } catch (e) { logLine(`tamper: ölçüm atlandı (${e && e.message})`); }
-  // Tampon çıkışta boşalsın: son oturumun olayları bir sonraki açılışı beklemesin.
-  // (Tampon diskte DEĞİL bellektedir — çıkışta gönderilmezse kaybolur.)
-  app.on('before-quit', () => { try { analyticsNow().flush('quit'); } catch { /* çıkışı geciktirme */ } });
-
-  // ── TEST-ONLY: SENTETİK HATA ENJEKSİYONU ─────────────────────────────────
-  // `CREWPANE_FAULT_INJECT` ADP-335'te TANIMLANMIŞ ama HİÇ TÜKETİLMEMİŞTİ
-  // (ölçüldü: dosyada tek referans kendi tanımıydı) — yani hata sınırının gerçek
-  // uygulamada tuttuğunu kanıtlayacak kanca ölü doğmuştu. OBS-02 onu çalıştırır:
-  // `obs` bileti, GERÇEK bir supervisor'ın içinde GERÇEK bir ReferenceError
-  // fırlatır → moduleGuard → reportModuleFault → log + bildirim + Sentry. Env
-  // verilmediğinde tek satır bile koşmaz (üretimde sıfır etki).
-  if (FAULT_INJECT.includes('obs')) {
-    logLine('obs: FAULT_INJECT=obs — main yüzeyinde sentetik hata fırlatılıyor');
-    supervisorFor('obs-selftest').run('inject', () => {
-      // Bilerek tanımsız çağrı: ajanın yazdığı sıradan bir kod hatasının aynısı.
-      return globalThis.__obs_bu_fonksiyon_yok__();
-    }, null);
-  }
-  startHeartbeat();
-  // ADP-675 — açılış + ~4 saat periyodik DUYURU çekimi (önce diskteki kopya, sonra ağ).
-  scheduleAnnounceChecks();
-  // A-10 — açılış + ~6 saat periyodik CHANGELOG çekimi (önce diskteki kopya, sonra ağ).
-  scheduleChangelogChecks();
-  // ADP-900 — hafıza arama indeksini arka planda, düşük öncelikle, gecikmeli kur.
-  scheduleAutoMemoryIndex();
-  // TTS-ORPHAN-01 · katman D — AÇILIŞTA YETİM `say` SÜPÜRGESİ.
-  startupSweepService.sweepOrphanSayProcesses();
-  // MEMIDX-LEAK-01 — İNDEKSLEME ÇOCUKLARI UYGULAMAYLA BİRLİKTE GİDER (katman A).
-  //
-  // Ölçüldü (07.09 gecesi): bu kanca YOKKEN her açılış/kapanış bir yetim bıraktı —
-  // 5/5 bare-run kapanışında worker ppid 1'e düştü ve 1968 dosyalık indekslemeye
-  // saatlerce devam etti; gecede 48 yetim, loadavg 229 (14 çekirdek). Tek yer, iki
-  // servis: ikisi de AYNI fork desenini kullanıyor, ikisi de aynı kuralı taşımalı.
-  // Katman B (ebeveyn SIGKILL'lendiğinde koşan tek şey) çocuk tarafındadır:
-  // childIpcSafe · installOrphanGuard.
-  app.on('before-quit', () => {
-    try { memoryIndexerSingleton?.shutdown(); } catch { /* kapanışı geciktirme */ }
-    try { searchIndexSingleton?.stop(); } catch { /* kapanışı geciktirme */ }
-    // TTS-ORPHAN-01 — AYNI LİSTEYE `say`/`afplay` DE GİRDİ. MEMIDX-LEAK-01 yalnız
-    // indeks/gömme/arama çocuklarını kapatıyordu; yerel TTS çocuğu listede DEĞİLDİ
-    // ve 07.09 gecesi 6 ebeveynsiz `say -o … "Tamam."` (ppid 1, biri 1 sa 30 dk)
-    // bıraktı. Gerekçe ve üç katman: electron/jarvisVoice.js · TTS-ORPHAN-01.
-    try { jarvisVoice.killLocalAudioChildren(); } catch { /* kapanışı geciktirme */ }
-  });
-  // ADP-440 — ekran görüntüleri AgentShot'a taşındı; eski kullanıcıya TEK SEFER bilgi.
-  notifyScreenshotsMovedOnce();
-  // ADP-625 — İLK AÇILIŞ DOKTORU: eksik dizinleri sessizce onarır, kalanını LOGLAR.
-  // Bloklamaz, diyalog açmaz, kullanıcıyı rahatsız etmez — destek için tek satır
-  // kanıt bırakır ve "Sistem Durumu" ekranı aynı raporu gösterir. Bağlantı yoklaması
-  // ağ beklediği için await EDİLMEZ: pencere açılışını hiçbir koşulda geciktirmez.
-  runDoctorNow()
-    .then((report) => logLine(doctorService.formatDoctorLog(report)))
-    .catch((e) => logLine(`[doctor] çalıştırılamadı: ${e && e.message}`));
-
-  try {
-    // Test-only escape hatch: attach to an ALREADY-running Next server instead of
-    // spawning one. Lets the e2e harness drive a real `next dev` renderer (React
-    // Strict Mode ON) without tripping Next 16's one-dev-server-per-dir lock.
-    // Harmless in normal use (env unset) and never reached in a packaged app.
-    const external = process.env.CREWPANE_EXTERNAL_URL;
-    if (external) {
-      logLine(`attaching to external server: ${external}`);
-      createAppWindow(external);
-      await startBridge();
-      await startMobile(); // ADP-293 — yalnız enabled ise ayağa kalkar (kill-switch dosyada)
-      app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createAppWindow(external);
-      });
-      return;
-    }
-    const url = await startNextServer(MODE);
-    createAppWindow(url);
-    await startBridge();
-    await startMobile(); // ADP-293 — yalnız enabled ise ayağa kalkar (kill-switch dosyada)
-    app.on('activate', () => {
-      // ADP-816 — koşul "hiç pencere yok" DEĞİL "ANA pencere yok": ses widget'ı
-      // (ya da bir pop-out) açıkken ana pencere kapatılırsa dock ikonuna basmak
-      // eskiden HİÇBİR ŞEY yapmıyordu — uygulama geri getirilemez hâle geliyordu.
-      if (!appWindow || appWindow.isDestroyed()) createAppWindow(url);
-    });
-  } catch (err) {
-    logLine('FATAL: ' + err.message);
-    noteQuit('fatal', err.message);
-    app.quit();
-  }
+  await appBootService.boot();
 });
 // ADP-303 / ADP-717 / ADP-737 — Lider pane kontrolü ve worker pane geri dönüşümü
 // src/features/terminal/paneControlService.js içine taşındı (bkz: paneControlService).
