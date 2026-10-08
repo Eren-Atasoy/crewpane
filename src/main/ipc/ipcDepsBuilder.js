@@ -54,7 +54,7 @@ function buildPlatformAndWindowDeps(ctx) {
     getAppUrlPrefix: ctx.getAppUrlPrefix || (() => ctx.APP_URL_PREFIX),
     mode: ctx.mode ?? ctx.MODE,
     relaunchApp: ctx.relaunchApp,
-    rebuildAndRelaunch: ctx.rebuildAndRelaunch,
+    rebuildAndRelaunch: ctx.rebuildAndRelaunch || ((e) => (ctx.rebuildService ? ctx.rebuildService.rebuildAndRelaunch(e) : null)),
   };
 }
 
@@ -94,9 +94,9 @@ function buildWorkspaceAndStorageDeps(ctx) {
     getWorkspaceRoot: ctx.getWorkspaceRoot || (() => ctx.agentWorkspaceRoot),
     supervisorFor: ctx.supervisorFor,
     feedbackBridge: (typeof ctx.feedbackBridge === 'function' ? ctx.feedbackBridge : () => (ctx.mediaService ? ctx.mediaService.feedbackBridge() : null)),
-    workspacePlanDenial: ctx.workspacePlanDenial,
+    workspacePlanDenial: ctx.workspacePlanDenial || ((root) => (ctx.planLimitService ? ctx.planLimitService.workspacePlanDenial(root) : null)),
     workspaceOnboarding: ctx.workspaceOnboarding,
-    rememberWorkspaceRoot: ctx.rememberWorkspaceRoot,
+    rememberWorkspaceRoot: ctx.rememberWorkspaceRoot || ((root) => (ctx.planLimitService ? ctx.planLimitService.rememberWorkspaceRoot(root) : null)),
     switchWorkspaceRoot: ctx.switchWorkspaceRoot || ((root) => (wsRoots ? wsRoots.switchWorkspaceRoot(root) : null)),
     worktreeStore: ctx.worktreeStore,
     projectRepos: ctx.projectRepos,
@@ -399,7 +399,7 @@ function _buildSkillAndSupervisorDeps(ctx) {
     setAppWindowGuest: ctx.setAppWindowGuest,
     getAppWindowGuest: ctx.getAppWindowGuest,
     integrations: ctx.integrations,
-    planDenial: ctx.planDenial,
+    planDenial: ctx.planDenial || ((feat, curr, opts) => (ctx.planLimitService ? ctx.planLimitService.planDenial(feat, curr, opts) : null)),
     mcpProcess: ctx.mcpProcess,
     integrationAutostart: ctx.integrationAutostart,
     sprintStore: ctx.sprintStore,
@@ -530,7 +530,7 @@ function buildSystemAuthAndEngineDeps(ctx) {
     engineCatalog: ctx.engineCatalog,
     teamScope: ctx.teamScope,
     browserTrustMod: ctx.browserTrustMod,
-    broadcastLocale: ctx.broadcastLocale,
+    broadcastLocale: ctx.broadcastLocale || (() => (ctx.appLocaleService ? ctx.appLocaleService.broadcastLocale() : null)),
     prefsProjectNow: ctx.prefsProjectNow || ((reason) => (ctx.syncService ? ctx.syncService.prefsProjectNow(reason) : null)),
     applyHandOverlaySettings: ctx.applyHandOverlaySettings,
     presetAdvisor: ctx.presetAdvisor,

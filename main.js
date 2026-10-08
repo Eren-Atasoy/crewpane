@@ -90,7 +90,7 @@ const bootstrapCtx = {
           return;
         }
         logLine('[single-instance] odak isteği: ana pencere kapalıydı — yeniden açılıyor');
-        createAppWindow(appBaseUrl);
+        if (windowManager) windowManager.createAppWindow(appBaseUrl);
         win = appWindow;
         if (!win || win.isDestroyed()) return;
       }
@@ -652,8 +652,7 @@ const appLocaleService = createAppLocaleService({
   agentSettings,
   logLine,
 });
-function applyAppLocale() { return appLocaleService.applyAppLocale(); }
-function broadcastLocale() { return appLocaleService.broadcastLocale(); }
+
 // ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
 const { createUpdateService } = require('./src/features/update');
 
@@ -750,7 +749,7 @@ const startupGate = createStartupGate({
   resetBootService,
   resetT: (k) => resetBootService.resetT(k),
   logEnvBannerAndGuard: () => logEnvBannerAndGuard(),
-  applyAppLocale: () => applyAppLocale(),
+  applyAppLocale: () => appLocaleService.applyAppLocale(),
   initLog: () => initLog(),
   logLine: (line) => logLine(line),
   crewpaneHome: () => crewpaneHome(),
@@ -785,7 +784,7 @@ const paneRestoreService = createPaneRestoreService({
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
   reportModuleFault: (fault) => reportModuleFault(fault),
-  planDenial: (feature, current, opts) => planDenial(feature, current, opts),
+  planDenial: (feature, current, opts) => planLimitService.planDenial(feature, current, opts),
   spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
   getAppWindow: () => appWindow,
   ptys,
@@ -836,10 +835,10 @@ const ptySpawnService = createPtySpawnService({
   getWorkspaceRoot: () => agentWorkspaceRoot,
   readSettings: () => agentSettings.readSettings(),
   appI18n: { t: (k) => appI18n.t(k), getLocale: () => appI18n.getLocale() },
-  planDenial: (feature, current, opts) => planDenial(feature, current, opts),
+  planDenial: (feature, current, opts) => planLimitService.planDenial(feature, current, opts),
   dedupeSpawnForAgent: (opts, why) => ptyIsolationService.dedupeSpawnForAgent(opts, why),
   resolveTaskWorktreeSync: (opts) => ptyIsolationService.resolveTaskWorktreeSync(opts),
-  liveIsolationFiles: () => liveIsolationFiles(),
+  liveIsolationFiles: () => ptyIsolationService.liveIsolationFiles(),
   integrationResolverOrNull: () => integrationResolverOrNull(),
   codeIndexResolverOrNull: () => codeIndexResolverOrNull(),
   getDelegationBridge: () => (delegationBridgeService ? delegationBridgeService.getBridge() : null),
@@ -906,7 +905,7 @@ const delegationSupervisorService = createDelegationSupervisorService({
   crewpaneHome: () => crewpaneHome(),
   logLine: (line) => logLine(line),
   getAppWindow: () => appWindow,
-  planDenial: (feat, count, opts) => planDenial(feat, count, opts),
+  planDenial: (feat, count, opts) => planLimitService.planDenial(feat, count, opts),
   supervisorFor: (name) => supervisorFor(name),
   resolveWorkerNotifyPath: (dept) => ptyResumeService.resolveWorkerNotifyPath(dept),
   rendererSupabaseTarget: () => rendererSupabaseTarget(),
@@ -1199,29 +1198,13 @@ const planLimitService = createPlanLimitService({
   logLine,
 });
 
-function pushPlanLimit(denial) {
-  return planLimitService.pushPlanLimit(denial);
-}
-function planDenial(feature, current = 0, opts = {}) {
-  return planLimitService.planDenial(feature, current, opts);
-}
-function workspacePlanDenial(root) {
-  return planLimitService.workspacePlanDenial(root);
-}
-function planWaveLimit(requested) {
-  return planLimitService.planWaveLimit(requested);
-}
-function rememberWorkspaceRoot(root) {
-  return planLimitService.rememberWorkspaceRoot(root);
-}
-
 const authService = createAuthService({
   instancePaths,
   app,
   shell,
   logLine,
   getAppWindow: () => appWindow,
-  pushPlanLimit: (denial) => pushPlanLimit(denial),
+  pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
   integrityReportOnce: () => integrityReportOnce(),
   ptys,
   persistScreenTails: () => paneQueryService.persistScreenTails(),
@@ -1236,14 +1219,14 @@ const authService = createAuthService({
   testSeamDeps: {
     updateCheck,
     supervisorPushRenderer: (c, p) => delegationSupervisorService.supervisorPushRenderer(c, p),
-    planWaveLimit: (r) => planWaveLimit(r),
+    planWaveLimit: (r) => planLimitService.planWaveLimit(r),
     spawnPty: (win, opts) => ptySpawnService.spawnPty(win, opts),
     ptys,
     livePaneRegistry,
     crewpaneHome: () => crewpaneHome(),
     killPane: (id, e, aid, r) => paneControlService.killPane(id, e, aid, r),
     mobilePlanDenial: (opts) => mobileService.mobilePlanDenial(opts),
-    designPlanDenial: ({ notify = true } = {}) => planDenial('designMode', 0, { notify }),
+    designPlanDenial: ({ notify = true } = {}) => planLimitService.planDenial('designMode', 0, { notify }),
     BrowserWindow,
     getRestoreSkippedByPlan: () => paneRestoreService.getRestoreSkippedByPlan(),
     getSupervisorAdvanceBlocked: () => delegationSupervisorService.getSupervisorAdvanceBlocked(),
@@ -1445,8 +1428,8 @@ const workspaceRootService = createWorkspaceRootService({
   invalidateGitBranchCache,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
   setAgentWorkspaceRoot: (val) => { agentWorkspaceRoot = val; },
-  workspacePlanDenial,
-  rememberWorkspaceRoot,
+  workspacePlanDenial: (root) => planLimitService.workspacePlanDenial(root),
+  rememberWorkspaceRoot: (root) => planLimitService.rememberWorkspaceRoot(root),
   logLine,
   repoRoot: REPO_ROOT,
   forceFirstRun: FORCE_FIRST_RUN,
@@ -1491,9 +1474,7 @@ const workspaceFileService = createWorkspaceFileService({
  * (`ptys[*].isolationFile`, null'lar düşer). İkiz kapısının TEK girdisi; kararın
  * kendisi `taskClaim.decideIsolationTwin` (saf) → `agentRunner.applyPaneIsolationEnv`.
  */
-function liveIsolationFiles() {
-  return ptyIsolationService.liveIsolationFiles();
-}
+
 
 /**
  * ADP-595 — the codex custom-provider REGISTRY as the renderer sees it. The renderer
@@ -1558,14 +1539,13 @@ function _buildWindowAndWorkspaceDeps() {
     APP_URL_PREFIX,
     MODE,
     relaunchApp,
-    rebuildAndRelaunch,
+    rebuildService,
+    planLimitService,
     workspaceFileService,
     workspaceRootService,
     agentWorkspaceRoot,
     supervisorFor,
-    workspacePlanDenial,
     workspaceOnboarding,
-    rememberWorkspaceRoot,
     switchWorkspaceRoot,
     worktreeStore,
     projectRepos,
@@ -1644,7 +1624,6 @@ function _buildMobileAndVoiceIpcDeps() {
     setAppWindowGuest: (g) => { appWindowGuest = g; },
     getAppWindowGuest: () => appWindowGuest,
     integrations,
-    planDenial,
     mcpProcess,
     integrationAutostart,
     sprintStore,
@@ -1721,7 +1700,7 @@ function _buildSystemAndEngineIpcDeps() {
     engineCatalog,
     teamScope,
     browserTrustMod,
-    broadcastLocale,
+    appLocaleService,
     syncService,
     presetAdvisor,
     engineCheck,
@@ -1785,7 +1764,7 @@ const rebuildService = createRebuildService({
   logLine,
   relaunchApp,
 });
-function rebuildAndRelaunch(event) { return rebuildService.rebuildAndRelaunch(event); }
+
 
 // ---------------------------------------------------------------------------
 // Windows
@@ -1822,7 +1801,7 @@ windowManager = createWindowManager({
   supabaseTarget,
   rendererSupabaseTarget,
   appI18n,
-  applyAppLocale,
+  applyAppLocale: () => appLocaleService.applyAppLocale(),
   isTest: instancePaths.isTest(),
   crewpaneHome,
   APP_PROBE,
@@ -1865,7 +1844,7 @@ windowManager = createWindowManager({
   broadcastHandControlStatus: () => handService.broadcastHandControlStatus(),
 });
 
-function createAppWindow(url) { return windowManager.createAppWindow(url); }
+
 
 // ADP-303 / ADP-717 / ADP-737 — Lider pane kontrolü ve worker pane geri dönüşümü
 // src/features/terminal/paneControlService.js içine taşındı (bkz: paneControlService).
@@ -1916,7 +1895,7 @@ mobileService = createMobileService({
   getAppWindow: () => appWindow,
   rendererSupabaseTarget,
   getMobileAppDbToken: () => mobileAppDbToken(),
-  planDenial,
+  planDenial: (f, c, o) => planLimitService.planDenial(f, c, o),
   delegationBridgeMod,
   secretRedactor,
   mobileTranscript,
@@ -1967,9 +1946,9 @@ const syncService = createSyncService({
   getSeatGate: () => seatGate,
   appDbTokenFor,
   memoryIndexDerive,
-  pushPlanLimit,
+  pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),
   logLine,
-  broadcastLocale,
+  broadcastLocale: () => appLocaleService.broadcastLocale(),
   getAppWindow: () => appWindow,
   getPopoutWindows: () => (windowManager ? windowManager.popoutWindows : new Map()),
   prefsProjectorFactory,
@@ -2076,7 +2055,7 @@ const delegationBridgeService = createDelegationBridgeService({
   appDbTokenFor: (source) => appDbTokenFor(source),
   integrationsStatusFor: (req) => integrationsStatusFor(req),
   seatDenial: (action) => seatDenial(action),
-  planWaveLimit: (requested) => planWaveLimit(requested),
+  planWaveLimit: (requested) => planLimitService.planWaveLimit(requested),
   deliverDictationToFocusedSurface: (text) => deliverDictationToFocusedSurface(text),
 });
 
