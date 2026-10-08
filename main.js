@@ -676,7 +676,20 @@ const {
   createMediaService,
   createDoctorService,
   createStartupSweepService,
+  createAppLocaleService,
+  createRebuildService,
 } = require('./src/features/system');
+
+// ── ADP-888/885/889 — UYGULAMA YERELLEŞTİRME SERVİSİ (src/features/system/appLocaleService.js - Faz 3.6.42)
+const appLocaleService = createAppLocaleService({
+  app,
+  BrowserWindow,
+  appI18n,
+  agentSettings,
+  logLine,
+});
+function applyAppLocale() { return appLocaleService.applyAppLocale(); }
+function broadcastLocale() { return appLocaleService.broadcastLocale(); }
 // ── ADP-533/553/620 — GÜNCELLEME SERVİSİ (src/features/update/updateService.js - Faz 3.6.14)
 const { createUpdateService } = require('./src/features/update');
 
@@ -2472,119 +2485,20 @@ function startNextServer(mode, opts) { return nextServerManager.startNextServer(
 function stopNextServer() { return nextServerManager.stopNextServer(); }
 
 // ---------------------------------------------------------------------------
-// ADP-139 (DOGFOOD Engel #2) — one-click "Rebuild & Relaunch" (option B).
+// ADP-139 (DOGFOOD Engel #2) — one-click "Rebuild & Relaunch" (src/features/system/rebuildService.js - Faz 3.6.42)
 // ---------------------------------------------------------------------------
-// The dev-mode profile (CREWPANE_MODE=dev → `next dev` HMR) gives instant
-// renderer hot-reload and is the primary self-host path. This is the FALLBACK for
-// when the user is dogfooding the prod standalone build FROM SOURCE: a single click
-// rebuilds the standalone bundle (`electron:build:prep`) and relaunches the app so
-// a renderer edit is reflected without leaving the app or running a terminal command.
-//
-// Security: the command + args are FIXED (`npm run electron:build:prep`) — nothing
-// is taken from the renderer, so there is no RCE surface (same disiplin as ptyApi's
-// command whitelist). Gated to the source tree (never a packaged .app, which has no
-// source/npm). Single-flight so two clicks can't race two builds.
-let rebuildInFlight = false;
-function rebuildAndRelaunch(event) {
-  if (app.isPackaged) return { ok: false, reason: 'packaged-unsupported' };
-  if (rebuildInFlight) return { ok: false, reason: 'busy' };
-  rebuildInFlight = true;
-
-  const sender = event && event.sender;
-  const emit = (payload) => {
-    try { if (sender && !sender.isDestroyed()) sender.send('app:rebuild:progress', payload); } catch { /* best-effort */ }
-  };
-
-  logLine('rebuild: starting `npm run electron:build:prep`');
-  emit({ phase: 'start', line: 'Yeniden derleniyor… (electron:build:prep)' });
-
-  // FIXED command/args — no renderer-supplied input. cwd = the source repo root.
-  const child = spawn('npm', ['run', 'electron:build:prep'], {
-    cwd: REPO_ROOT,
-    env: process.env,
-  });
-
-  const pipeLines = (stream) => {
-    let buf = '';
-    stream.setEncoding('utf8');
-    stream.on('data', (chunk) => {
-      buf += chunk;
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (line.trim()) { logLine('rebuild: ' + line); emit({ phase: 'log', line }); }
-      }
-    });
-  };
-  pipeLines(child.stdout);
-  pipeLines(child.stderr);
-
-  child.on('error', (err) => {
-    rebuildInFlight = false;
-    logLine(`rebuild: spawn error: ${err.message}`);
-    emit({ phase: 'error', line: `Derleme başlatılamadı: ${err.message}` });
-  });
-  child.on('exit', (code) => {
-    rebuildInFlight = false;
-    if (code === 0) {
-      logLine('rebuild: success → relaunching');
-      emit({ phase: 'done', line: 'Derleme tamam — yeniden başlatılıyor…' });
-      // Give the renderer a beat to render the "relaunching" state before we go.
-      setTimeout(() => relaunchApp('rebuild'), 400);
-    } else {
-      logLine(`rebuild: failed code=${code}`);
-      emit({ phase: 'error', line: `Derleme başarısız (çıkış kodu ${code}). Terminalden \`npm run electron:build:prep\` ile detayları gör.` });
-    }
-  });
-
-  return { ok: true, started: true };
-}
+const rebuildService = createRebuildService({
+  app,
+  spawn,
+  repoRoot: REPO_ROOT,
+  logLine,
+  relaunchApp,
+});
+function rebuildAndRelaunch(event) { return rebuildService.rebuildAndRelaunch(event); }
 
 // ---------------------------------------------------------------------------
 // Windows
 // ---------------------------------------------------------------------------
-
-// ADP-888 (ADP-885 Faz A) — ARAYÜZ DİLİNİN TEK KARAR NOKTASI.
-//
-// Tercih settings.json'da ('system'|'tr'|'en'), ETKİN dil burada çözülür ve üç
-// tüketiciye BURADAN dağılır: (1) main'in kendi diyalogları, (2) yeni pencerelerin
-// additionalArguments bayrağı, (3) açık pencerelere canlı push. İkinci bir yerde
-// çözülseydi "ayarda İngilizce, diyalogda Türkçe" kaçınılmazdı (iki gerçek).
-function applyAppLocale() {
-  let preference = appI18n.DEFAULT_LOCALE_PREFERENCE;
-  try {
-    preference = agentSettings.readSettings().locale;
-  } catch { /* ayar okunamazsa 'system' — dil yüzünden açılış düşmez */ }
-  let systemLocale = '';
-  try {
-    systemLocale = app.getLocale();
-  } catch { /* whenReady öncesi/headless — İngilizceye düşer */ }
-  // ADP-889 — SİSTEM ETİKETİ PİNİ (yalnız otomasyon). TERCİH'i EZMEZ: kullanıcı
-  // 'tr'/'en' seçtiyse o kazanır, bu değer yalnız tercih 'system' iken okunan
-  // işletim sistemi etiketinin yerine geçer ("OS bu dilde davransın").
-  // NEDEN: e2e korpusu (21 spec) Türkçe arayüze göre yazıldı; bu makinede
-  // app.getLocale() 'en-US' döner (ÖLÇÜLDÜ) → sihirbaz çevrilince o spec'ler
-  // makinenin diline göre kırmızıya döner. Testin dili ORTAMA bırakılamaz.
-  const pinnedSystemLocale = process.env.CREWPANE_SYSTEM_LOCALE;
-  if (typeof pinnedSystemLocale === 'string' && pinnedSystemLocale.trim()) {
-    systemLocale = pinnedSystemLocale.trim();
-  }
-  const locale = appI18n.setLocale(preference, systemLocale);
-  return { locale, preference: appI18n.getPreference() };
-}
-
-/** Yeni pencerelerin argv bayrağı + açık pencerelere canlı push (route değişmez). */
-function broadcastLocale() {
-  const state = applyAppLocale();
-  for (const win of BrowserWindow.getAllWindows()) {
-    try {
-      if (!win.isDestroyed()) win.webContents.send('app:locale-changed', state);
-    } catch { /* best-effort */ }
-  }
-  logLine(`locale: tercih=${state.preference} etkin=${state.locale}`);
-  return state;
-}
 
 // ── ADP-095/333/341/394/396/399/884 — BAŞLIKLI TARAYICI OTOMASYONU SERVİSİ (src/features/services/browserService.js - Faz 3.6.24)
 const browserService = createBrowserService({

@@ -26,6 +26,8 @@ const { createResetBootService } = require('./resetBootService');
 const { createMediaService } = require('./mediaService');
 const { createDoctorService } = require('./doctorService');
 const { createStartupSweepService } = require('./startupSweepService');
+const { createAppLocaleService, AppLocaleService } = require('./appLocaleService');
+const { createRebuildService, RebuildService } = require('./rebuildService');
 
 module.exports = {
   createCrashWatchdogService,
@@ -37,6 +39,10 @@ module.exports = {
   createMediaService,
   createDoctorService,
   createStartupSweepService,
+  createAppLocaleService,
+  AppLocaleService,
+  createRebuildService,
+  RebuildService,
   ANALYTICS_FUNNEL_EVENT,
   analyticsEngineOf,
   obsSurfaceFor,
