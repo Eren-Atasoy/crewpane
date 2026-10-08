@@ -26,6 +26,12 @@ function registerHandIpc({
   handControlLive = () => false,
   finishPoseSampler = () => {},
   selectHandCamera = () => {},
+  onHandDetectFrame = () => {},
+  handDetectAlive = () => false,
+  broadcastHandControlStatus = () => {},
+  handCameraPolicy = null,
+  handHardwareCameras = () => [],
+  handCameraPreference = () => null,
   logLine = () => {},
 }) {
   // ── HAND-A1: Hand Overlay ──────────────────────────────────────────────────
@@ -125,6 +131,90 @@ function registerHandIpc({
   });
 
   ipcMain.handle('handControl:selectCamera', (_event, sel) => selectHandCamera(sel));
+
+  // ── HAND-A2 / HAND-BUG-01: Hand Detect ────────────────────────────────────
+  ipcMain.on('handDetect:frame', onHandDetectFrame);
+
+  ipcMain.handle('handDetect:ready', (event, info) => {
+    const c = getHandControl();
+    if (!handDetectAlive() || (c.win && event.sender !== c.win.webContents)) return { ok: false };
+    c.warm = {
+      ms: Number(info && info.ms) || null,
+      delegate: (info && info.delegate) || null,
+      numHands: Number(info && info.numHands) || null,
+      at: Date.now(),
+    };
+    if (c.phase === 'warming') c.phase = 'warm';
+    broadcastHandControlStatus();
+    logLine(`hand-control ısındı: ${c.warm.ms} ms (${c.warm.delegate}, numHands=${c.warm.numHands})`);
+    return { ok: true };
+  });
+
+  ipcMain.handle('handDetect:plan', (event, payload) => {
+    const c = getHandControl();
+    if (!handDetectAlive() || (c.win && event.sender !== c.win.webContents)) return { ok: false, candidates: [] };
+    const devices = Array.isArray(payload && payload.devices) ? payload.devices : [];
+    if (!handCameraPolicy) return { ok: false, candidates: [] };
+    const candidates = handCameraPolicy.rankDevices({
+      devices,
+      hardware: handHardwareCameras(),
+      probes: (payload && payload.probes) || {},
+      preferred: handCameraPreference(),
+      audioGroupIds: Array.isArray(payload && payload.audioGroupIds) ? payload.audioGroupIds : [],
+    });
+    c.cameraCandidates = candidates;
+    logLine(`hand-control kamera adayları: ${candidates.map((cand) => `${cand.label || cand.deviceId.slice(0, 8)}[${cand.kind}${cand.dead ? '/ÖLÜ:' + cand.deadReason : ''}:${cand.score}]`).join(' | ') || '(yok)'}`);
+    return {
+      ok: true,
+      candidates,
+      probeMs: handCameraPolicy.PROBE_MS,
+      minFrames: handCameraPolicy.PROBE_MIN_FRAMES,
+      deadWarnMs: handCameraPolicy.DEAD_WARN_MS,
+      thresholds: {
+        blankVarianceMax: handCameraPolicy.BLANK_VARIANCE_MAX,
+        frozenTemporalMax: handCameraPolicy.FROZEN_TEMPORAL_MAX,
+        frozenSpreadMax: handCameraPolicy.FROZEN_SPREAD_MAX,
+      },
+    };
+  });
+
+  ipcMain.handle('handDetect:camera', (event, info) => {
+    const c = getHandControl();
+    if (!handDetectAlive() || (c.win && event.sender !== c.win.webContents)) return { ok: false };
+    const status = info && typeof info.status === 'string' ? info.status : 'unknown';
+    c.camera = { ...(c.camera || {}), page: status, error: (info && info.error) || null };
+    if (info && typeof info.label === 'string') {
+      c.cameraDevice = {
+        deviceId: typeof info.deviceId === 'string' ? info.deviceId : null,
+        label: info.label,
+        kind: typeof info.kind === 'string' ? info.kind : 'unknown',
+        dead: info.dead === true,
+        deadReason: typeof info.deadReason === 'string' ? info.deadReason : null,
+      };
+    }
+    if (status === 'started') {
+      const d = c.cameraDevice;
+      c.cameraBlank = d && d.dead ? { reason: d.deadReason, label: d.label } : null;
+      logLine(`hand-control kamera açıldı: ${d ? `${d.label} (${d.kind})` : 'bilinmiyor'}${d && d.dead ? ` — GÖRÜNTÜ ÖLÜ (${d.deadReason})` : ''}${info && info.stats ? ` stats=${JSON.stringify(info.stats)}` : ''}`);
+    } else if (status === 'blank') {
+      c.cameraBlank = {
+        reason: (info && info.deadReason) || 'frozen',
+        label: (info && info.label) || (c.cameraDevice && c.cameraDevice.label) || null,
+      };
+      logLine(`hand-control kamera GÖRÜNTÜ ÖLÜ: ${c.cameraBlank.label} (${c.cameraBlank.reason})${info && info.stats ? ` stats=${JSON.stringify(info.stats)}` : ''}`);
+      broadcastHandControlStatus();
+      return { ok: true };
+    } else if (status === 'stopped') {
+      c.cameraBlank = null;
+    }
+    if (status === 'error' && (c.phase === 'starting' || c.phase === 'on')) {
+      c.lastError = `kamera: ${info.error || 'açılamadı'}`;
+      stopHandControl(`kamera hatası: ${info.error || '?'}`);
+    } else {
+      broadcastHandControlStatus();
+    }
+    return { ok: true };
+  });
 }
 
 module.exports = { registerHandIpc };

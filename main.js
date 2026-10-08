@@ -6543,6 +6543,12 @@ function wireIpc() {
     handControlLive: () => handControlLive(),
     finishPoseSampler: () => finishPoseSampler(),
     selectHandCamera: (sel) => selectHandCamera(sel),
+    onHandDetectFrame,
+    handDetectAlive,
+    broadcastHandControlStatus,
+    handCameraPolicy,
+    handHardwareCameras,
+    handCameraPreference,
     logLine,
   });
 
@@ -6671,104 +6677,7 @@ function wireIpc() {
     }
   });
 
-  // HAND-A2 — EL KONTROLÜ UÇLARI. Kare ucu YALNIZ gizli tespit penceresinden
-  // kabul edilir (sender kapısı onHandDetectFrame içinde); start/stop/status
-  // arayüz pencerelerine açıktır.
-  ipcMain.on('handDetect:frame', onHandDetectFrame);
-  ipcMain.handle('handDetect:ready', (event, info) => {
-    if (!handDetectAlive() || event.sender !== handControl.win.webContents) return { ok: false };
-    // Sayfa ısınmayı bitirdi (boş kanvas, kamerasız): rozet 'warm'a döner.
-    handControl.warm = {
-      ms: Number(info && info.ms) || null,
-      delegate: (info && info.delegate) || null,
-      // HAND-G3 — modele KAÇ el verildi. CPU yedeğinde 1'e düşer (ölçüm: iki el
-      // CPU'da 49 ms çıkarım → fps 24,8, kartın 25 fps kapısının altında) ve
-      // iki-el zoom jesti o makinede DOĞMAZ. Rozet bunu söyleyebilsin diye
-      // taşınır: sessizce kaybolan özellik yasak.
-      numHands: Number(info && info.numHands) || null,
-      at: Date.now(),
-    };
-    if (handControl.phase === 'warming') handControl.phase = 'warm';
-    broadcastHandControlStatus();
-    logLine(`hand-control ısındı: ${handControl.warm.ms} ms (${handControl.warm.delegate}, numHands=${handControl.warm.numHands})`);
-    return { ok: true };
-  });
-  // HAND-BUG-01 — CİHAZ SEÇİM PLANI. Tespit sayfası enumerateDevices() sonucunu
-  // (ve varsa ölçtüğü kare istatistiklerini) gönderir; KARAR burada verilir:
-  // saf politika + macOS donanım sınıfı + kullanıcı tercihi tek yerde birleşir.
-  // Sayfa kendi başına "hangi kamera" diye karar VERMEZ (iki gerçek olurdu).
-  ipcMain.handle('handDetect:plan', (event, payload) => {
-    if (!handDetectAlive() || event.sender !== handControl.win.webContents) return { ok: false, candidates: [] };
-    const devices = Array.isArray(payload && payload.devices) ? payload.devices : [];
-    const candidates = handCameraPolicy.rankDevices({
-      devices,
-      hardware: handHardwareCameras(),
-      probes: (payload && payload.probes) || {},
-      preferred: handCameraPreference(),
-      audioGroupIds: Array.isArray(payload && payload.audioGroupIds) ? payload.audioGroupIds : [],
-    });
-    handControl.cameraCandidates = candidates;
-    // Cihaz ETİKETİ kişisel veri değildir ama yine de tek satırda özetlenir;
-    // kare/görüntü ASLA loglanmaz (yalnız sayılar ve sıralama gerekçesi).
-    logLine(`hand-control kamera adayları: ${candidates.map((c) => `${c.label || c.deviceId.slice(0, 8)}[${c.kind}${c.dead ? '/ÖLÜ:' + c.deadReason : ''}:${c.score}]`).join(' | ') || '(yok)'}`);
-    return {
-      ok: true,
-      candidates,
-      probeMs: handCameraPolicy.PROBE_MS,
-      minFrames: handCameraPolicy.PROBE_MIN_FRAMES,
-      deadWarnMs: handCameraPolicy.DEAD_WARN_MS,
-      // Eşikler TEK KAYNAKTAN (handCameraPolicy) gider: sayfa kendi kopyasını
-      // tutarsa bir gün ikisi ıraksar ve nöbet sessizce yanlış hüküm verir.
-      thresholds: {
-        blankVarianceMax: handCameraPolicy.BLANK_VARIANCE_MAX,
-        frozenTemporalMax: handCameraPolicy.FROZEN_TEMPORAL_MAX,
-        frozenSpreadMax: handCameraPolicy.FROZEN_SPREAD_MAX,
-      },
-    };
-  });
 
-  ipcMain.handle('handDetect:camera', (event, info) => {
-    if (!handDetectAlive() || event.sender !== handControl.win.webContents) return { ok: false };
-    const status = info && typeof info.status === 'string' ? info.status : 'unknown';
-    handControl.camera = { ...(handControl.camera || {}), page: status, error: (info && info.error) || null };
-    // HAND-BUG-01 — hangi cihaz açıldı + görüntü ölü mü. Bu iki bilgi eskiden
-    // IPC'de taşınıyordu ama HİÇBİR YERE yazılmıyordu (DEMO-02 §7 bulgusu):
-    // "hiç tepki yok" şikâyeti tam da bu yüzden teşhis edilemiyordu.
-    if (info && typeof info.label === 'string') {
-      handControl.cameraDevice = {
-        deviceId: typeof info.deviceId === 'string' ? info.deviceId : null,
-        label: info.label,
-        kind: typeof info.kind === 'string' ? info.kind : 'unknown',
-        dead: info.dead === true,
-        deadReason: typeof info.deadReason === 'string' ? info.deadReason : null,
-      };
-    }
-    if (status === 'started') {
-      const d = handControl.cameraDevice;
-      handControl.cameraBlank = d && d.dead ? { reason: d.deadReason, label: d.label } : null;
-      logLine(`hand-control kamera açıldı: ${d ? `${d.label} (${d.kind})` : 'bilinmiyor'}${d && d.dead ? ` — GÖRÜNTÜ ÖLÜ (${d.deadReason})` : ''}${info && info.stats ? ` stats=${JSON.stringify(info.stats)}` : ''}`);
-    } else if (status === 'blank') {
-      // Akış ≥3 sn ölü kaldı: kamera AÇIK ama görüntü yok. Sessiz ölüm YOK —
-      // durdurmayız (kullanıcı başka cihaz seçebilsin), dürüstçe uyarırız.
-      handControl.cameraBlank = {
-        reason: (info && info.deadReason) || 'frozen',
-        label: (info && info.label) || (handControl.cameraDevice && handControl.cameraDevice.label) || null,
-      };
-      logLine(`hand-control kamera GÖRÜNTÜ ÖLÜ: ${handControl.cameraBlank.label} (${handControl.cameraBlank.reason})${info && info.stats ? ` stats=${JSON.stringify(info.stats)}` : ''}`);
-      broadcastHandControlStatus();
-      return { ok: true };
-    } else if (status === 'stopped') {
-      handControl.cameraBlank = null;
-    }
-    if (status === 'error' && (handControl.phase === 'starting' || handControl.phase === 'on')) {
-      // İzin verilmemiş/aygıt yok: SESSİZ ölüm yasak — dürüst duruma dön.
-      handControl.lastError = `kamera: ${info.error || 'açılamadı'}`;
-      stopHandControl(`kamera hatası: ${info.error || '?'}`);
-    } else {
-      broadcastHandControlStatus();
-    }
-    return { ok: true };
-  });
 
   // ── Agent X IPC Yüzeyi (Faz 3.5 — Sıra 8) ──────────────────────────────────
   registerAgentxIpc({
