@@ -77,6 +77,8 @@ const {
   registerAgentxIpc,
   registerAgentxDraftIpc,
   registerDelegationIpc,
+  registerTeamComposeIpc,
+  registerTeamScopeIpc,
 } = require('./src/features/agents');
 const { registerPtyIpc, registerPanesIpc } = require('./src/features/terminal');
 const { registerVoiceIpc } = require('./src/features/voice');
@@ -7606,156 +7608,20 @@ function wireIpc() {
   // → görev panosu yazamaz/okuyamaz (istemci anon'a düşer, RLS keser).
   // ADP-773 — karar `appDbTokenFor`da TEK yerde; mobil ofis de oradan geçer.
   ipcMain.handle('appdb:token', () => appDbTokenFor('appdb:token'));
-  // ── TC-01 — ONAY KARTININ KARARI (ADR §4.2) ─────────────────────────────────
-  // Kartın "Ekibe ekle / Vazgeç" tıklaması BURAYA düşer ve onay jetonu YALNIZ burada
-  // doğar. Liderin "kullanıcı onayladı" demesi onay DEĞİLDİR: jeton main'de üretilir,
-  // tek bir öneriye bağlıdır, tek kullanımlıktır ve TTL'si vardır (ADR-026 disiplini).
-  //
-  // Kullanıcının DÜZENLEDİĞİ satırlar da aynı süzgeçten geçer (katalog dışı rol düşer,
-  // para alanı silinir, tavan yeniden ölçülür) — karar tek yerde kalsın.
-  //
-  // TC-FIX-01 (RESEARCH-TC-01 §1 Halka-1, Eren kararı 18.09 seçenek a) — TIKLAMA
-  // KURULUMDUR. Eskiden bu handler yalnız jeton üretip renderer'a dönüyordu; apply'ı
-  // ancak LİDER çağırabiliyordu ve ona tıklamayı bildiren hiçbir yol yoktu → patron
-  // "Ekibe ekle"ye basıp bekliyor, hiçbir satır yazılmıyor, ekranda hiçbir şey
-  // olmuyordu (izole Electron'da ölçüldü: tıklama + 20 sn → DB +0). Artık jeton
-  // doğduğu yerde HARCANIR: main apply'ı kendisi koşturur (`team-compose:undo-request`in
-  // deseni — köprünün IPC turu `composeTransport`ta saklı) ve sonucu lidere pane'ine
-  // teslim eder. Jeton disiplini DEĞİŞMEDİ: yine main üretir, yine tek kullanımlık,
-  // yine tek öneriye bağlı; değişen tek şey "kim harcıyor" (lider değil ürün).
-  ipcMain.handle('team-compose:decision', async (_e, req) => {
-    const ledger = ensureComposeLedger();
-    const proposalId = String((req && req.proposalId) || '');
-    const decision = String((req && req.decision) || '');
-    if (decision === 'approve' && Array.isArray(req && req.rows)) {
-      const allowed = Array.isArray(req.catalogSlugs) ? req.catalogSlugs : [];
-      // Beyaz liste GELMEDİYSE kullanıcı düzenlemesini kabul ETME: boş bir katalogla
-      // süzmek HER satırı düşürürdü (sessiz "onayladım ama kimse gelmedi"). Bu durumda
-      // önerinin KENDİ satırları (zaten süzülmüş) geçerli kalır.
-      if (allowed.length) {
-        const { rows } = teamComposeCore.sanitizeRows(req.rows, allowed);
-        const cap = teamComposeCore.capDecision({
-          rows,
-          mode: (req && req.mode) || 'team',
-          sessionInstalls: ledger.sessionInstalls(),
-        });
-        if (!cap.ok) return { ok: false, code: cap.code, error: cap.error || cap.reason };
-        req = { ...req, rows };
-      } else {
-        req = { ...req, rows: undefined };
-      }
-    }
-    const res = ledger.decide(proposalId, {
-      decision,
-      teamName: req && req.teamName,
-      rows: req && req.rows,
-    });
-    if (!res.ok) return { ok: false, code: res.code, error: res.reason };
-    if (res.rejected) return { ok: true, rejected: true };
-    // 🔴 Jeton RENDERER'A DÖNMEZ ve lidere de gitmez: onu harcayan main'in kendisidir.
-    // Köprü turu yoksa (öneri bu oturumda köprüden geçmedi — köprüsüz geliştirme /
-    // DOM olayıyla açılmış kart) kurulacak yol da yoktur; kart bunu SÖYLER, "kurdum"
-    // demez (sessizce jeton verip beklemek tam da düzeltilen kusurdu).
-    if (!composeTransport) {
-      return { ok: false, code: 'no-transport', error: 'Kurulum şu an yapılamıyor — ekip lideri bağlı değil.' };
-    }
-    const p = res.proposal;
-    let applied;
-    try {
-      applied = await teamComposeRequest(
-        {
-          action: 'apply',
-          proposalId,
-          approvalToken: res.approvalToken,
-          leaderId: p.leaderId,
-          department: p.department,
-          source: 'user-click',
-        },
-        composeTransport,
-      );
-    } catch (err) {
-      applied = composeFail(500, 'main', String((err && err.message) || err));
-    }
-    if (applied.status !== 200 || !applied.body || !applied.body.ok) {
-      const error = (applied.body && applied.body.error) || 'ekip kurulamadı.';
-      logLine(`team compose: onay tıklandı ama apply DÜŞTÜ (${applied.status}/${applied.body && applied.body.code}) — ${error}`);
-      // Lider "kurdum" DEMESİN: patronun onayı vardı, kurulum yoktu — ikisi de söylenir.
-      notifyLeaderCompose(
-        p.leaderId,
-        `❌ [EKİP KURUCU] Patron "${p.teamName || 'ekip'}" önerisini onayladı ama kurulum BAŞARISIZ: ${error} ` +
-          '"ekibi kurdum" DEME; patron kartta hatayı görüyor, yeniden deneyebilir.',
-      );
-      return { ok: false, code: (applied.body && applied.body.code) || 'apply', error };
-    }
-    const body = applied.body;
-    notifyLeaderCompose(
-      p.leaderId,
-      `✅ [EKİP KURUCU] Patron onay kartında "Ekibe ekle"ye bastı. ${teamComposeCore.composeReceiptText(body)}`,
-    );
-    return { ok: true, applied: true, proposalId, receipt: body.receipt || null, wingSlug: body.wingSlug || null };
-  });
-
-  /**
-   * TC-FIX-01 — kurulum sonucunu LİDERİN pane'ine yaz (lider apply çağırmadığı için
-   * bunu başka türlü öğrenemez). Ürünün mevcut primitifleri: pane bulma supervisor'ın
-   * `findLeaderPane` kuralıyla aynı (agentId eşit + execution pane DEĞİL), kapı
-   * `sampleLeaderGate` (iki tampon örneği + tuş sessizliği — ADP-667/692), yazım
-   * `deliverToPane` (ENT-F1: metin bir kez, Enter ölçülerek). Lider meşgulse kısa
-   * aralıklarla yeniden denenir; bütçe dolarsa VAZGEÇİLİR ve log söyler — şerit ve
-   * makbuz zaten patronun önündedir, lider apply çağırırsa "zaten kuruldu"yu alır.
-   * Beklenmez (fire-and-forget): kart, satırlar yazılınca kapanmalı, lider uyanınca değil.
-   */
-  function notifyLeaderCompose(leaderId, text) {
-    const id = String(leaderId || '');
-    if (!id) return;
-    const findPane = () => {
-      for (const [paneId, e] of ptys) if (e.agentId === id && e.disallowSubagent !== true) return paneId;
-      return null;
-    };
-    (async () => {
-      const deadline = Date.now() + COMPOSE_NOTIFY_BUDGET_MS;
-      let tries = 0;
-      while (Date.now() < deadline) {
-        const paneId = findPane();
-        if (!paneId) {
-          logLine(`team compose: lider ${id} pane'i yok — kurulum notu teslim EDİLMEDİ (şerit patronun önünde)`);
-          return;
-        }
-        tries += 1;
-        const gate = await sampleLeaderGate(paneId);
-        if (gate.safe) {
-          const res = await deliverToPane(paneId, text, { label: `ekip-kurucu ${id}` });
-          logLine(`team compose: lider ${id} pane=${paneId} kurulum notu ${res.delivered ? 'TESLİM EDİLDİ' : 'yazıldı, teslim DOĞRULANAMADI'} (deneme ${tries})`);
-          return;
-        }
-        await dispatchSleep(COMPOSE_NOTIFY_RETRY_MS);
-      }
-      logLine(`team compose: lider ${id} ${tries} denemede hep meşguldü — kurulum notu teslim EDİLMEDİ`);
-    })().catch((err) => logLine(`team compose: lider notu hata (${String((err && err.message) || err)})`));
-  }
-  /** TC-01 — kartın/şeridin okuduğu ayar kademesi (§9.7). */
-  ipcMain.handle('team-compose:autonomy', () => ({ ok: true, autonomy: composeAutonomy() }));
-  // ── TC-02 — KULLANICININ GERİ ALMASI (IPC-CONTRACT §3.6'nın EKSİK YÖNÜ) ─────
-  // §3.6 geri almayı YALNIZ main→renderer tanımlıyordu (liderin `action:'undo'`
-  // çağrısı). Oysa "10 dakika içinde geri al" sözünü veren şerit KULLANICININ
-  // önündedir ve düğmesi ters yönde bir kanal ister; o kanal olmadan düğme
-  // basılıyor ama hiçbir şey olmuyordu. Kanal İNCE: karar, pencere ve silme
-  // sırası yine `teamComposeRequest`in undo dalındadır — burada ikinci bir
-  // geri alma yolu YOK, yalnız aynı yolun renderer'dan açılan kapısı var.
-  ipcMain.handle('team-compose:undo-request', async (_e, req) => {
-    const proposalId = String((req && req.proposalId) || '').trim();
-    if (!proposalId) return { ok: false, code: 'bad-request', error: 'Geri alınacak kurulum belirtilmedi.' };
-    if (!composeTransport) {
-      // Kurulum bu oturumda köprüden geçmediyse turu açacak kimse yok.
-      return { ok: false, code: 'no-transport', error: 'Geri alma şu an yapılamıyor.' };
-    }
-    try {
-      const res = await teamComposeRequest({ action: 'undo', proposalId }, composeTransport);
-      if (res.status === 200) return { ok: true, ...res.body };
-      return { ok: false, code: res.body && res.body.code, error: res.body && res.body.error };
-    } catch (err) {
-      return { ok: false, code: 'main', error: String((err && err.message) || err) };
-    }
+  // TC-01, TC-FIX-01, TC-02 — TEAM COMPOSE IPC (Faz 3.5 — Sıra 11)
+  registerTeamComposeIpc({
+    ipcMain,
+    ensureComposeLedger,
+    teamComposeCore,
+    getComposeTransport: () => composeTransport,
+    teamComposeRequest,
+    composeFail,
+    composeAutonomy,
+    ptys,
+    sampleLeaderGate,
+    deliverToPane,
+    dispatchSleep,
+    logLine,
   });
   // ─── INT-OBS-01 — TELEMETRİ OTOMATİK KURULUMU ──────────────────────────────
   // Renderer'dan gelen tek şey `service` (+ opsiyonel org seçimi). JETON RENDERER'DAN
@@ -8113,24 +7979,11 @@ function wireIpc() {
       persistError,
     };
   });
-  // ADP-737 — TAKIM KAPSAMI KAPISI, renderer ucu. Delegasyon rosterı renderer'da
-  // çözülür (roster + kimlik Supabase'ten gelir), dolayısıyla "bu worker hangi TAKIMIN
-  // çalışanı" bilgisi orada oluşur. Karar yine MAIN'de: burada yalnız sorulur.
-  // `manage` de kabul edilir ki gelecekte aynı kapı UI'dan da sorulabilsin.
-  ipcMain.handle('teamScope:authorize', async (_event, req) => {
-    const p = req && typeof req === 'object' ? req : {};
-    const action = p.action === 'manage' ? 'manage' : 'delegate';
-    const leaderId = typeof p.leaderId === 'string' ? p.leaderId.trim() : '';
-    const targetScope = typeof p.targetScope === 'string' ? p.targetScope.trim() : '';
-    if (!leaderId || !targetScope) return { ok: false, code: 'bad-request', reason: 'leaderId + targetScope gerekli' };
-    try {
-      const d = await authorizeTeamScopeInteractive({ action, leaderId, targetScope });
-      return { ok: d.ok === true, via: d.via || null, code: d.code || null, reason: d.reason || null };
-    } catch (err) {
-      // Kapı KARAR VEREMİYORSA iş başlamamalı (fail-closed) — sebebi log'a düşer.
-      logLine(`teamScope:authorize hata: ${String((err && err.message) || err)}`);
-      return { ok: false, code: 'gate-error', reason: String((err && err.message) || err) };
-    }
+  // ADP-737 — TAKIM KAPSAMI KAPISI (Faz 3.5 — Sıra 11)
+  registerTeamScopeIpc({
+    ipcMain,
+    authorizeTeamScopeInteractive,
+    logLine,
   });
   // ADP-232-C — ilk-açılış "çalışma alanı seç" aksiyonları. Yol renderer'dan ASLA
   // gelmez (ADP-103 capability modeli): 'create' sabit önerilen varsayılanı
