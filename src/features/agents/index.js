@@ -6,6 +6,7 @@ const { registerAgentxDraftIpc } = require('./agentxDraftIpc');
 const { registerDelegationIpc } = require('./delegationIpc');
 const { registerTeamComposeIpc } = require('./teamComposeIpc');
 const { registerTeamScopeIpc } = require('./teamScopeIpc');
+const { createTeamComposeService } = require('./teamComposeService');
 
 module.exports = {
   registerSkillsIpc,
@@ -14,5 +15,5 @@ module.exports = {
   registerDelegationIpc,
   registerTeamComposeIpc,
   registerTeamScopeIpc,
+  createTeamComposeService,
 };
-
