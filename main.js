@@ -18,13 +18,11 @@
 // nodeIntegration:false, sandbox:true, whitelisted preload bridge.
 
 
-const { app, BrowserWindow, ipcMain, shell, dialog, screen, globalShortcut, Notification, protocol, net: electronNet, clipboard, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, screen, globalShortcut, Notification, clipboard, nativeImage } = require('electron');
 
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const net = require('node:net');
-const http = require('node:http');
 const crypto = require('node:crypto'); // ADP-293 — mobil query requestId'leri
 const { spawn, execFile } = require('node:child_process');
 
@@ -101,8 +99,6 @@ const SHELL_COMMIT = bootstrapCtx.shellCommit;
 const agentRunner = require('./src/agents/agentRunner.js');
 // ADP-050 (ADR-004 §A1) — leader→app delegation bridge (loopback HTTP + token).
 const delegationBridgeMod = require('./src/agents/delegationBridge.js');
-// ADP-324 — pane çıktısının VT emülasyonu (mobil okuma kanalı). Bkz. paneScreen.cjs başlığı.
-const paneScreen = require('./src/terminal/paneScreen.cjs');
 const browserCdp = require('./src/services/browserCdp.js'); // ADP-095 — headed automation (CDP)
 const browserGateMod = require('./src/security/browserGate.cjs'); // ADP-341 — risk kapısı (izin + audit + DURDUR)
 const browserTrustMod = require('./src/security/browserTrust.cjs'); // ADP-343 — yerleşik güven/yasak listeleri (Ayarlar salt-okunur gösterir)
@@ -124,7 +120,6 @@ const providers = require('./src/agents/providers.cjs'); // ADP-580 — codex cu
 const modelCatalog = require('./src/agents/modelCatalog.cjs'); // AGENT-MODEL-01 — motor başına model kataloğu (tek kaynak)
 const adapter = require('./src/config/adapter.cjs'); // ADP-594 — Responses→ChatCompletions adapter for DeepSeek/Kimi (needsShim:true)
 const groqShim = require('./src/voice/groqResponsesShim.cjs'); // PROV-01 — Groq /responses gövde temizleyici + kota hız-ayarı
-const providerKeysEnvFile = require('./src/config/providerKeysEnvFile.cjs'); // PROV-01 — ~/.crewpane/keys.env → providerKeys yedeği
 const helperReaper = require('./src/core/helperReaper.cjs'); // ADP-727 — yardımcı süreç defteri + yetim toplayıcı
 const installReset = require('./src/security/installReset.cjs'); // RESET-01 — kurulum sıfırlama ÇEKİRDEĞİ (tek silme boğazı)
 const resetGate = require('./src/security/resetGate.cjs'); // RESET-03 — sıfırlamanın KARAR katmanı (saf; birim testli)
@@ -134,7 +129,6 @@ const resumePtyDaemon = require('./src/terminal/resumePtyDaemon.cjs'); // ADP-li
 const agentSettings = require('./src/agents/agentSettings.cjs'); // ADP-203 — user settings (~/.crewpane/settings.json)
 const appI18n = require('./i18n/index.cjs'); // ADP-888 — ana sürecin ARAYÜZ DİLİ katmanı (diyalog/bildirim metinleri)
 const updateCheck = require('./src/services/updateCheck.cjs'); // ADP-533 — Faz 1 güncelleme bildirimi (yalnız bildir + tarayıcıda indir)
-const onboardingStore = require('./src/agents/onboardingStore.cjs'); // TOUR-02-A — "İlk 10 Dakika" günlüğünün kalıcılığı (yerel + taşınabilir tercih)
 const announcements = require('./src/services/announcements.cjs'); // ADP-675 — uygulama-içi duyuru feed'i (normalize + hedefleme)
 const changelogFeed = require('./src/services/changelogFeed.cjs'); // A-10 — uygulama-içi "Yenilikler" paneli (crewpane.dev/changelog.json)
 const updateChannel = require('./src/services/updateChannel.cjs'); // ADP-620 — yayın kanalı (stable=müşteri | beta=önce biz)
@@ -203,8 +197,6 @@ const resumeQueueStore = require('./src/terminal/resumeQueue.cjs');
 //   heartbeat.cjs → "kim, hangi sürümde, ne zaman aktifti" (kendi Supabase'imiz).
 const telemetryMod = require('./telemetry/telemetry.cjs');
 const telemetryChannelMod = require('./telemetry/channel.cjs'); // build kanalı (prod|dev|test) TEK GERÇEK
-// SEN-F2 — pane çıkışı gürültü/arıza ayrımı (SEN-01 §4.4). Saf karar, ayrı dosyada: testli.
-const paneExitClassifier = require('./telemetry/paneExit.cjs');
 // SEC-W1-C1 — kurcalama sinyalleri (saf ölçüm; muslukları aşağıda bağlanır).
 const tamperSignals = require('./src/security/tamperSignals.cjs');
 const integrityCheck = require('./src/security/integrityCheck.cjs');
@@ -273,9 +265,6 @@ const analyticsSchema = require('./telemetry/analyticsSchema.cjs');
 // INT-OBS-01 — tek jetondan otomatik kurulum (org bul → proje aç → anahtar çek →
 // kanal başına yaz → doğrulama olayı) + sonucun şifreli defteri.
 const provisionStoreMod = require('./telemetry/provisionStore.cjs');
-// ADP-692 — KANAL A: liderin tur-başı brifingi (UserPromptSubmit hook'u makbuz bırakır,
-// supervisor tüketir → aynı bitiş bir de composer'a YAZILMAZ).
-const leaderBriefing = require('./src/agents/leaderBriefing.cjs');
 // ADP-692 — enjeksiyon kapısı (insan varlığı + composer hükmü); `pty:writeGuarded` bunu
 // main'de, yazımla AYNI senkron blokta koşturur → araya tuş basımı GİREMEZ.
 const leaderComposer = require('./src/agents/leaderComposer.cjs');
@@ -307,11 +296,8 @@ const teamComposeCore = require('./src/agents/teamCompose.cjs'); // TC-01 — ta
 const workspaceOnboarding = require('./src/agents/workspaceOnboarding.cjs'); // ADP-232-C — ilk-açılış "çalışma alanı seç" çekirdeği
 const workspaceSwitch = require('./src/agents/workspaceSwitch.cjs'); // ADP-232-B — canlı çalışma alanı geçişi (grandfather) çekirdeği
 const engineCheck = require('./src/agents/engineCheck.cjs'); // ADP-463-B — setup sihirbazı motor/CLI probu (uyarı-only)
-const engineInstall = require('./src/agents/engineInstall.cjs'); // ADP-694 — motor CLI kurulum rehberi + spawn ön-kontrolü
 const ptyResizeGate = require('./src/terminal/ptyResizeGate.cjs'); // WIN-FIRSTRUN-01 K3 — ölü pty'ye resize gitmez (PROD-48)
-const guestPermissions = require('./platform/guestPermissions.cjs'); // WIN-FIX-01 (W5) — iç tarayıcı izin politikası
 const engineAuth = require('./src/agents/engineAuth.cjs'); // ADP-597 — abonelikle giriş (claude/codex oturumu Ayarlar'dan)
-const engineBilling = require('./src/agents/engineBilling.cjs'); // ENG-16 — satıcı-barındırılan bedava kapı (fatura şeffaflığı + spawn kapısı)
 const engineProfiles = require('./src/agents/engineProfiles.cjs'); // ADP-936 — AI motoru HESAP profilleri (çok-hesap geçişi)
 const engineSwitch = require('./src/agents/engineSwitch.cjs'); // ACCT-FIX-01 — limit defteri okuma ("Bu hesaba geç" listesi: hangi pane limitte)
 const limitDetect = require('./src/terminal/limitDetect.cjs'); // ACCT-FIX-01 — pane ekranında limit var mı (aynı algılayıcı, resume daemon ile)
@@ -323,12 +309,9 @@ const firstRunDoctor = require('./src/agents/firstRunDoctor.cjs'); // ADP-625 �
 const secretBackendState = require('./src/security/secretBackendState.cjs');
 const crashWatchdog = require('./src/core/crashWatchdog.cjs'); // ADP-475 — crash instrumentation + render-process-gone recovery core
 const crashJournal = require('./src/core/crashJournal.cjs'); // CRASH-R1 — kapanış defteri (sebep + zaman + sinyal), açılışta geri okunur
-const logTarget = require('./src/services/logTarget.cjs'); // CRASH-R1 — izole kopya (duman/e2e) KENDİ günlüğüne yazar
 const nextServerPolicy = require('./src/config/nextServerPolicy.cjs'); // SMOKE-ISO-01 — Next beklenmedik ölürse: 1 kez kaldır, sonra kapat
-const popoutBounds = require('./src/services/popoutBounds.cjs'); // ADP-593 — pane pop-out pencere konum/boyut defteri
 const jarvisWidget = require('./src/voice/jarvisWidget.cjs'); // ADP-816 — taşınabilir ses widget'ı (saf karar katmanı)
 const handOverlayContract = require('./src/hand/handOverlayContract.cjs'); // HAND-A1 — el kontrolü overlay sözleşmesi (saf karar katmanı)
-const paneBudget = require('./src/terminal/paneBudget.cjs'); // TOK-C — bütçe kararının SAF çekirdeği
 const paneBudgetStore = require('./src/terminal/paneBudgetStore.cjs'); // TOK-C — pane bütçesi + otomatik duraklatma defteri
 const spendGuard = require('./src/security/spendGuard.cjs'); // TOK-C (D-02 v2) — "bu yazım parayı harcar mı, bütçe izin veriyor mu"
 const dispatchPolicy = require('./src/agents/dispatchPolicy.cjs'); // TOK-B (D-03) — "sürdür mü, taze oturum mu" kararının SAF çekirdeği
@@ -1205,7 +1188,6 @@ const FAULT_INJECT = String(process.env.CREWPANE_FAULT_INJECT || '').split(',').
 //   { child, win, agentId, department, command, label, cwd, pid, startedAt,
 //     lastDataAt }
 const ptys = new Map();
-let paneSeq = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ADP-705 — PANE⇄OTURUM ÇAPASI (bayat `--session-id` düzeltmesi)
@@ -2308,9 +2290,6 @@ const browserGuests = new Map();
 // (Jarvis'in "geri git"i, patronun baktığı sayfayı kasteder).
 const guestOwners = new Map(); // guest webContents id → agentId
 const agentGuests = new Map(); // agentId → guest webContents (sahiplenilen sekme)
-// Aynı ajandan arka arkaya gelen işlemler TEK sekme isteği doğurur (yoksa hazırlık
-// döngüsü onlarca <webview> açar ve renderer'ı çökertir — ADP-333 koşusunda görüldü).
-const agentTabPending = new Map(); // agentId → Promise<guest>
 
 // ── ADP-396 — İNSAN YOLUNUN HEDEFİ SAHİPLİĞE BAĞLIDIR (kaçak kapatıldı) ──────────
 //
@@ -2336,18 +2315,6 @@ function lastUnownedGuest() {
 // savunma katmanı setTabOwner'daki geri-alma (kaçak penceresi kapanır).
 let pendingAgentTabs = 0;
 
-// ADP-028 — per-pane rolling output buffer so a <Terminal> that ATTACHES to an
-// already-running pane (instead of spawning a fresh one) can replay recent
-// scrollback into its xterm. Bounded; `bytes` is the cumulative count emitted so
-// far and travels with every `pty:data` as `seq` (lets an attaching renderer
-// dedupe live events it already received via the replayed buffer).
-const PANE_BUFFER_MAX = 256 * 1024;
-// PERF-BG-01 — kırpma PAYI: tampon tavanı bu kadar aşınca kırpılır (bkz. onData).
-// Pay ne kadar büyükse düzleştirme o kadar seyrek; bellek bedeli pane başına en
-// fazla bu kadardır. 64 KB = tipik chunk'ın ~24 katı → düzleştirme ~24 chunk'ta bir.
-const PANE_BUFFER_SLACK = 64 * 1024;
-/** ADP-324 — ilerleme satırı (`pane-live`) yayın kısıtı: spinner saniyede onlarca kez değişir. */
-const PANE_LIVE_THROTTLE_MS = 500;
 // ADP-475 — crash instrumentation & main stall monitor (src/features/system/crashWatchdogService.js - Faz 3.6.9)
 const { createCrashWatchdogService } = require('./src/features/system');
 
@@ -2685,16 +2652,6 @@ function keepPanesAliveOnWindowClose() {
   return process.platform === 'darwin' && !app.isQuitting && !AUTOTEST;
 }
 
-/** ADP-905 — bu pane'in çıktısını ŞU AN hangi pencere çizmeli? Sahibi yaşıyorsa o;
- * pencere kapanıp yenisi açıldıysa (pty yaşamaya devam etti) güncel ana pencere.
- * Eskiden spawn anındaki `win` closure'ı kullanılıyordu: pencere yeniden açılınca
- * canlı ajanın baytları YOK EDİLMİŞ pencereye gönderiliyor (sendPaneEvent'in
- * isDestroyed guard'ı yutuyor) ve pane sessiz kalıyordu. */
-function paneOwnerWindow(entry, fallbackWin) {
-  if (entry && entry.win && !entry.win.isDestroyed()) return entry.win;
-  if (appWindow && !appWindow.isDestroyed()) return appWindow;
-  return fallbackWin && !fallbackWin.isDestroyed() ? fallbackWin : null;
-}
 
 /** ADP-905 — pencere geri geldi: sahibi YOK OLMUŞ pane'leri yeni pencereye bağla.
  * (`entry.win` odaklama/pop-out gibi yollarda da kullanılıyor; tek yerde düzeltilir.)
@@ -3360,7 +3317,6 @@ function syncSkillEngineViews(reason) {
 }
 
 const {
-  withinWorkspace: rawWithinWorkspace,
   withinActiveRoots: rawWithinActiveRoots,
   resolveInRoots: rawResolveInRoots,
   resolveSearchRoot: rawResolveSearchRoot,
@@ -3373,10 +3329,6 @@ const {
   invalidateGitBranchCache,
   readGitBranch: rawReadGitBranch,
 } = require('./src/shared/utils');
-
-function withinWorkspace(abs) {
-  return rawWithinWorkspace(abs, agentWorkspaceRoot);
-}
 
 function withinActiveRoots(abs) {
   return rawWithinActiveRoots(abs, activeRoots);
@@ -3914,6 +3866,7 @@ function wireIpc() {
     workspacePlanDenial,
     workspaceOnboarding,
     rememberWorkspaceRoot,
+    switchWorkspaceRoot: (root) => switchWorkspaceRoot(root),
     imageStore: mediaService.imageStore,
     ingestTaskAttachment,
     attachmentStore,
@@ -4354,11 +4307,6 @@ windowManager = createWindowManager({
   broadcastHandControlStatus,
 });
 
-function sharedWebPreferences() { return windowManager.sharedWebPreferences(); }
-function attachHtmlFullscreenGuard(win, wc) { return windowManager.attachHtmlFullscreenGuard(win, wc); }
-function applyGuestPermissionPolicy(ses) { return windowManager.applyGuestPermissionPolicy(ses); }
-function attachWebviewGuards(win) { return windowManager.attachWebviewGuards(win); }
-
 // ADP-095 — write a CDP base64 PNG screenshot to a temp file; return its path.
 // WIN-IMG-01 — TTL YOK: aynı oturum deposundan geçer (ajanın kanıt-screenshot'ları
 // da geç okunabilir; "5 dk yeter" varsayımı burada da geçersizdi).
@@ -4366,18 +4314,6 @@ function saveBrowserShot(base64, tag) {
   return mediaService.saveBrowserShot(base64, tag);
 }
 
-
-/**
- * E2E-MUTE-01 — TEST PENCERESİNİ ETİKETLE. Kapı koşusu GERÇEK app'i açar; ekranda
- * beliren pencere ürünün kendisinden ayırt edilemiyordu (Eren "AgentX konuşuyor"
- * derken hangi kopya olduğunu göremiyordu). Yalnız `CREWPANE_INSTANCE=test`
- * kopyasında başlığa bir işaret düşer; müşteri/dev kopyası DEĞİŞMEZ.
- * Offscreen YAPILMADI bilerek: adp816/adp817 pencerenin GERÇEKTEN görünür olmasını
- * ölçer — ekrandan kaçırmak o kapıları körleştirirdi.
- * i18n-exempt: pencere başlığı işareti (arayüz metni değil, ayırt edici damga).
- */
-const E2E_WINDOW_TAG = windowManager.E2E_WINDOW_TAG;
-function tagTestWindow(win, base) { return windowManager.tagTestWindow(win, base); }
 function createAppWindow(url) { return windowManager.createAppWindow(url); }
 
 // ---------------------------------------------------------------------------
@@ -4397,7 +4333,6 @@ function createAppWindow(url) { return windowManager.createAppWindow(url); }
 const popoutWindows = windowManager.popoutWindows;
 function popoutWindowFor(paneId) { return windowManager.popoutWindowFor(paneId); }
 function sendPaneEvent(win, paneId, channel, payload) { return windowManager.sendPaneEvent(win, paneId, channel, payload); }
-function notifyPopoutState(channel, payload) { return windowManager.notifyPopoutState(channel, payload); }
 function popoutPaneIdForWindow(win) { return windowManager.popoutPaneIdForWindow(win); }
 function broadcastPaneView(paneId, readable) { return windowManager.broadcastPaneView(paneId, readable); }
 function broadcastPaneDraft(paneId, text) { return windowManager.broadcastPaneDraft(paneId, text); }
@@ -4451,16 +4386,12 @@ function listPopoutPanes() { return windowManager.listPopoutPanes(); }
 // M1 REGRESYONSUZ: iç tarayıcı pane'inin tasarım modu (D2=a) olduğu gibi durur;
 // bu kapı yalnız EK bir yol açar (D2=c). Konum defteri yeniden icat edilmedi —
 // ADP-593'ün popoutBounds deposu kendi anahtarıyla (`label:design-window`).
-const DESIGN_WINDOW_KEY = windowManager.DESIGN_WINDOW_KEY;
-const DESIGN_WINDOW_MIN = windowManager.DESIGN_WINDOW_MIN;
-
 function designWindowAlive() { return windowManager.designWindowAlive(); }
 function designPlanDenial({ notify = true } = {}) {
   return planDenial('designMode', 0, { notify });
 }
 function openDesignWindow() { return windowManager.openDesignWindow(); }
 function closeDesignWindow() { return windowManager.closeDesignWindow(); }
-function notifyDesignWindowOpen() { return windowManager.notifyDesignWindowOpen(); }
 
 // ---------------------------------------------------------------------------
 // ADP-816 (SPRINT-AGENTX-VOICE · Faz 4) — TAŞINABİLİR SES WIDGET'I
@@ -4485,13 +4416,9 @@ function notifyDesignWindowOpen() { return windowManager.notifyDesignWindowOpen(
 //
 // Konum defteri yeniden icat EDİLMEDİ: ADP-593'ün popoutBounds deposu, kendi
 // anahtarıyla (`label:jarvis-widget`) kullanılır.
-const JARVIS_WIDGET_KEY = windowManager.JARVIS_WIDGET_KEY;
-
 function jarvisWidgetAlive() { return windowManager.jarvisWidgetAlive(); }
 function jarvisWidgetPayload() { return windowManager.jarvisWidgetPayload(); }
 function broadcastJarvisWidget() { return windowManager.broadcastJarvisWidget(); }
-function notifyJarvisWidgetOpen() { return windowManager.notifyJarvisWidgetOpen(); }
-function jarvisWidgetWorkArea(bounds) { return windowManager.jarvisWidgetWorkArea(bounds); }
 function openJarvisWidgetWindow() { return windowManager.openJarvisWidgetWindow(); }
 function closeJarvisWidgetWindow() { return windowManager.closeJarvisWidgetWindow(); }
 function moveJarvisWidget(payload) { return windowManager.moveJarvisWidget(payload); }
@@ -4531,16 +4458,10 @@ function showAppFromJarvisWidget() {
 // Akış koparsa bekçi katmanı KENDİ KENDİNE kapatır (feedVerdict) — imleci biz
 // tutmadığımız için OS imleci zaten normaldir; kaynak geri gelince katman
 // yeniden doğar.
-const handOverlayWindows = windowManager.handOverlayWindows;
 function handTuningConfig(prefs) { return windowManager.handTuningConfig(prefs); }
 function handOverlayPrefs() { return windowManager.handOverlayPrefs(); }
 function handOverlayAnyAlive() { return windowManager.handOverlayAnyAlive(); }
-function openHandOverlayWindows() { return windowManager.openHandOverlayWindows(); }
 function closeHandOverlayWindows(reason) { return windowManager.closeHandOverlayWindows(reason); }
-function rebuildHandOverlayWindows() { return windowManager.rebuildHandOverlayWindows(); }
-function hookHandOverlayScreenEvents() { return windowManager.hookHandOverlayScreenEvents(); }
-function startHandOverlayWatchdog() { return windowManager.startHandOverlayWatchdog(); }
-function stopHandOverlayWatchdog() { return windowManager.stopHandOverlayWatchdog(); }
 function feedHandOverlay(rawEvents) { return windowManager.feedHandOverlay(rawEvents); }
 function applyHandOverlaySettings() { return windowManager.applyHandOverlaySettings(); }
 
@@ -4580,7 +4501,6 @@ const handService = createHandService({
 const handControl = handService.handControl;
 function startHandControl(opts) { return handService.startHandControl(opts); }
 function stopHandControl(why) { return handService.stopHandControl(why); }
-function emergencyStopHandControl(why) { return handService.emergencyStopHandControl(why); }
 function handControlStatus() { return handService.handControlStatus(); }
 function handControlLive() { return handService.handControlLive(); }
 function finishPoseSampler() { return handService.finishPoseSampler(); }
@@ -4590,10 +4510,7 @@ function broadcastHandControlStatus() { return handService.broadcastHandControlS
 const handCameraPolicy = handService.handCameraPolicy;
 function handHardwareCameras() { return handService.handHardwareCameras(); }
 function handCameraPreference() { return handService.handCameraPreference(); }
-function handZoomFocusedSurface() { return handService.handZoomFocusedSurface(); }
-function handZoomSend(p) { return handService.handZoomSend(p); }
 function handDetectAlive() { return windowManager.handDetectAlive(); }
-function openHandDetectWindow() { return windowManager.openHandDetectWindow(); }
 function scheduleHandControlWarmup(attempt = 0) { return windowManager.scheduleHandControlWarmup(attempt); }
 
 
@@ -5541,20 +5458,11 @@ mobileService = createMobileService({
   standaloneDir,
 });
 
-const mobileSubscribers = mobileService.mobileSubscribers;
 const mobilePending = mobileService.mobilePending;
 const mobileCommandPending = mobileService.mobileCommandPending;
 function emitMobileEvent(event) { return mobileService.emitMobileEvent(event); }
-function mobilePaneTail(paneId, opts) { return mobileService.mobilePaneTail(paneId, opts); }
-function mobilePaneTranscript(paneId, opts) { return mobileService.mobilePaneTranscript(paneId, opts); }
-function mobileListPanes() { return mobileService.mobileListPanes(); }
-function mobileQueryRenderer(kind, params, timeoutMs) { return mobileService.mobileQueryRenderer(kind, params, timeoutMs); }
-function mobileCommandRenderer(kind, payload) { return mobileService.mobileCommandRenderer(kind, payload); }
-function mobileDelegationState() { return mobileService.mobileDelegationState(); }
-function mobileOfficeSnapshot() { return mobileService.mobileOfficeSnapshot(); }
 function shotBridgeAgents() { return mobileService.shotBridgeAgents(); }
 function shotBridgeSend(opts) { return mobileService.shotBridgeSend(opts); }
-function mobileTranscribe(payload) { return mobileService.mobileTranscribe(payload); }
 function mobilePlanDenial(opts) { return mobileService.mobilePlanDenial(opts); }
 function startMobile() { return mobileService.startMobile(); }
 function mobileStartFailure(err) { return mobileService.mobileStartFailure(err); }
@@ -5686,10 +5594,8 @@ const teamComposeService = createTeamComposeService({
 let composeTransport = null;
 function ensureComposeLedger() { return teamComposeService.ensureComposeLedger(); }
 function composeAutonomy() { return teamComposeService.composeAutonomy(); }
-function composePlanNote(seatCount) { return teamComposeService.composePlanNote(seatCount); }
 function composeFail(status, code, error, extra = {}) { return teamComposeService.composeFail(status, code, error, extra); }
 function teamComposeRequest(req, transport) { return teamComposeService.teamComposeRequest(req, transport); }
-function applyEngineProposal(p, req, ledger, callRenderer) { return teamComposeService.applyEngineProposal(p, req, ledger, callRenderer); }
 
 
 // ADP-050 — start the loopback delegation bridge once an app window exists.
