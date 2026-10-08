@@ -138,15 +138,34 @@ function _normalizeTelemetryAndRestoreRoutines(d) {
   if (paneRestoreService && !d.offerRecoverablePanes) d.offerRecoverablePanes = (win, entries, meta) => paneRestoreService.offerRecoverablePanes(win, entries, meta);
 }
 
+function _normalizeLifecycleServices(d) {
+  if (d.crashWatchdogService && !d.startCrashWatchdog) {
+    d.startCrashWatchdog = () => d.crashWatchdogService.startCrashWatchdog();
+  }
+  if (d.delegationBridgeService && !d.startBridge) {
+    d.startBridge = () => d.delegationBridgeService.startBridge();
+  }
+  if (d.mobileService && !d.startMobile) {
+    d.startMobile = () => d.mobileService.startMobile();
+  }
+  if (d.nextServerManager) {
+    if (!d.standaloneDir) d.standaloneDir = () => d.nextServerManager.standaloneDir();
+    if (!d.startNextServer) d.startNextServer = (m, o) => d.nextServerManager.startNextServer(m, o);
+  }
+  if (d.syncService) {
+    if (!d.syncRuntime) d.syncRuntime = d.syncService.syncRuntime;
+    if (!d.prefsApplySoon) d.prefsApplySoon = () => d.syncService.prefsApplySoon();
+    if (!d.prefsProjectNow) d.prefsProjectNow = (r) => d.syncService.prefsProjectNow(r);
+  }
+}
+
 function _normalizeBootDeps(deps) {
   const d = Object.assign({}, deps);
   _normalizeUpdateRoutines(d);
   _normalizeMemoryAndStorageRoutines(d);
   _normalizeWindowRoutines(d);
   _normalizeTelemetryAndRestoreRoutines(d);
-  if (d.crashWatchdogService && !d.startCrashWatchdog) {
-    d.startCrashWatchdog = () => d.crashWatchdogService.startCrashWatchdog();
-  }
+  _normalizeLifecycleServices(d);
   return d;
 }
 

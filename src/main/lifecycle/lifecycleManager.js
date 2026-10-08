@@ -17,6 +17,7 @@ const defaultLifecycleOptions = {
   crashWatchdogService: null,
   stopCrashWatchdog: () => {},
   killAllPtys: () => {},
+  nextServerManager: null,
   stopNextServer: () => {},
   noteQuit: () => {},
   getLivePaneCount: () => 0,
@@ -41,6 +42,9 @@ function normalizeLifecycleDeps(deps = {}) {
   const d = Object.assign({}, defaultLifecycleOptions, deps);
   if (d.crashWatchdogService && d.stopCrashWatchdog === defaultLifecycleOptions.stopCrashWatchdog) {
     d.stopCrashWatchdog = () => d.crashWatchdogService.stopCrashWatchdog();
+  }
+  if (d.nextServerManager && d.stopNextServer === defaultLifecycleOptions.stopNextServer) {
+    d.stopNextServer = () => d.nextServerManager.stopNextServer();
   }
   return d;
 }

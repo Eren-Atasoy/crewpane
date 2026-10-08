@@ -311,23 +311,28 @@ function _resolveHandOps(ctx) {
   };
 }
 
-function _buildHandAndMobileDeps(ctx) {
+function _resolveMobileOps(ctx) {
   const mob = ctx.mobileService;
-  const out = Object.assign(_resolveHandOps(ctx), {
-    getSyncRuntime: () => ctx.syncRuntime,
-    getSyncIpcSurface: () => ctx.syncIpcSurface,
-    mobilePending: ctx.mobilePending,
-    mobileCommandPending: ctx.mobileCommandPending,
-    emitMobileEvent: (e) => (ctx.emitMobileEvent ? ctx.emitMobileEvent(e) : null),
+  const sync = ctx.syncService;
+  return {
+    getSyncRuntime: () => ctx.syncRuntime || (sync ? sync.syncRuntime : null),
+    getSyncIpcSurface: () => ctx.syncIpcSurface || (sync ? sync.syncIpcSurface : null),
+    mobilePending: ctx.mobilePending || (mob ? mob.mobilePending : null),
+    mobileCommandPending: ctx.mobileCommandPending || (mob ? mob.mobileCommandPending : null),
+    emitMobileEvent: (e) => (ctx.emitMobileEvent ? ctx.emitMobileEvent(e) : (mob ? mob.emitMobileEvent(e) : null)),
     getMobileGateway: () => (mob ? mob.getMobileGateway() : null),
     mobileDeviceStore: ctx.mobileDeviceStore,
-    mobilePlanDenial: (opts) => (ctx.mobilePlanDenial ? ctx.mobilePlanDenial(opts) : null),
-    startMobile: () => (ctx.startMobile ? ctx.startMobile() : null),
+    mobilePlanDenial: (opts) => (ctx.mobilePlanDenial ? ctx.mobilePlanDenial(opts) : (mob ? mob.mobilePlanDenial(opts) : null)),
+    startMobile: () => (ctx.startMobile ? ctx.startMobile() : (mob ? mob.startMobile() : null)),
     getMobileGatewayLastFailure: () => (mob ? mob.getMobileGatewayLastFailure() : null),
-    mobileStartFailure: (c) => (ctx.mobileStartFailure ? ctx.mobileStartFailure(c) : null),
-    mobileKillSwitch: () => (ctx.mobileKillSwitch ? ctx.mobileKillSwitch() : null),
+    mobileStartFailure: (c) => (ctx.mobileStartFailure ? ctx.mobileStartFailure(c) : (mob ? mob.mobileStartFailure(c) : null)),
+    mobileKillSwitch: () => (ctx.mobileKillSwitch ? ctx.mobileKillSwitch() : (mob ? mob.mobileKillSwitch() : null)),
     mobileProbe: ctx.mobileProbe,
-  });
+  };
+}
+
+function _buildHandAndMobileDeps(ctx) {
+  const out = Object.assign(_resolveHandOps(ctx), _resolveMobileOps(ctx));
   const handKeys = [
     'handOverlayAnyAlive', 'closeHandOverlayWindows', 'feedHandOverlay', 'applyHandOverlaySettings',
     'startHandControl', 'stopHandControl', 'handControlStatus', 'handControlLive', 'finishPoseSampler',
@@ -526,7 +531,7 @@ function buildSystemAuthAndEngineDeps(ctx) {
     teamScope: ctx.teamScope,
     browserTrustMod: ctx.browserTrustMod,
     broadcastLocale: ctx.broadcastLocale,
-    prefsProjectNow: ctx.prefsProjectNow,
+    prefsProjectNow: ctx.prefsProjectNow || ((reason) => (ctx.syncService ? ctx.syncService.prefsProjectNow(reason) : null)),
     applyHandOverlaySettings: ctx.applyHandOverlaySettings,
     presetAdvisor: ctx.presetAdvisor,
     engineCheck: ctx.engineCheck,

@@ -37,6 +37,7 @@ const defaultDeps = {
   teamComposeRequest: null,
   setComposeTransport: () => {},
   getAgentWorkspaceRoot: () => null,
+  mobileService: null,
   shotBridgeAgents: null,
   shotBridgeSend: null,
   ingestTaskAttachment: null,
@@ -115,8 +116,8 @@ class DelegationBridgeService {
         return this.teamComposeRequest ? this.teamComposeRequest(payload, transport) : null;
       },
       resolveResultsDir: () => this.resolveResultsDir(),
-      onShotAgents: this.shotBridgeAgents,
-      onShotSend: this.shotBridgeSend,
+      onShotAgents: this.shotBridgeAgents || (this.deps.mobileService ? () => this.deps.mobileService.shotBridgeAgents() : null),
+      onShotSend: this.shotBridgeSend || (this.deps.mobileService ? (opts) => this.deps.mobileService.shotBridgeSend(opts) : null),
       onTaskAttachment: (req) => (this.ingestTaskAttachment ? this.ingestTaskAttachment(req) : (med ? med.ingestTaskAttachment(req) : null)),
       onReportNotify: (evt) => {
         const resolvePath = this.resolveWorkerNotifyPath || (rst ? (d) => rst.resolveWorkerNotifyPath(d) : null);

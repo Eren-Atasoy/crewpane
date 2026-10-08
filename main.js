@@ -842,7 +842,7 @@ const ptySpawnService = createPtySpawnService({
   liveIsolationFiles: () => liveIsolationFiles(),
   integrationResolverOrNull: () => integrationResolverOrNull(),
   codeIndexResolverOrNull: () => codeIndexResolverOrNull(),
-  getDelegationBridge: () => delegationBridge,
+  getDelegationBridge: () => (delegationBridgeService ? delegationBridgeService.getBridge() : null),
   publicSupabaseEnv: () => publicSupabaseEnv(),
   engineKeyStore: () => engineKeyStore(),
   reportModuleFault: (fault) => reportModuleFault(fault),
@@ -858,7 +858,7 @@ const ptySpawnService = createPtySpawnService({
   isAutotest: () => AUTOTEST,
   isRestoreDisabled: () => RESTORE_DISABLED,
   hasMobileSubscribers: () => (typeof mobileService !== 'undefined' && mobileService && mobileService.mobileSubscribers ? mobileService.mobileSubscribers.size > 0 : false),
-  emitMobileEvent: (evt) => emitMobileEvent(evt),
+  emitMobileEvent: (evt) => mobileService.emitMobileEvent(evt),
   getPaneAskRuntime: () => (typeof paneAskRuntime !== 'undefined' ? paneAskRuntime : null),
 });
 
@@ -1072,7 +1072,6 @@ function startResourceGovernorSampling() {
 // ADP-050 — the live app window (IPC target for the delegation bridge) + the
 // started bridge handle ({ port, token, stop, info }). One window in this app.
 let appWindow = null;
-let delegationBridge = null;
 // ADP-593 — gömülü Next sunucusunun kökü (`http://127.0.0.1:<port>`); pop-out
 // pencereleri bu kökten `/popout` yükler. createAppWindow'da doldurulur.
 let appBaseUrl = null;
@@ -1243,7 +1242,7 @@ const authService = createAuthService({
     livePaneRegistry,
     crewpaneHome: () => crewpaneHome(),
     killPane: (id, e, aid, r) => paneControlService.killPane(id, e, aid, r),
-    mobilePlanDenial: (opts) => mobilePlanDenial(opts),
+    mobilePlanDenial: (opts) => mobileService.mobilePlanDenial(opts),
     designPlanDenial: ({ notify = true } = {}) => planDenial('designMode', 0, { notify }),
     BrowserWindow,
     getRestoreSkippedByPlan: () => paneRestoreService.getRestoreSkippedByPlan(),
@@ -1654,14 +1653,7 @@ function _buildMobileAndVoiceIpcDeps() {
     spawn,
     appI18n,
     handService,
-    syncRuntime,
-    syncIpcSurface,
-    mobilePending,
-    mobileCommandPending,
     mobileDeviceStore,
-    mobilePlanDenial: (opts) => mobilePlanDenial(opts),
-    mobileStartFailure,
-    mobileKillSwitch,
     mobileProbe,
     requireSeatOrThrow,
     jarvisWidget,
@@ -1730,7 +1722,7 @@ function _buildSystemAndEngineIpcDeps() {
     teamScope,
     browserTrustMod,
     broadcastLocale,
-    prefsProjectNow,
+    syncService,
     presetAdvisor,
     engineCheck,
     capabilityRegistry,
@@ -1781,9 +1773,7 @@ const nextServerManager = createNextServerManager({
   mappedProjectRootsForReports: () => ptyIsolationService.mappedProjectRootsForReports(agentWorkspaceRoot),
 });
 
-function standaloneDir() { return nextServerManager.standaloneDir(); }
-function startNextServer(mode, opts) { return nextServerManager.startNextServer(mode, opts); }
-function stopNextServer() { return nextServerManager.stopNextServer(); }
+
 
 // ---------------------------------------------------------------------------
 // ADP-139 (DOGFOOD Engel #2) — one-click "Rebuild & Relaunch" (src/features/system/rebuildService.js - Faz 3.6.42)
@@ -1901,7 +1891,7 @@ const jarvisConversationService = createJarvisConversationService({
   jarvisConversationMod,
   logLine,
   BrowserWindow,
-  emitMobileEvent: (event) => emitMobileEvent(event),
+  emitMobileEvent: (event) => mobileService.emitMobileEvent(event),
 });
 const jarvisConv = jarvisConversationService.conversation;
 
@@ -1943,18 +1933,8 @@ mobileService = createMobileService({
   logLine,
   repoRoot: REPO_ROOT,
   shellCommit: SHELL_COMMIT,
-  standaloneDir,
+  standaloneDir: () => nextServerManager.standaloneDir(),
 });
-
-const mobilePending = mobileService.mobilePending;
-const mobileCommandPending = mobileService.mobileCommandPending;
-function emitMobileEvent(event) { return mobileService.emitMobileEvent(event); }
-function shotBridgeAgents() { return mobileService.shotBridgeAgents(); }
-function shotBridgeSend(opts) { return mobileService.shotBridgeSend(opts); }
-function mobilePlanDenial(opts) { return mobileService.mobilePlanDenial(opts); }
-function startMobile() { return mobileService.startMobile(); }
-function mobileStartFailure(err) { return mobileService.mobileStartFailure(err); }
-function mobileKillSwitch() { return mobileService.mobileKillSwitch(); }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SYNC-F1-6 — BULUT SENKRONU: motorun açılışa bağlandığı ÜÇ SATIR (§16.7'nin borcu)
@@ -1997,12 +1977,6 @@ const syncService = createSyncService({
   syncSurface,
 });
 
-const syncRuntime = syncService.syncRuntime;
-const syncIpcSurface = syncService.syncIpcSurface;
-function prefsProjector() { return syncService.prefsProjector(); }
-function prefsProjectNow(reason) { return syncService.prefsProjectNow(reason); }
-function prefsApplySoon() { return syncService.prefsApplySoon(); }
-
 /** Tercih/kök/hedef değişti → motoru yeniden çöz (kapanışta ANINDA söker). */
 // ── SYNC-F1-7 — TERCİH IPC'Sİ (renderer ekseni: localStorage) ────────────────
 //
@@ -2012,7 +1986,7 @@ function prefsApplySoon() { return syncService.prefsApplySoon(); }
 // gerisini düşürür, yani bir XSS yüzeyi buradan `locale`ı ya da bir sırrı
 registerPrefsIpc({
   ipcMain,
-  prefsProjector,
+  prefsProjector: () => syncService.prefsProjector(),
   prefsWhitelist,
   logLine,
 });
@@ -2097,8 +2071,7 @@ const delegationBridgeService = createDelegationBridgeService({
   mediaService,
   ptyResumeService,
   getAgentWorkspaceRoot: () => agentWorkspaceRoot,
-  shotBridgeAgents,
-  shotBridgeSend,
+  mobileService,
   notifyLog,
   appDbTokenFor: (source) => appDbTokenFor(source),
   integrationsStatusFor: (req) => integrationsStatusFor(req),
@@ -2106,12 +2079,6 @@ const delegationBridgeService = createDelegationBridgeService({
   planWaveLimit: (requested) => planWaveLimit(requested),
   deliverDictationToFocusedSurface: (text) => deliverDictationToFocusedSurface(text),
 });
-
-async function startBridge() {
-  const bridge = await delegationBridgeService.startBridge();
-  delegationBridge = bridge;
-  return bridge;
-}
 
 // ---------------------------------------------------------------------------
 // KILL-GUARD-01 (madde 5) — DIŞARIDAN KAPATILDIK: uçuştaki işi DAMGALA.
@@ -2134,7 +2101,7 @@ app.whenReady().then(async () => {
     workspaceFileService,
     crewpaneHome,
     repoRoot: REPO_ROOT,
-    standaloneDir,
+    nextServerManager,
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     schemeOwnership,
@@ -2149,9 +2116,7 @@ app.whenReady().then(async () => {
     initSeatGate,
     bindAccountRoot,
     reresolveWorkspaceRootAfterAccountBind,
-    syncRuntime,
-    prefsApplySoon,
-    prefsProjectNow,
+    syncService,
     seedBuiltinSkills,
     syncSkillEngineViews,
     consumeArgvDeepLink,
@@ -2185,9 +2150,8 @@ app.whenReady().then(async () => {
     supervisorFor,
     externalUrl: process.env.CREWPANE_EXTERNAL_URL,
     mode: MODE,
-    startBridge,
-    startMobile,
-    startNextServer,
+    delegationBridgeService,
+    mobileService,
   });
 
   await appBootService.boot();
@@ -2207,7 +2171,7 @@ const lifecycleManager = createLifecycleManager({
   armQuitBrake: (label) => armQuitBrake(label),
   crashWatchdogService,
   paneQueryService,
-  stopNextServer: () => stopNextServer(),
+  nextServerManager,
   noteQuit: (reason, signal) => noteQuit(reason, signal),
   getLivePaneCount: () => ptys.size,
   getQuitReason: () => quitReason,
@@ -2220,7 +2184,6 @@ const lifecycleManager = createLifecycleManager({
   jarvisVoice,
   delegationBridgeService,
   delegationSupervisorService,
-  resetDelegationBridge: () => { delegationBridge = null; },
 });
 lifecycleManager.register();
 
