@@ -348,4 +348,83 @@ test('Units - Agents: delegationBridge facade and submodules preserve contract a
   assert.strictEqual(bridge.paneHasApiError('Everything completed normally'), false);
 });
 
+test('Units - Terminal: resumeDaemonCore facade and submodules preserve contract and state machine', (t) => {
+  const daemon = require('../src/terminal/resumeDaemonCore.cjs');
+  const daemonIndex = require('../src/terminal/resume/index.cjs');
+  const { formatClock, formatWhen, assistantText } = require('../src/terminal/resume/transcriptVerify.cjs');
+
+  assert.strictEqual(typeof daemon.ResumeDaemonCore, 'function');
+  assert.strictEqual(daemon.DEFAULT_VERIFY_WINDOW_MS, 180_000);
+  assert.strictEqual(daemon.VERIFY_MAX_ATTEMPTS, 6);
+  assert.strictEqual(daemon.DEFER_PROBE_MS, 300_000);
+  assert.strictEqual(daemon.UNKNOWN_MAX_DEFER_MS, 3_600_000);
+  assert.strictEqual(daemon.MAX_TOTAL_DEFER_MS, 21_600_000);
+  assert.strictEqual(daemon.STALE_CLOCK_GRACE_MS, 21_600_000);
+  assert.strictEqual(daemon.WATCHDOG_MIN_GAP_MS, 300_000);
+  assert.strictEqual(daemon.PROBE_SETTLE_MS, 1_500);
+  assert.strictEqual(daemon.PROBE_RETRY_MS, 60_000);
+  assert.strictEqual(daemon.PROBE_MAX_UNKNOWN, 3);
+  assert.strictEqual(daemon.SENTINEL_GRACE_MS, 600_000);
+  assert.strictEqual(daemon.SENTINEL_QUIET_MS, 600_000);
+  assert.strictEqual(daemon.SENTINEL_MAX_NUDGES, 2);
+  assert.strictEqual(typeof daemon.transcriptInterruptedAfter, 'function');
+  assert.strictEqual(typeof daemon.hasAssistantLineAfter, 'function');
+  assert.strictEqual(typeof daemon.assistantLinesAfter, 'function');
+  assert.strictEqual(typeof daemon.paneSignature, 'function');
+
+  // Verify export parity between facade and modular resume
+  const facadeKeys = Object.keys(daemon).sort();
+  const indexKeys = Object.keys(daemonIndex).sort();
+  assert.strictEqual(facadeKeys.length, 19, 'Expected 19 exports');
+  assert.deepStrictEqual(facadeKeys, indexKeys, 'Facade and resume/index must have identical exports');
+
+  // Verify pure helper functions
+  const sig1 = daemon.paneSignature('test buffer content');
+  const sig2 = daemon.paneSignature('test buffer content');
+  const sig3 = daemon.paneSignature('different buffer content');
+  assert.strictEqual(typeof sig1, 'string');
+  assert.strictEqual(sig1, sig2);
+  assert.notStrictEqual(sig1, sig3);
+  assert.ok(sig1.startsWith('19:'));
+
+  const fixedTime = Date.parse('2026-10-09T14:30:00.000Z');
+  const clock = formatClock(fixedTime);
+  assert.strictEqual(typeof clock, 'string');
+  assert.ok(clock.includes(':'));
+
+  const whenSameDay = formatWhen(fixedTime, fixedTime + 1000);
+  assert.strictEqual(whenSameDay, clock);
+  const whenOtherDay = formatWhen(fixedTime + 3 * 86_400_000, fixedTime);
+  assert.ok(whenOtherDay.includes('.'), 'Date formatted when > 24h away');
+
+  const textFromObj = assistantText({
+    message: {
+      content: [
+        { type: 'text', text: 'Hello assistant' },
+        { type: 'tool_use', id: 'call_1' },
+      ],
+    },
+  });
+  assert.strictEqual(textFromObj, 'Hello assistant\n');
+
+  // Verify ResumeDaemonCore class instantiation and methods
+  const core = new daemon.ResumeDaemonCore({
+    dryRun: true,
+  });
+  assert.ok(core);
+  assert.strictEqual(core.dryRun, true);
+  assert.strictEqual(typeof core.observe, 'function');
+  assert.strictEqual(typeof core.fire, 'function');
+  assert.strictEqual(typeof core.verify, 'function');
+  assert.strictEqual(typeof core.rescheduleOnBoot, 'function');
+  assert.strictEqual(typeof core.stop, 'function');
+
+  // Clean observe on empty buffer returns null
+  const cleanObserve = core.observe('', { paneRef: '%1' });
+  assert.strictEqual(cleanObserve, null);
+
+  core.stop();
+});
+
+
 
