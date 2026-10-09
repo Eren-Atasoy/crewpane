@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 
 // Register resolver so all requires find their domain files
 
@@ -425,6 +426,86 @@ test('Units - Terminal: resumeDaemonCore facade and submodules preserve contract
 
   core.stop();
 });
+
+test('Units - Agents: agentSettings facade and submodules preserve contract and sanitizers', (t) => {
+  const settings = require('../src/agents/agentSettings.cjs');
+  const settingsIndex = require('../src/agents/settings/index.cjs');
+
+  assert.strictEqual(typeof settings.settingsPath, 'function');
+  assert.strictEqual(typeof settings.defaults, 'function');
+  assert.strictEqual(typeof settings.readSettings, 'function');
+  assert.strictEqual(typeof settings.writeSettings, 'function');
+  assert.strictEqual(typeof settings.applySettingsPatch, 'function');
+  assert.strictEqual(typeof settings.sanitizeTheme, 'function');
+  assert.strictEqual(typeof settings.sanitizeLocale, 'function');
+  assert.strictEqual(typeof settings.sanitizeVoiceLocale, 'function');
+  assert.strictEqual(typeof settings.sanitizeBrowserTrust, 'function');
+  assert.strictEqual(typeof settings.sanitizeTelemetryState, 'function');
+  assert.strictEqual(typeof settings.sanitizeResourceGovernor, 'function');
+  assert.strictEqual(typeof settings.sanitizeMemorySearch, 'function');
+  assert.strictEqual(typeof settings.sanitizeEngines, 'function');
+  assert.strictEqual(typeof settings.sanitizeTeamCompose, 'function');
+  assert.strictEqual(typeof settings.ensureTeamScopeMandate, 'function');
+  assert.strictEqual(typeof settings.teamScopePolicy, 'function');
+  assert.strictEqual(typeof settings.grantTeamScope, 'function');
+  assert.strictEqual(typeof settings.revokeTeamScope, 'function');
+  assert.strictEqual(typeof settings.probeDir, 'function');
+  assert.strictEqual(typeof settings.isDir, 'function');
+  assert.strictEqual(typeof settings.configuredWorkspaceRoot, 'function');
+  assert.strictEqual(typeof settings.configuredWorkspaceRootStatus, 'function');
+  assert.strictEqual(typeof settings.resolveWorkspaceRoot, 'function');
+  assert.strictEqual(typeof settings.openAiKeyFromSettings, 'function');
+  assert.strictEqual(typeof settings.invalidateCache, 'function');
+  assert.strictEqual(typeof settings._resetCache, 'function');
+
+  // Verify export parity between facade and modular settings
+  const facadeKeys = Object.keys(settings).sort();
+  const indexKeys = Object.keys(settingsIndex).sort();
+  assert.strictEqual(facadeKeys.length, 32, 'Expected 32 exports');
+  assert.deepStrictEqual(facadeKeys, indexKeys, 'Facade and settings/index must have identical exports');
+
+  // Test defaults
+  const defs = settings.defaults();
+  assert.ok(defs);
+  assert.strictEqual(defs.workspaceRoot, null);
+  assert.strictEqual(defs.locale, 'system');
+  assert.strictEqual(defs.voiceLocale, 'follow-ui');
+  assert.strictEqual(defs.terminalFontScale, 'medium');
+
+  // Test sanitizers
+  const validTheme = settings.sanitizeTheme({ mode: 'dark', accent: '#ff00aa', preset: 'custom-preset' });
+  assert.deepStrictEqual(validTheme, { mode: 'dark', accent: '#ff00aa', preset: 'custom-preset' });
+  assert.strictEqual(settings.sanitizeTheme({ mode: 'invalid-mode' }), null);
+
+  assert.strictEqual(settings.sanitizeLocale('tr'), 'tr');
+  assert.strictEqual(settings.sanitizeLocale('en'), 'en');
+  assert.strictEqual(settings.sanitizeLocale('invalid'), 'system');
+
+  assert.strictEqual(settings.sanitizeVoiceLocale('tr'), 'tr');
+  assert.strictEqual(settings.sanitizeVoiceLocale('invalid'), 'follow-ui');
+
+  const trust = settings.sanitizeBrowserTrust({ mode: 'siki', trustedOrigins: ['HTTPS://EXAMPLE.COM'] });
+  assert.strictEqual(trust.mode, 'siki');
+  assert.ok(trust.trustedOrigins.includes('https://example.com'));
+
+  const gov = settings.sanitizeResourceGovernor({ enabled: true, warnFreePct: 20, criticalFreePct: 10 });
+  assert.deepStrictEqual(gov, { enabled: true, warnFreePct: 20, criticalFreePct: 10 });
+
+  // Test probeDir and isDir
+  const selfDir = settings.probeDir(__dirname);
+  assert.strictEqual(selfDir.ok, true);
+  assert.strictEqual(selfDir.reason, 'ok');
+  assert.strictEqual(settings.isDir(__dirname), true);
+
+  const nonExistent = settings.probeDir(path.join(__dirname, 'non_existent_dir_12345'));
+  assert.strictEqual(nonExistent.ok, false);
+  assert.strictEqual(nonExistent.reason, 'missing');
+  assert.strictEqual(settings.isDir(path.join(__dirname, 'non_existent_dir_12345')), false);
+
+  // Invalidate cache
+  settings.invalidateCache();
+});
+
 
 
 
