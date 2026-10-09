@@ -216,3 +216,35 @@ test('Units - Agents: agentRunner facade and submodules preserve contract and bu
   assert.strictEqual(runner.statusFor(Date.now() - 100000, Date.now()), 'idle');
 });
 
+test('Units - Voice: jarvisVoice facade and submodules preserve contract and intent parsing', (t) => {
+  const voice = require('../src/voice/jarvisVoice.js');
+  const voiceIndex = require('../src/voice/jarvis/index.cjs');
+
+  assert.strictEqual(typeof voice.decide, 'function', 'decide must be exported');
+  assert.strictEqual(typeof voice.parseIntent, 'function', 'parseIntent must be exported');
+  assert.strictEqual(typeof voice.fastLocalDecision, 'function', 'fastLocalDecision must be exported');
+  assert.strictEqual(typeof voice.normalizeDecision, 'function', 'normalizeDecision must be exported');
+  assert.strictEqual(typeof voice.speakSay, 'function', 'speakSay must be exported');
+  assert.strictEqual(typeof voice.transcribeSpeech, 'function', 'transcribeSpeech must be exported');
+
+  // Verify export parity between facade and modular jarvis
+  const facadeKeys = Object.keys(voice).sort();
+  const indexKeys = Object.keys(voiceIndex).sort();
+  assert.strictEqual(facadeKeys.length, 78, 'Expected 78 exports');
+  assert.deepStrictEqual(facadeKeys, indexKeys, 'Facade and jarvis/index must have identical exports');
+
+  // Verify functional behaviors
+  const killDecision = voice.parseIntent('terminalleri kapat');
+  assert.strictEqual(killDecision.action, 'terminal');
+  assert.strictEqual(killDecision.op, 'kill');
+
+  const fastKill = voice.fastLocalDecision('terminalleri kapat');
+  assert.ok(fastKill, 'terminalleri kapat should resolve via fastLocalDecision');
+  assert.strictEqual(fastKill.op, 'kill');
+
+  assert.strictEqual(voice.normalizeSilenceMs(null), 900);
+  assert.strictEqual(voice.normalizeSilenceMs(1200), 1200);
+  assert.strictEqual(voice.normalizeDecision({ action: 'status' }).action, 'status');
+});
+
+
