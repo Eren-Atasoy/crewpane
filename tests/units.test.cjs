@@ -295,4 +295,57 @@ test('Units - Agents: delegationSupervisor facade and submodules preserve contra
   assert.strictEqual(typeof instance.stop, 'function');
 });
 
+test('Units - Agents: delegationBridge facade and submodules preserve contract and validators', (t) => {
+  const bridge = require('../src/agents/delegationBridge.js');
+  const bridgeIndex = require('../src/agents/bridge/index.cjs');
+
+  assert.strictEqual(typeof bridge.startDelegationBridge, 'function');
+  assert.strictEqual(typeof bridge.mintToken, 'function');
+  assert.strictEqual(typeof bridge.checkToken, 'function');
+  assert.strictEqual(typeof bridge.validateDelegatePayload, 'function');
+  assert.strictEqual(typeof bridge.validateReportPayload, 'function');
+  assert.strictEqual(typeof bridge.validateSprintPayload, 'function');
+  assert.strictEqual(typeof bridge.validateComposePayload, 'function');
+  assert.strictEqual(typeof bridge.stripAnsi, 'function');
+  assert.strictEqual(typeof bridge.cleanPaneTail, 'function');
+  assert.strictEqual(typeof bridge.paneHasApiError, 'function');
+  assert.strictEqual(typeof bridge.enrichDelegationSnapshot, 'function');
+
+  // Verify export parity between facade and modular bridge
+  const facadeKeys = Object.keys(bridge).sort();
+  const indexKeys = Object.keys(bridgeIndex).sort();
+  assert.strictEqual(facadeKeys.length, 28, 'Expected 28 exports');
+  assert.deepStrictEqual(facadeKeys, indexKeys, 'Facade and bridge/index must have identical exports');
+
+  // Verify token operations
+  const token = bridge.mintToken();
+  assert.strictEqual(typeof token, 'string');
+  assert.strictEqual(token.length, 64);
+  assert.strictEqual(bridge.checkToken(token, token), true);
+  assert.strictEqual(bridge.checkToken('Bearer ' + token, token), true);
+  assert.strictEqual(bridge.checkToken('invalid', token), false);
+
+  // Verify payload validators
+  const validDelegate = bridge.validateDelegatePayload({
+    objective: 'Test objective',
+    leaderId: 'leader-1',
+    department: 'frontend',
+  });
+  assert.strictEqual(validDelegate.ok, true);
+  assert.strictEqual(validDelegate.value.objective, 'Test objective');
+
+  const invalidDelegate = bridge.validateDelegatePayload({
+    objective: '',
+    leaderId: 'leader-1',
+    department: 'frontend',
+  });
+  assert.strictEqual(invalidDelegate.ok, false);
+
+  // Verify ANSI stripping & API error detection
+  assert.strictEqual(bridge.stripAnsi('\u001b[32mSuccess\u001b[0m'), 'Success');
+  assert.strictEqual(bridge.cleanPaneTail('Line 1\n\n\u001b[31mLine 2\u001b[0m\n'), 'Line 1\nLine 2');
+  assert.strictEqual(bridge.paneHasApiError('Overloaded error 529 encountered'), true);
+  assert.strictEqual(bridge.paneHasApiError('Everything completed normally'), false);
+});
+
 
