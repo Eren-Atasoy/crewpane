@@ -628,3 +628,68 @@ test('Units - Terminal: limitDetect facade and submodules preserve contract, tim
   assert.strictEqual(facade.looksLikeLimitText(normalOutput), false);
 });
 
+test('Units - Mobile: mobileGateway facade and submodules preserve contract, routes, and query parser', (t) => {
+  const facade = require('../src/mobile/mobileGateway.js');
+  const mod = require('../src/mobile/gateway/index.js');
+
+  assert.strictEqual(Object.keys(facade).length, 12, 'mobileGateway should export 12 symbols');
+  assert.deepStrictEqual(Object.keys(facade).sort(), Object.keys(mod).sort(), 'Facade and modular index must have identical exports');
+
+  // Verify routeKeyFor
+  const r1 = facade.routeKeyFor('GET', '/m/panes/pane-123/tail');
+  assert.strictEqual(r1.key, 'GET /m/panes/:paneId/tail');
+  assert.strictEqual(r1.paneId, 'pane-123');
+
+  const r2 = facade.routeKeyFor('GET', '/m/panes/pane-456/transcript');
+  assert.strictEqual(r2.key, 'GET /m/panes/:paneId/transcript');
+  assert.strictEqual(r2.paneId, 'pane-456');
+
+  const r3 = facade.routeKeyFor('POST', '/m/tasks/task-789/delegate');
+  assert.strictEqual(r3.key, 'POST /m/tasks/:taskId/delegate');
+  assert.strictEqual(r3.taskId, 'task-789');
+
+  const r4 = facade.routeKeyFor('GET', '/m/sprite/agent_idle.png');
+  assert.strictEqual(r4.key, 'GET /m/sprite/:key');
+  assert.strictEqual(r4.spriteKey, 'agent_idle');
+
+  const r5 = facade.routeKeyFor('GET', '/m/health');
+  assert.strictEqual(r5.key, 'GET /m/health');
+
+  // Verify queryParamsFor
+  const u1 = new URL('http://localhost:7823/m/tasks?status=in_progress&limit=50&offset=10&team=backend');
+  const p1 = facade.queryParamsFor('tasks', u1);
+  assert.strictEqual(p1.status, 'in_progress');
+  assert.strictEqual(p1.limit, 50);
+  assert.strictEqual(p1.offset, 10);
+  assert.strictEqual(p1.team, 'backend');
+
+  const u2 = new URL('http://localhost:7823/m/tasks?limit=999');
+  const p2 = facade.queryParamsFor('tasks', u2);
+  assert.strictEqual(p2.limit, 100, 'Tasks limit must be clamped to MAX 100');
+
+  const u3 = new URL('http://localhost:7823/m/agents?free=true&taskId=task-1');
+  const p3 = facade.queryParamsFor('agents', u3);
+  assert.strictEqual(p3.free, true);
+  assert.strictEqual(p3.taskId, 'task-1');
+
+  // Verify parseMultipart
+  const boundary = '----WebKitFormBoundaryXYZ';
+  const multipartBody = Buffer.from(
+    `--${boundary}\r\n` +
+    'Content-Disposition: form-data; name="text"\r\n\r\n' +
+    'hello jarvis\r\n' +
+    `--${boundary}\r\n` +
+    'Content-Disposition: form-data; name="audio"; filename="voice.m4a"\r\n' +
+    'Content-Type: audio/m4a\r\n\r\n' +
+    'audio-raw-bytes\r\n' +
+    `--${boundary}--\r\n`
+  );
+  const parsed = facade.parseMultipart(multipartBody, `multipart/form-data; boundary=${boundary}`);
+  assert.ok(parsed, 'Multipart body should be parsed');
+  assert.strictEqual(parsed.text, 'hello jarvis');
+  assert.ok(parsed.audio && parsed.audio.audioBase64);
+  assert.strictEqual(parsed.audio.fileName, 'voice.m4a');
+  assert.strictEqual(parsed.audio.mimeType, 'audio/m4a');
+});
+
+
