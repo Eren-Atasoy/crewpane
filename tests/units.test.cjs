@@ -580,3 +580,51 @@ test('Units - Agents: engineAuth facade and submodules preserve contract and sta
   assert.strictEqual(claudeDesc.engine, 'claude');
   assert.ok(Array.isArray(facade.statusArgv('claude')));
 });
+
+test('Units - Terminal: limitDetect facade and submodules preserve contract, time resolver, and limit detection', (t) => {
+  const facade = require('../src/terminal/limitDetect.cjs');
+  const mod = require('../src/terminal/limit/index.cjs');
+
+  assert.strictEqual(Object.keys(facade).length, 34, 'limitDetect should export 34 symbols');
+  assert.deepStrictEqual(Object.keys(facade).sort(), Object.keys(mod).sort(), 'Facade and modular index must have identical exports');
+
+  // Verify ANSI stripping
+  const colored = '\u001b[31mRed Alert\u001b[0m \u001b[1mBold\u001b[22m';
+  assert.strictEqual(facade.stripAnsi(colored), 'Red Alert Bold');
+  assert.strictEqual(facade.stripAnsiRobust(colored), 'Red Alert Bold');
+
+  // Verify text helpers & engine inference
+  assert.strictEqual(facade.inferEngine('You have reached the Claude usage limit'), 'claude');
+  assert.strictEqual(facade.inferEngine('Codex message limit reached, try again in 2 hours'), 'codex');
+  assert.strictEqual(facade.inferEngine('Some random terminal text'), null);
+  assert.strictEqual(facade.resolveEngine('codex', 'claude text'), 'codex');
+  assert.strictEqual(facade.resolveEngine(null, 'claude usage limit'), 'claude');
+
+  // Verify time resolver functions
+  assert.strictEqual(facade.isUsableTimeZone('America/New_York'), true);
+  assert.strictEqual(facade.isUsableTimeZone('UTC'), true);
+  assert.strictEqual(facade.isUsableTimeZone('Invalid/Zone/123'), false);
+
+  const baseEpoch = 1700000000000;
+  const saneFuture = baseEpoch + 3600000; // +1 hour
+  const insaneFuture = baseEpoch + 100 * 86400000; // +100 days
+  assert.strictEqual(facade.isSaneResetAt(saneFuture, baseEpoch), true);
+  assert.strictEqual(facade.isSaneResetAt(insaneFuture, baseEpoch), false);
+
+  // Verify clock epochs and roll over
+  const epochs = facade.clockEpochs(14, 30, baseEpoch, 'UTC');
+  assert.ok(epochs && typeof epochs.at === 'number');
+
+  // Verify option classification
+  assert.strictEqual(facade.classifyOption('1. Stop and wait'), 'wait');
+  assert.strictEqual(facade.classifyOption('2. Switch to another model'), 'upgrade');
+  assert.strictEqual(facade.classifyOption('3. Purchase extra credits'), 'upgrade');
+  assert.strictEqual(facade.classifyOption('4. Random custom action'), 'other');
+
+  // Verify limit state detection on non-limit text
+  const normalOutput = 'npm test\nRunning 33 tests...\nPassed: 33\n';
+  assert.strictEqual(facade.detectLimit(normalOutput), null);
+  assert.strictEqual(facade.detectLimitState(normalOutput), null);
+  assert.strictEqual(facade.looksLikeLimitText(normalOutput), false);
+});
+
