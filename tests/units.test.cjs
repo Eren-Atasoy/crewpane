@@ -247,4 +247,52 @@ test('Units - Voice: jarvisVoice facade and submodules preserve contract and int
   assert.strictEqual(voice.normalizeDecision({ action: 'status' }).action, 'status');
 });
 
+test('Units - Agents: delegationSupervisor facade and submodules preserve contract and state operations', (t) => {
+  const supervisor = require('../src/agents/delegationSupervisor.cjs');
+  const supervisorIndex = require('../src/agents/supervisor/index.cjs');
+
+  assert.strictEqual(typeof supervisor.createDelegationSupervisor, 'function');
+  assert.strictEqual(typeof supervisor.recordKey, 'function');
+  assert.strictEqual(typeof supervisor.normalizeState, 'function');
+  assert.strictEqual(typeof supervisor.deliveryVerdict, 'function');
+  assert.strictEqual(typeof supervisor.wakeDue, 'function');
+  assert.strictEqual(typeof supervisor.wakeTextFor, 'function');
+  assert.strictEqual(supervisor.STORE_VERSION, 1);
+  assert.strictEqual(typeof supervisor.DEFAULTS, 'object');
+  assert.strictEqual(typeof supervisor.SETTLE_SOURCES, 'object');
+
+  // Verify export parity between facade and modular supervisor
+  const facadeKeys = Object.keys(supervisor).sort();
+  const indexKeys = Object.keys(supervisorIndex).sort();
+  assert.strictEqual(facadeKeys.length, 9, 'Expected 9 exports');
+  assert.deepStrictEqual(facadeKeys, indexKeys, 'Facade and supervisor/index must have identical exports');
+
+  // Verify pure helper behaviors
+  assert.strictEqual(supervisor.recordKey('dlg-1', 'sub-2'), 'dlg-1:sub-2');
+
+  const norm = supervisor.normalizeState({
+    records: {
+      'd1:s1': { delegationId: 'd1', subtaskId: 's1' },
+      invalid: { something: true },
+    },
+  });
+  assert.strictEqual(norm.version, 1);
+  assert.ok('d1:s1' in norm.records);
+  assert.ok(!('invalid' in norm.records));
+
+  assert.strictEqual(supervisor.deliveryVerdict({ transcript: true }), true);
+  assert.strictEqual(supervisor.deliveryVerdict({ transcript: false }), false);
+  assert.strictEqual(supervisor.deliveryVerdict({ transcript: null, buffer: 'match sig', signature: 'sig' }), true);
+  assert.strictEqual(supervisor.deliveryVerdict({ transcript: null }), null);
+
+  const instance = supervisor.createDelegationSupervisor();
+  assert.strictEqual(typeof instance.record, 'function');
+  assert.strictEqual(typeof instance.settle, 'function');
+  assert.strictEqual(typeof instance.ack, 'function');
+  assert.strictEqual(typeof instance.sweep, 'function');
+  assert.strictEqual(typeof instance.leaderStatus, 'function');
+  assert.strictEqual(typeof instance.start, 'function');
+  assert.strictEqual(typeof instance.stop, 'function');
+});
+
 
