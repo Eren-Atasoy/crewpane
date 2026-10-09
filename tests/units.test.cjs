@@ -550,3 +550,33 @@ test('Units - Voice: ttsProviders facade and submodules preserve contract and co
   assert.ok(config && Array.isArray(config.engines));
   assert.strictEqual(config.previewText, facade.TTS_PREVIEW_TEXT_TR);
 });
+
+test('Units - Agents: engineAuth facade and submodules preserve contract and status parsing', (t) => {
+  const facade = require('../src/agents/engineAuth.cjs');
+  const mod = require('../src/agents/engineAuth/index.cjs');
+
+  assert.strictEqual(Object.keys(facade).length, 30, 'engineAuth should export 30 symbols');
+  assert.deepStrictEqual(Object.keys(facade).sort(), Object.keys(mod).sort(), 'Facade and modular index must have identical exports');
+
+  // Verify pure helpers and parsers
+  assert.strictEqual(facade.maskSecrets('auth code=secret12345'), 'auth code=«gizlendi»');
+  assert.strictEqual(facade.extractUrl('Follow https://example.com/oauth/authorize to authenticate'), 'https://example.com/oauth/authorize');
+  assert.strictEqual(facade.wantsCode('Please paste code here:'), true);
+  assert.strictEqual(facade.engineMessageOf('Error: API key is invalid or expired'), 'API key is invalid or expired');
+
+  // Verify JSON and text parsers
+  const jsonStatus = facade.parseJsonStatus('{"loggedIn":true,"email":"dev@crewpane.com","subscriptionType":"pro"}');
+  assert.strictEqual(jsonStatus.loggedIn, true);
+  assert.strictEqual(jsonStatus.account, 'dev@crewpane.com');
+  assert.strictEqual(jsonStatus.plan, 'pro');
+
+  const textStatus = facade.parseTextStatus('Logged in using ChatGPT (user@example.com)', 0);
+  assert.strictEqual(textStatus.loggedIn, true);
+  assert.strictEqual(textStatus.account, 'user@example.com');
+
+  // Verify descriptors and argv
+  const claudeDesc = facade.authDescriptor('claude');
+  assert.ok(claudeDesc, 'claude descriptor must exist');
+  assert.strictEqual(claudeDesc.engine, 'claude');
+  assert.ok(Array.isArray(facade.statusArgv('claude')));
+});
