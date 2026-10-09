@@ -874,6 +874,64 @@ test('Units - MCP: integrationCatalog facade and catalog submodules preserve con
   assert.strictEqual(facade.maskDsn('invalid-url'), '••••');
 });
 
+test('Units - Hand: handClickFsm facade and fsm submodules preserve contract, states, and transitions', (t) => {
+  const facade = require('../src/hand/handClickFsm.cjs');
+  const mod = require('../src/hand/fsm/index.cjs');
+
+  assert.strictEqual(Object.keys(facade).length, 11, 'handClickFsm should export 11 symbols');
+  assert.deepStrictEqual(Object.keys(facade).sort(), Object.keys(mod).sort(), 'Facade and modular fsm must have identical exports');
+
+  // Verify states
+  assert.strictEqual(facade.IDLE, 'IDLE');
+  assert.strictEqual(facade.MOVE, 'MOVE');
+  assert.strictEqual(facade.ARMED, 'ARMED');
+  assert.strictEqual(facade.CLICK, 'CLICK');
+  assert.strictEqual(facade.DRAG, 'DRAG');
+  assert.strictEqual(facade.SCROLL, 'SCROLL');
+  assert.strictEqual(facade.ZOOM, 'ZOOM');
+  assert.strictEqual(facade.PARK, 'PARK');
+
+  // Verify defaultConfig
+  const cfg = facade.defaultConfig();
+  assert.strictEqual(typeof cfg, 'object');
+  assert.strictEqual(cfg.enter, 0.14);
+  assert.strictEqual(cfg.release, 0.28);
+  assert.strictEqual(cfg.zoomEnabled, true);
+
+  // Verify action factory
+  const act = facade.action('left_click', 100, 200, { clicks: 1, reason: 'tap' });
+  assert.strictEqual(act.kind, 'left_click');
+  assert.strictEqual(act.x, 100);
+  assert.strictEqual(act.y, 200);
+  assert.strictEqual(act.clicks, 1);
+  assert.strictEqual(act.reason, 'tap');
+
+  // Verify FSM instantiation & state lifecycle
+  const fsm = new facade.ClickFSM();
+  assert.strictEqual(fsm.state, facade.IDLE);
+  assert.strictEqual(fsm.frozen, false);
+
+  // Feed a move frame
+  const moveActs = fsm.update({ t: 1.0, hand: true, x: 150, y: 150, pinchIndex: 0.5, pinchMiddle: 0.5 });
+  assert.strictEqual(fsm.state, facade.MOVE);
+  assert.strictEqual(moveActs.length, 1);
+  assert.strictEqual(moveActs[0].kind, 'move');
+
+  // Feed an arming pinch
+  const armActs = fsm.update({ t: 1.05, hand: true, x: 150, y: 150, pinchIndex: 0.12, pinchMiddle: 0.5 });
+  assert.strictEqual(fsm.state, facade.ARMED);
+  assert.strictEqual(fsm.frozen, true);
+  assert.ok(armActs.some((a) => a.kind === 'anchor'));
+
+  // Feed a release (tap)
+  for (let i = 0; i < 3; i++) {
+    fsm.update({ t: 1.08 + i * 0.03, hand: true, x: 150, y: 150, pinchIndex: 0.10, pinchMiddle: 0.5 });
+  }
+  const tapActs = fsm.update({ t: 1.25, hand: true, x: 150, y: 150, pinchIndex: 0.35, pinchMiddle: 0.5 });
+  assert.ok(tapActs.some((a) => a.kind === 'left_click'));
+});
+
+
 
 
 
