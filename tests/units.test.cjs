@@ -187,3 +187,32 @@ test('Units - Main: createIpcRouter registers contract-based handlers with schem
   assert.deepStrictEqual(invalidCalc, { ok: false, error: 'INVALID_PAYLOAD' });
   assert.strictEqual(fakeLogger.warnLogs.length, 1);
 });
+
+test('Units - Agents: agentRunner facade and submodules preserve contract and buildSpawn', (t) => {
+  const runner = require('../src/agents/agentRunner.js');
+  const runnerIndex = require('../src/agents/runner/index.cjs');
+
+  assert.strictEqual(typeof runner.buildSpawn, 'function', 'buildSpawn must be exported');
+  assert.strictEqual(typeof runner.statusFor, 'function', 'statusFor must be exported');
+  assert.strictEqual(typeof runner.resolveCommand, 'function', 'resolveCommand must be exported');
+  assert.strictEqual(typeof runner.ALLOWED_COMMANDS, 'object', 'ALLOWED_COMMANDS must be object');
+  assert.ok('claude' in runner.ALLOWED_COMMANDS, 'ALLOWED_COMMANDS should include claude');
+  assert.ok('codex' in runner.ALLOWED_COMMANDS, 'ALLOWED_COMMANDS should include codex');
+
+  // Verify export parity between facade and modular runner
+  const facadeKeys = Object.keys(runner).sort();
+  const indexKeys = Object.keys(runnerIndex).sort();
+  assert.deepStrictEqual(facadeKeys, indexKeys, 'Facade and runner/index must have identical exports');
+
+  // Verify buildSpawn execution
+  const spawn = runner.buildSpawn({ command: 'claude', agentId: 'unit-test-agent' });
+  assert.ok(spawn, 'buildSpawn should produce a spawn object');
+  assert.strictEqual(spawn.isAgent, true);
+  assert.strictEqual(spawn.file, 'claude');
+  assert.ok(Array.isArray(spawn.argv));
+  assert.strictEqual(typeof spawn.env, 'object');
+  assert.strictEqual(runner.statusFor(null), 'working');
+  assert.strictEqual(runner.statusFor(Date.now(), Date.now()), 'working');
+  assert.strictEqual(runner.statusFor(Date.now() - 100000, Date.now()), 'idle');
+});
+
