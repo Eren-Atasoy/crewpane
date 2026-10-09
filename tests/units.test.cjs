@@ -66,8 +66,16 @@ test('Units - Voice: sttHallucinationGuard loads hallucination lexicon', (t) => 
 
 test('Units - Security: seatGate exports valid decision and product contracts', (t) => {
   const seatGate = require('../src/security/seatGate.cjs');
+  const seatMod = require('../src/security/seat/index.cjs');
+
+  assert.ok(typeof seatGate.createSeatGate === 'function', 'createSeatGate should be a function');
   assert.ok(typeof seatGate.decideAccess === 'function', 'decideAccess should be a function');
+  assert.ok(typeof seatGate.readPastDue === 'function', 'readPastDue should be a function');
+  assert.ok(typeof seatGate.readCancelEnding === 'function', 'readCancelEnding should be a function');
   assert.strictEqual(seatGate.SEAT_PRODUCT, 'crewpane.seat', 'SEAT_PRODUCT should match');
+
+  // Modular export parity (5/5 exports)
+  assert.deepStrictEqual(Object.keys(seatGate).sort(), Object.keys(seatMod).sort(), 'seatGate and seat/index must have identical exports');
 
   // Test access decision in dev/unrequired seat environment
   const decision = seatGate.decideAccess({
@@ -76,6 +84,14 @@ test('Units - Security: seatGate exports valid decision and product contracts', 
     requireLogin: false
   });
   assert.strictEqual(decision.allowed, true, 'Access should be granted in dev build without seat gate');
+
+  // Test denial when requireSeat=true and not signed in
+  const denied = seatGate.decideAccess({
+    requireSeat: true,
+    signedIn: false
+  });
+  assert.strictEqual(denied.allowed, false);
+  assert.strictEqual(denied.reason, 'not_signed_in');
 });
 
 test('Units - Security: integrityCheck skips unpackaged dev builds (no false positives)', (t) => {
