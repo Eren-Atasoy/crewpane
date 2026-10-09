@@ -692,4 +692,68 @@ test('Units - Mobile: mobileGateway facade and submodules preserve contract, rou
   assert.strictEqual(parsed.audio.mimeType, 'audio/m4a');
 });
 
+test('Units - MCP: crewpane-delegate-mcp facade and submodules preserve contract, tools, and formatters', (t) => {
+  const facade = require('../src/mcp/crewpane-delegate-mcp.cjs');
+  const mod = require('../src/mcp/delegate/index.cjs');
+
+  assert.strictEqual(Object.keys(facade).length, 17, 'crewpane-delegate-mcp should export 17 symbols');
+  const modKeys = Object.keys(mod).filter((k) => k !== 'main').sort();
+  assert.deepStrictEqual(Object.keys(facade).sort(), modKeys, 'Facade and modular index must have identical exports');
+
+  // Verify formatters
+  const emptyStatus = facade.summarizeStatus(null);
+  assert.strictEqual(emptyStatus, 'No active delegations.');
+
+  const sampleSnapshot = [
+    {
+      id: 'dlg-1',
+      status: 'working',
+      subtasks: [
+        { workerAgentId: 'coder', status: 'done', evidenceRef: 'docs/result.md' },
+        { workerAgentId: 'reviewer', status: 'in-progress' },
+      ],
+    },
+  ];
+  const summary = facade.summarizeStatus(sampleSnapshot);
+  assert.ok(summary.includes('dlg-1 [working]'));
+  assert.ok(summary.includes('coder:done → docs/result.md'));
+  assert.ok(summary.includes('reviewer:in-progress'));
+
+  const emptySprint = facade.summarizeSprintStatus([]);
+  assert.strictEqual(emptySprint, 'No sprints found.');
+
+  const sampleSprint = {
+    id: 'sp-1',
+    active: true,
+    summary: { done: 3, total: 5, dispatched: 1, pending: 1, failed: 0, skipped: 0 },
+    tasks: ['T1', 'T2'],
+  };
+  const sprintSummary = facade.summarizeSprintStatus(sampleSprint);
+  assert.ok(sprintSummary.includes('sp-1 [RUNNING]'));
+  assert.ok(sprintSummary.includes('3/5 done'));
+
+  const emptyPanes = facade.summarizePanes([]);
+  assert.strictEqual(emptyPanes, 'No live panes.');
+
+  const samplePanes = [
+    {
+      paneId: '%1',
+      agentId: 'jarvis',
+      status: 'working',
+      command: 'claude',
+      label: 'Main Assistant',
+    },
+  ];
+  const paneSummary = facade.summarizePanes(samplePanes);
+  assert.ok(paneSummary.includes('%1 — jarvis'));
+  assert.ok(paneSummary.includes('[WORKING]'));
+
+  // Verify tool definitions
+  assert.strictEqual(facade.CANONICAL_TOOLS.length, 6, 'Should have 6 canonical tools');
+  assert.strictEqual(facade.TOOLS.length, 12, 'Should have 12 tools (6 canonical + 6 legacy aliases)');
+  assert.ok(facade.TOOLS.some((t) => t.name === 'crewpane_delegate'));
+  assert.ok(facade.TOOLS.some((t) => t.name === 'crewpane_sprint'));
+});
+
+
 
