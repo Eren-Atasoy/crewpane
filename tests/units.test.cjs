@@ -755,5 +755,60 @@ test('Units - MCP: crewpane-delegate-mcp facade and submodules preserve contract
   assert.ok(facade.TOOLS.some((t) => t.name === 'crewpane_sprint'));
 });
 
+test('Units - MCP: crewpane-task-mcp facade and submodules preserve contract, slugifier, and schemas', (t) => {
+  const facade = require('../src/mcp/crewpane-task-mcp.cjs');
+  const mod = require('../src/mcp/task/index.cjs');
+
+  assert.strictEqual(Object.keys(facade).length, 30, 'crewpane-task-mcp should export 30 symbols');
+  const modKeys = Object.keys(mod).filter((k) => k !== 'main').sort();
+  assert.deepStrictEqual(Object.keys(facade).sort(), modKeys, 'Facade and modular index must have identical exports');
+
+  // Verify slugify & normalizeSprintSlug
+  assert.strictEqual(facade.slugify('My Super Sprint 23!'), 'My-Super-Sprint-23');
+  assert.strictEqual(facade.normalizeSprintSlug('sprint-ad-27'), 'SPRINT-AD-27');
+  assert.strictEqual(facade.normalizeSprintSlug('  Sprint_Dev 12 '), 'SPRINT_DEV-12');
+
+  // Verify genTaskId format
+  const taskId = facade.genTaskId();
+  assert.ok(taskId.startsWith('TASK-'));
+  assert.strictEqual(taskId, taskId.toUpperCase());
+
+  // Verify attachments normalization
+  const validAtt = facade.normalizeAttachments([
+    { path: 'C:/screens/test.png', title: 'Screenshot 1', cover: true },
+  ]);
+  assert.strictEqual(validAtt.ok, true);
+  assert.strictEqual(validAtt.list.length, 1);
+  assert.strictEqual(validAtt.list[0].path, 'C:/screens/test.png');
+  assert.strictEqual(validAtt.list[0].cover, true);
+
+  const invalidAtt = facade.normalizeAttachments('not-an-array');
+  assert.strictEqual(invalidAtt.ok, false);
+
+  const missingPath = facade.normalizeAttachments([{ title: 'No path' }]);
+  assert.strictEqual(missingPath.ok, false);
+
+  // Verify describeSkip
+  assert.ok(facade.describeSkip('not-found').includes('bulunamadı'));
+  assert.ok(facade.describeSkip('too-large').includes('25 MB'));
+
+  // Verify task statuses
+  assert.deepStrictEqual(facade.TASK_STATUSES, ['backlog', 'todo', 'in_progress', 'review', 'done']);
+
+  // Verify TOOLS definition
+  assert.strictEqual(facade.TOOLS.length, 7, 'Should have 7 task tools');
+  const toolNames = facade.TOOLS.map((t) => t.name).sort();
+  assert.deepStrictEqual(toolNames, [
+    'attach_to_task',
+    'create_project',
+    'create_sprint',
+    'create_task',
+    'delete_project',
+    'list_tasks',
+    'update_task',
+  ]);
+});
+
+
 
 
