@@ -809,6 +809,72 @@ test('Units - MCP: crewpane-task-mcp facade and submodules preserve contract, sl
   ]);
 });
 
+test('Units - MCP: integrationCatalog facade and catalog submodules preserve contract, masking, and entries', (t) => {
+  const facade = require('../src/mcp/integrationCatalog.cjs');
+  const mod = require('../src/mcp/catalog/index.cjs');
+
+  assert.strictEqual(Object.keys(facade).length, 16, 'integrationCatalog should export 16 symbols');
+  assert.deepStrictEqual(Object.keys(facade).sort(), Object.keys(mod).sort(), 'Facade and modular catalog must have identical exports');
+
+  // Verify catalog entries count
+  assert.strictEqual(Object.keys(facade.CATALOG).length, 22, 'Should have 22 catalog entries');
+  const list = facade.list();
+  assert.strictEqual(list.length, 22);
+
+  // Verify external key store handling
+  assert.strictEqual(facade.isExternallyManaged('elevenlabs'), true);
+  assert.strictEqual(facade.isExternallyManaged('github'), false);
+  assert.strictEqual(facade.isExternallyManaged('unknown_service'), false);
+
+  // Verify secret carriers
+  assert.strictEqual(facade.carriesSecret('api_key'), true);
+  assert.strictEqual(facade.carriesSecret('dsn'), true);
+  assert.strictEqual(facade.carriesSecret('oauth'), false);
+
+  // Verify get & has
+  assert.strictEqual(facade.has('supabase'), true);
+  assert.strictEqual(facade.has('unknown_service'), false);
+  const supabase = facade.get('supabase');
+  assert.strictEqual(supabase.id, 'supabase');
+  assert.strictEqual(supabase.envVar, 'SUPABASE_ACCESS_TOKEN');
+
+  // Verify userFields & requiresUserFields
+  assert.strictEqual(facade.requiresUserFields('coolify'), true);
+  assert.strictEqual(facade.requiresUserFields('github'), false);
+  const coolifyFields = facade.userFields('coolify');
+  assert.ok(coolifyFields.some((f) => f.envVar === 'COOLIFY_BASE_URL' && f.required === true));
+
+  // Verify scopeOptions
+  const ghScopes = facade.scopeOptions('github');
+  assert.ok(Array.isArray(ghScopes) && ghScopes.length > 0);
+  assert.ok(ghScopes.includes('Contents: Read'));
+  assert.deepStrictEqual(facade.scopeOptions('linear'), [], 'Services without selectable scopes return empty array');
+
+  // Verify guidanceFor
+  const customerGuidance = facade.guidanceFor('sentry');
+  const vendorGuidance = facade.guidanceFor('sentry', { vendor: true });
+  assert.ok(customerGuidance.includes('org:read'));
+  assert.ok(vendorGuidance.includes('project:write'));
+  assert.notStrictEqual(customerGuidance, vendorGuidance);
+
+  // Verify vendor only provision
+  assert.strictEqual(facade.isVendorOnlyProvision('sentry'), true);
+  assert.strictEqual(facade.isVendorOnlyProvision('github'), false);
+
+  // Verify masking: standard secret
+  assert.strictEqual(facade.maskSecret('1234567890abcdef', 'github'), '1234••••cdef');
+  assert.strictEqual(facade.maskSecret('short', 'github'), '••••', 'Short secret should be fully masked');
+  assert.strictEqual(facade.maskSecret('', 'github'), '');
+
+  // Verify masking: DSN
+  const maskedDsn = facade.maskDsn('postgres://user:password@db.example.supabase.co:5432/mydb?ssl=true');
+  assert.strictEqual(maskedDsn, 'postgres://••••@••••.supabase.co/••••');
+  const maskedIpDsn = facade.maskDsn('postgres://root:toor@192.168.1.100:5432/app');
+  assert.strictEqual(maskedIpDsn, 'postgres://••••@••••/••••');
+  assert.strictEqual(facade.maskDsn('invalid-url'), '••••');
+});
+
+
 
 
 
