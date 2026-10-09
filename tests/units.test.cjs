@@ -522,6 +522,31 @@ test('Units - Agents: agentSettings facade and submodules preserve contract and 
   settings.invalidateCache();
 });
 
+test('Units - Voice: ttsProviders facade and submodules preserve contract and cost estimation', (t) => {
+  const facade = require('../src/voice/ttsProviders.cjs');
+  const mod = require('../src/voice/tts/index.cjs');
 
+  assert.strictEqual(Object.keys(facade).length, 42, 'ttsProviders should export 42 symbols');
+  assert.deepStrictEqual(Object.keys(facade).sort(), Object.keys(mod).sort(), 'Facade and modular index must have identical exports');
 
+  // Verify pure helpers
+  assert.strictEqual(facade.sanitizeApiKey('  "test-key"  '), 'test-key');
+  assert.strictEqual(facade.isHeaderSafeKey('valid-token-123'), true);
+  assert.strictEqual(facade.isHeaderSafeKey('invalid token with spaces'), false);
+  assert.strictEqual(facade.escapeSsml('<tag & "quote">'), '&lt;tag &amp; &quot;quote&quot;&gt;');
 
+  // Verify cost calculation
+  const cost = facade.estimateCost('elevenlabs');
+  assert.ok(cost, 'elevenlabs should have cost details');
+  assert.strictEqual(typeof cost.usdPer1kChars, 'number');
+  assert.strictEqual(typeof cost.monthlyHeavyUsd, 'number');
+
+  // Verify engine resolution
+  const resolved = facade.resolveTtsEngine({ jarvis: { ttsEngine: 'elevenlabs' } });
+  assert.strictEqual(resolved, 'elevenlabs');
+
+  // Verify ttsConfig
+  const config = facade.ttsConfig({ jarvis: {} });
+  assert.ok(config && Array.isArray(config.engines));
+  assert.strictEqual(config.previewText, facade.TTS_PREVIEW_TEXT_TR);
+});
