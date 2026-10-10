@@ -190,11 +190,13 @@ function sanitizeTelemetryState(raw) {
 }
 
 function sanitizeJev(raw) {
-  const base = { mode: 'suggest', policy: 'balanced' };
+  const base = { mode: 'suggest', policy: 'balanced', maxCostPerTaskUsd: null };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
   const mode = ['off', 'suggest', 'auto'].includes(raw.mode) ? raw.mode : base.mode;
   const policy = ['frugal', 'balanced', 'quality'].includes(raw.policy) ? raw.policy : base.policy;
-  return { mode, policy };
+  const maxCost = Number(raw.maxCostPerTaskUsd);
+  const maxCostPerTaskUsd = Number.isFinite(maxCost) && maxCost > 0 ? Number(maxCost.toFixed(4)) : null;
+  return { mode, policy, maxCostPerTaskUsd };
 }
 
 module.exports = {

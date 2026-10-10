@@ -397,13 +397,13 @@ test('Jev Roadmap - Faz 3: jev.mode and jev.policy settings defaults and sanitiz
 
   // 1. Varsayılanlar
   const defs = defaults();
-  assert.deepStrictEqual(defs.jev, { mode: 'suggest', policy: 'balanced' });
+  assert.deepStrictEqual(defs.jev, { mode: 'suggest', policy: 'balanced', maxCostPerTaskUsd: null });
 
   // 2. Geçersiz girdi sanitizasyonu
-  assert.deepStrictEqual(sanitizeJev(null), { mode: 'suggest', policy: 'balanced' });
-  assert.deepStrictEqual(sanitizeJev({ mode: 'invalid', policy: 'hack' }), { mode: 'suggest', policy: 'balanced' });
-  assert.deepStrictEqual(sanitizeJev({ mode: 'auto', policy: 'frugal' }), { mode: 'auto', policy: 'frugal' });
-  assert.deepStrictEqual(sanitizeJev({ mode: 'off', policy: 'quality' }), { mode: 'off', policy: 'quality' });
+  assert.deepStrictEqual(sanitizeJev(null), { mode: 'suggest', policy: 'balanced', maxCostPerTaskUsd: null });
+  assert.deepStrictEqual(sanitizeJev({ mode: 'invalid', policy: 'hack' }), { mode: 'suggest', policy: 'balanced', maxCostPerTaskUsd: null });
+  assert.deepStrictEqual(sanitizeJev({ mode: 'auto', policy: 'frugal' }), { mode: 'auto', policy: 'frugal', maxCostPerTaskUsd: null });
+  assert.deepStrictEqual(sanitizeJev({ mode: 'off', policy: 'quality' }), { mode: 'off', policy: 'quality', maxCostPerTaskUsd: null });
 });
 
 test('Jev Roadmap - Faz 3: jev:route-task and jev:decision-log IPC handlers work correctly', async (t) => {
@@ -585,6 +585,157 @@ test('Jev Roadmap - Faz 4: supervisor checkGoal runs broken test -> fix round ->
   const settled = supervisor.settle('del-goal-1', 'sub-goal-1', { status: 'done' });
   assert.strictEqual(settled, true);
 });
+
+test('Jev Roadmap - Faz 5: decide() escalates tier on failed rounds or aborted status', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+  const installedEngines = [{ id: 'claude', installed: true, loggedIn: true }];
+
+  // 1. Normalde routine olan görev, 2 tur başarısızlıktan sonra standard'a yükseltilir
+  const res1 = decide({
+    task: { title: 'Buton rengini mavi yap' }, // normalde routine
+    engines: installedEngines,
+    goalFailure: {
+      failedRounds: 2,
+    },
+  });
+  assert.strictEqual(res1.tier, 'standard');
+  assert.strictEqual(res1.reason.code, 'escalated-after-failed-checks');
+  assert.ok(res1.reason.signals.includes('signal:escalated-after-failed-checks'));
+
+  // 2. Aborted olan görev, bir üst seviyeye yükseltilir
+  const res2 = decide({
+    task: { title: 'Basit profil sayfası css düzeltmesi' }, // routine
+    engines: installedEngines,
+    goalFailure: {
+      aborted: true,
+      lastTier: 'standard',
+    },
+  });
+  assert.strictEqual(res2.tier, 'expert');
+  assert.strictEqual(res2.reason.code, 'escalated-after-failed-checks');
+});
+
+test('Jev Roadmap - Faz 5: budget cap limits escalation and asks user when exceeded', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+  const installedEngines = [{ id: 'claude', installed: true, loggedIn: true }];
+
+  // Görev çok ucuz bütçeyle sınırlandırılmış ($0.001)
+  // Expert tier bir model (Opus vb.) bu bütçeyi kesinlikle aşar
+  const res = decide({
+    task: { title: 'Basit css düzelt' },
+    engines: installedEngines,
+    goalFailure: {
+      failedRounds: 2,
+      lastTier: 'standard', // escalates to expert
+    },
+    maxCostPerTaskUsd: 0.001,
+  });
+
+  assert.strictEqual(res.budgetExceeded, true);
+  assert.strictEqual(res.reason.code, 'budget-cap-exceeded');
+  assert.ok(res.reason.signals.includes('budget:cap-exceeded'));
+});
+
+test('Jev Roadmap - Faz 5: generateWeeklyReport accurately calculates cost vs estimated default', (t) => {
+  const { createTaskOutcomeLedger } = require('../src/agents/taskOutcomeLedger.cjs');
+  const { generateWeeklyReport } = require('../src/agents/jev/report.cjs');
+
+  const ledger = createTaskOutcomeLedger();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const baseTime = 1700000000000;
+
+  // 1. Görev: Haiku (ucuz) kullanılmış, 10,000 giriş, 2,000 çıkış
+  ledger.recordStart({
+    delegationId: 'd1',
+    subtaskId: 's1',
+    engine: 'claude',
+    model: 'claude-haiku-5-5',
+    startedAt: baseTime - 15 * dayMs, // 15 gün önce
+  });
+  ledger.recordTurn({
+    delegationId: 'd1',
+    subtaskId: 's1',
+    tokensIn: 10000,
+    tokensOut: 2000,
+  });
+  ledger.settle({
+    delegationId: 'd1',
+    subtaskId: 's1',
+    outcome: 'done',
+    settledAt: baseTime - 15 * dayMs,
+  });
+
+  // 2. Görev: Sonnet (orta) kullanılmış
+  ledger.recordStart({
+    delegationId: 'd2',
+    subtaskId: 's2',
+    engine: 'claude',
+    model: 'claude-sonnet-5-5',
+    startedAt: baseTime - 2 * dayMs, // 2 gün önce
+  });
+  ledger.recordTurn({
+    delegationId: 'd2',
+    subtaskId: 's2',
+    tokensIn: 8000,
+    tokensOut: 1000,
+  });
+  ledger.settle({
+    delegationId: 'd2',
+    subtaskId: 's2',
+    outcome: 'done',
+    settledAt: baseTime - 2 * dayMs,
+  });
+
+  // Rapor üret (Varsayılan model: claude-sonnet-5-5)
+  const report = generateWeeklyReport({
+    outcomeLedger: ledger,
+    defaultModel: 'claude-sonnet-5-5',
+    days: 30,
+    now: () => baseTime,
+  });
+
+  assert.strictEqual(report.isEstimate, true);
+  assert.strictEqual(report.totalTasks, 2);
+  assert.strictEqual(report.passedTasks, 2);
+  assert.ok(report.totalActualCostUsd > 0);
+  assert.ok(report.totalEstimatedDefaultCostUsd > 0);
+  // Haiku Sonnet'ten çok daha ucuz olduğu için gerçek maliyet varsayılan model maliyetinden düşük olmalı (tasarruf > 0)
+  assert.ok(report.savingsUsd > 0, 'Jev using Haiku on task 1 should yield savings vs Sonnet');
+  assert.ok(report.savingsPct > 0);
+  // 15 gün öncesine dayanan veri var ve tasarruf pozitif -> canRecommendAuto = true
+  assert.strictEqual(report.canRecommendAuto, true);
+
+  // Şimdi sadece 5 günlük geçmişe sahip bir rapor deneyelim -> canRecommendAuto = false (< 14 gün)
+  const freshLedger = createTaskOutcomeLedger();
+  freshLedger.recordStart({
+    delegationId: 'd3',
+    subtaskId: 's3',
+    engine: 'claude',
+    model: 'claude-haiku-5-5',
+    startedAt: baseTime - 5 * dayMs,
+  });
+  freshLedger.recordTurn({
+    delegationId: 'd3',
+    subtaskId: 's3',
+    tokensIn: 5000,
+    tokensOut: 500,
+  });
+  freshLedger.settle({
+    delegationId: 'd3',
+    subtaskId: 's3',
+    outcome: 'done',
+    settledAt: baseTime - 5 * dayMs,
+  });
+
+  const freshReport = generateWeeklyReport({
+    outcomeLedger: freshLedger,
+    defaultModel: 'claude-sonnet-5-5',
+    days: 30,
+    now: () => baseTime,
+  });
+  assert.strictEqual(freshReport.canRecommendAuto, false, 'Cannot recommend auto mode when history < 14 days');
+});
+
 
 
 

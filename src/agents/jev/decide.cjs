@@ -9,6 +9,7 @@
  * risk sinyallerine, model yetenek matrisine ve kullanıcı maliyet politikasına
  * göre deterministik motor + model + efor seçimi yapar.
  *
+ * Faz 5: Başarısızlık sonrası üst tier'e eskalasyon ve bütçe tavanı denetimi eklendi.
  * Kural 0: Saf yaprak modül (fs/electron yok, IO/now enjekte edilir, kodda model adı yok).
  */
 
@@ -210,11 +211,45 @@ function findHistoricalQualified(tierCandidates, history) {
   return qualified[0];
 }
 
+function escalateTier(tier) {
+  if (tier === 'routine') return 'standard';
+  return 'expert';
+}
+
+function resolveEscalation(ctx, initialTier, signals) {
+  const needsEscalate = ctx.escalate === true
+    || (typeof ctx.failedChecks === 'number' && ctx.failedChecks >= 2)
+    || ctx.taskAborted === true;
+
+  if (needsEscalate) {
+    const baseTier = ctx.lastTier || initialTier;
+    const higherTier = escalateTier(baseTier);
+    signals.push('signal:escalated-after-failed-checks');
+    return { tier: higherTier, isEscalated: true };
+  }
+  return { tier: initialTier, isEscalated: false };
+}
+
+function checkBudgetCap(selected, maxCostPerTaskUsd, signals) {
+  if (!maxCostPerTaskUsd || !selected) return false;
+  const estCostUsd = ((selected.inputUsd1M * 4000) + (selected.outputUsd1M * 1000)) / 1000000;
+  if (estCostUsd > maxCostPerTaskUsd) {
+    signals.push('budget:cap-exceeded', `cap:${maxCostPerTaskUsd}`);
+    return true;
+  }
+  return false;
+}
+
 function selectModelByPolicy(params) {
-  const { policy, candidates, tier, history, signals } = params;
+  const { policy, candidates, tier, history, signals, isEscalated } = params;
   const tierCandidates = candidates.filter((c) => c.tier === tier);
   const pool = tierCandidates.length ? tierCandidates : candidates;
   if (!pool.length) return null;
+
+  if (isEscalated) {
+    pool.sort(sortQuality);
+    return { selected: pool[0], reasonCode: 'escalated-after-failed-checks' };
+  }
 
   if (policy === 'frugal') {
     pool.sort(sortFrugal);
@@ -236,7 +271,6 @@ function selectModelByPolicy(params) {
     return { selected: historical, reasonCode: 'jev.reason.balanced_historical' };
   }
 
-  // Varsayılan dengeli seçim: kalite ve maliyet dengesi
   pool.sort((a, b) => (b.qualityScore / Math.max(a.blendedCost, 0.1)) - (a.qualityScore / Math.max(b.blendedCost, 0.1)));
   const defaultReasonCode =
     tier === 'routine'
@@ -284,15 +318,17 @@ function buildNoEngineResult(targetTier, signals) {
 }
 
 function buildDecisionOutput(ctx) {
-  const { targetTier, classification, selected, decision, defaultEffort, signals, candidates, availableEngines } = ctx;
+  const { targetTier, classification, selected, decision, defaultEffort, signals, candidates, availableEngines, budgetExceeded } = ctx;
+  const reasonCode = budgetExceeded ? 'budget-cap-exceeded' : (decision ? decision.reasonCode : 'jev.reason.standard_balanced');
   return {
     tier: targetTier,
     confidence: classification.confidence,
     engine: selected ? selected.engine : availableEngines[0].id,
     model: selected ? selected.modelId : null,
     effort: selected ? selected.effort : defaultEffort,
+    budgetExceeded: Boolean(budgetExceeded),
     reason: {
-      code: decision ? decision.reasonCode : 'jev.reason.standard_balanced',
+      code: reasonCode,
       signals,
     },
     alternatives: selected ? buildAlternatives(candidates, selected.modelId) : [],
@@ -300,6 +336,12 @@ function buildDecisionOutput(ctx) {
 }
 
 function resolveDecisionContext(params) {
+  const gf = params.goalFailure;
+  const hasGfFailure = Boolean(gf && ((typeof gf.failedRounds === 'number' && gf.failedRounds >= 2) || gf.aborted));
+  const failedChecks = params.failedChecks || (gf && gf.failedRounds) || 0;
+  const taskAborted = params.taskAborted === true || Boolean(gf && gf.aborted);
+  const escalate = params.escalate === true || hasGfFailure || failedChecks >= 2 || taskAborted;
+
   return {
     task: params.task,
     engines: Array.isArray(params.engines) ? params.engines : [],
@@ -308,6 +350,11 @@ function resolveDecisionContext(params) {
     history: params.history || null,
     classifier: params.classifier || null,
     capabilities: params.capabilities || DEFAULT_CAPABILITIES,
+    escalate,
+    failedChecks,
+    taskAborted,
+    lastTier: (gf && gf.lastTier) || params.lastTier || null,
+    maxCostPerTaskUsd: typeof params.maxCostPerTaskUsd === 'number' ? params.maxCostPerTaskUsd : null,
   };
 }
 
@@ -321,26 +368,31 @@ function decide(params = {}) {
   const ctx = resolveDecisionContext(params);
   const katmanA = classifyKatmanA(ctx.task);
   const classification = evaluateClassifier(ctx.classifier, katmanA, ctx.task);
-  const targetTier = classification.tier;
+
+  const signals = [...classification.signals];
+  const esc = resolveEscalation(ctx, classification.tier, signals);
+  const targetTier = esc.tier;
 
   const availableEngines = filterCandidateEngines(ctx.engines);
   if (!availableEngines.length) {
-    return buildNoEngineResult(targetTier, classification.signals);
+    return buildNoEngineResult(targetTier, signals);
   }
 
   const pricing = (ctx.catalog && ctx.catalog.pricing) || DEFAULT_PRICING;
   const candidates = buildModelCandidates(availableEngines, ctx.capabilities, pricing);
 
-  const signals = [...classification.signals];
   const decision = selectModelByPolicy({
     policy: ctx.policy,
     candidates,
     tier: targetTier,
     history: ctx.history,
     signals,
+    isEscalated: esc.isEscalated,
   });
 
   const selected = decision ? decision.selected : null;
+  const budgetExceeded = checkBudgetCap(selected, ctx.maxCostPerTaskUsd, signals);
+
   const effortDefaults = ctx.capabilities.tierDefaults || {};
   const defaultEffort = (effortDefaults[targetTier] && effortDefaults[targetTier].effort) || 'medium';
 
@@ -353,6 +405,7 @@ function decide(params = {}) {
     signals,
     candidates,
     availableEngines,
+    budgetExceeded,
   });
 }
 

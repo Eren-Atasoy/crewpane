@@ -14,6 +14,7 @@
 
 const DEFAULT_PRICING = require('./modelPricing.json');
 const { decide, classifyKatmanA, EXPERT_KEYWORDS, ROUTINE_KEYWORDS } = require('./jev/decide.cjs');
+const { generateWeeklyReport } = require('./jev/report.cjs');
 
 const ENGINE_TIER_FALLBACKS = Object.freeze({
   codex: { routine: 'gpt-5.6-luna', standard: 'gpt-5.6-terra', expert: 'gpt-5.6-sol' },
@@ -136,6 +137,7 @@ module.exports = {
   resolveTierModel,
   routeTaskWithJev,
   decide,
+  generateWeeklyReport,
   ROUTINE_PATTERNS,
   EXPERT_PATTERNS,
 };

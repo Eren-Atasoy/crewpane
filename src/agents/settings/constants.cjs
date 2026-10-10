@@ -49,6 +49,7 @@ function defaults() {
     jev: {
       mode: 'suggest',
       policy: 'balanced',
+      maxCostPerTaskUsd: null,
     },
     leaderAutoRefresh: 'warn',
     cloudSyncEnabled: false,
