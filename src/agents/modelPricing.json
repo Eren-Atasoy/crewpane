@@ -1,12 +1,12 @@
 {
   "_why": "ADP-887 — MODEL FİYATLARININ TEK KAYNAĞI. Fiyatı koda GÖMME; tokenCost.cjs bu dosyayı okur, UI de buradan türetilen sayıyı gösterir. Fiyat değişince YALNIZ burası güncellenir (+ source.measuredAt).",
   "_howToUpdate": "1) claude-api skill'ini (ya da platform.claude.com/docs/en/pricing) aç · 2) models.* input/output alanlarını güncelle · 3) source.measuredAt'i BUGÜNE çek · 4) version'ı +1 yap · 5) `node --test electron/tokenCost.test.cjs` koş (test fiyatı değil ŞEKLİ doğrular).",
-  "version": 5,
+  "version": 6,
   "currency": "USD",
   "unit": "per_million_tokens",
   "source": {
     "name": "Anthropic platform pricing (claude-api skill, cached table)",
-    "measuredAt": "2026-08-08",
+    "measuredAt": "2026-10-10",
     "url": "https://platform.claude.com/docs/en/pricing",
     "note": "Bu rakamlar BİRİNCİ-TARAF Claude API listesidir. Bedrock/Vertex/Foundry ayrı fiyatlıdır ve burada YOKTUR.",
     "_verifiedADP956": "2026-08-08 — claude-api skill fiyat tablosuna karşı satır satır DOĞRULANDI, HİÇBİR DEĞER DEĞİŞMEDİ: Haiku 4.5 $1/$5 · Opus 5 $5/$25 (fast $10/$50) · Fable 5 $10/$50 · Sonnet 5 $3/$15 (tanıtım $2/$10, 2026-08-31'e kadar). Önbellek çarpanları da doğrulandı (okuma 0.1× · 5dk 1.25× · 1saat 2.0×). Defterlerde geçen 5 modelin 5'i de tabloda: fiyatlanamayan jeton SIFIR. OpenRouter gibi yeniden-satıcılar KIYAS ÖLÇÜTÜ DEĞİLDİR — bu defter Claude Code'un birinci-taraf kullanımıdır, fatura Anthropic liste fiyatından çıkar."
@@ -48,8 +48,15 @@
     }
   },
   "models": {
+    "claude-fable-5-1": { "label": "Fable 5.1", "input": 10, "output": 50 },
     "claude-fable-5": { "label": "Fable 5", "input": 10, "output": 50 },
     "claude-mythos-5": { "label": "Mythos 5", "input": 10, "output": 50 },
+    "claude-opus-5-5": {
+      "label": "Opus 5.5",
+      "input": 5,
+      "output": 25,
+      "fastMode": { "input": 10, "output": 50 }
+    },
     "claude-opus-5": {
       "label": "Opus 5",
       "input": 5,
@@ -65,6 +72,11 @@
     "claude-opus-4-7": { "label": "Opus 4.7", "input": 5, "output": 25 },
     "claude-opus-4-6": { "label": "Opus 4.6", "input": 5, "output": 25 },
     "claude-opus-4-5": { "label": "Opus 4.5", "input": 5, "output": 25 },
+    "claude-sonnet-5-5": {
+      "label": "Sonnet 5.5",
+      "input": 3,
+      "output": 15
+    },
     "claude-sonnet-5": {
       "label": "Sonnet 5",
       "input": 3,
@@ -78,14 +90,15 @@
     },
     "claude-sonnet-4-6": { "label": "Sonnet 4.6", "input": 3, "output": 15 },
     "claude-sonnet-4-5": { "label": "Sonnet 4.5", "input": 3, "output": 15 },
+    "claude-haiku-5-5": { "label": "Haiku 5.5", "input": 1, "output": 5 },
     "claude-haiku-4-5": { "label": "Haiku 4.5", "input": 1, "output": 5 }
   },
   "aliases": {
     "_why": "Motorun yazdığı ham model kimliği ↔ tablodaki anahtar. Tarih sonekli tam kimlikler (claude-haiku-4-5-20251001) normalizeModelId() içinde kırpılır; buraya YALNIZ kırpmayla çözülmeyenler yazılır.",
-    "opus": "claude-opus-5",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5",
-    "fable": "claude-fable-5"
+    "opus": "claude-opus-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
+    "fable": "claude-fable-5-1"
   },
   "engineTables": {
     "_why": "TOK-01 — MOTOR BAŞINA FİYAT TABLOSU. Kökteki `models`/`aliases`/`cacheMultipliers` Anthropic'indir; başka bir motorun fiyatı ASLA oraya karıştırılmaz (iki sağlayıcının önbellek çarpanları bile farklıdır). `engines.<motor>.pricingTable` bu bloktaki adı gösterir.",

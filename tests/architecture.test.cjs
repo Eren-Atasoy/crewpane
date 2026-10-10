@@ -21,7 +21,7 @@ test('Architecture: All 12 domains export correctly through src/index.js', (t) =
     'hand',
     'mobile',
     'services',
-    'ui'
+    'ui',
   ];
 
   for (const domain of expectedDomains) {
@@ -61,7 +61,7 @@ test('Architecture: critical modules live in their expected domains', () => {
 });
 
 test('Architecture: Root directory remains clean (no loose cjs/js files)', (t) => {
-  const rootFiles = fs.readdirSync(path.join(__dirname, '..')).filter(f => {
+  const rootFiles = fs.readdirSync(path.join(__dirname, '..')).filter((f) => {
     if (/^\.env.*\.local$/.test(f)) return false; // machine-local secrets, gitignored
     return fs.statSync(path.join(__dirname, '..', f)).isFile();
   });
@@ -80,19 +80,20 @@ test('Architecture: Root directory remains clean (no loose cjs/js files)', (t) =
     'package-lock.json',
     // Project
     'ARCHITECTURE.md',
+    'CREWPANE_ROADMAP.md',
     'README.md',
     'bakedBuild.json',
     'devChannelTarget.json',
     'main.js',
     'package.json',
     'schema.sql',
-    'start.bat'
+    'start.bat',
   ]);
 
   for (const f of rootFiles) {
     assert.ok(
       allowedRootFiles.has(f),
-      `Unexpected loose file in root directory: ${f}. All module files should be in src/<domain>/`
+      `Unexpected loose file in root directory: ${f}. All module files should be in src/<domain>/`,
     );
   }
 });
