@@ -16,6 +16,7 @@ const {
 } = require('./ghostReaper.cjs');
 const { createDeliverPrompt } = require('../deliverPrompt.cjs');
 const { PHASES: BOARD_PHASES } = require('../boardTaskSync.cjs');
+const { createGoalGate } = require('../goalGate.cjs');
 
 /**
  * Supervisor'ı yarat. Tüm IO `deps` ile enjekte edilir.
@@ -229,6 +230,8 @@ function createDelegationSupervisor(deps) {
       board: (prev && prev.board) || { dispatchAt: 0, dispatchAction: null, reviewAt: 0, reviewAction: null },
       engine: input.engine || null,
       model: input.model || null,
+      goal: input.goal || (prev && prev.goal) || null,
+      goalState: (prev && prev.goalState) || (input.goal ? { rounds: [], status: 'initial', code: 'goal.initial' } : null),
       tokensIn: 0,
       tokensOut: 0,
       cacheRead: 0,
@@ -449,9 +452,68 @@ function createDelegationSupervisor(deps) {
     return { at: t, records, untracked };
   }
 
+  async function checkGoal(delegationId, subtaskId, opts = {}) {
+    const key = recordKey(delegationId, subtaskId);
+    const rec = state.records[key];
+    if (!rec) return { ok: false, reason: 'not-found' };
+    if (!rec.goal) return { ok: true, noGoal: true };
+
+    const gate = createGoalGate({ runCommand: opts.runCommand || io.runCommand });
+    const rounds = (rec.goalState && rec.goalState.rounds) || [];
+    const evaluation = await gate.evaluateRound({
+      goal: rec.goal,
+      rounds,
+      cwd: opts.cwd || rec.evidencePath,
+      checkerAgentId: opts.checkerAgentId,
+    });
+
+    if (!rec.goalState) rec.goalState = { rounds: [], status: 'initial' };
+    rec.goalState.status = evaluation.passed ? 'passed' : evaluation.abort ? 'aborted' : 'failed';
+    rec.goalState.code = evaluation.code;
+    rec.goalState.summary = evaluation.statusText;
+    rec.goalState.rounds.push({
+      round: evaluation.round,
+      passed: evaluation.passed,
+      passedCount: evaluation.passedCount,
+      totalChecks: evaluation.totalChecks,
+      feedback: evaluation.feedback || null,
+    });
+
+    touch();
+    persist();
+
+    if (!evaluation.passed) {
+      if (evaluation.abort) {
+        rec.status = 'aborted';
+        rec.reason = evaluation.abortReason;
+        if (io.outcomeLedger && typeof io.outcomeLedger.settle === 'function') {
+          io.outcomeLedger.settle({
+            delegationId: rec.delegationId,
+            subtaskId: rec.subtaskId,
+            outcome: 'aborted',
+            settledBy: 'goal-gate',
+          });
+        }
+        rec.wake.attempts++;
+        rec.wake.enterOnlyNext = true;
+      } else {
+        rec.turns = (rec.turns || 1) + 1;
+        if (io.outcomeLedger && typeof io.outcomeLedger.recordTurn === 'function') {
+          io.outcomeLedger.recordTurn({
+            delegationId: rec.delegationId,
+            subtaskId: rec.subtaskId,
+          });
+        }
+      }
+    }
+
+    return { ok: evaluation.passed, evaluation };
+  }
+
   return {
     record,
     settle,
+    checkGoal,
     ack,
     sweep,
     leaderStatus,

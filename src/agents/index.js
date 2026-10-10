@@ -52,6 +52,7 @@ module.exports = {
   get engineSwitch() { return require(path.join(__dirname, "engineSwitch.cjs")); },
   get fanoutPolicy() { return require(path.join(__dirname, "fanoutPolicy.cjs")); },
   get firstRunDoctor() { return require(path.join(__dirname, "firstRunDoctor.cjs")); },
+  get goalGate() { return require(path.join(__dirname, "goalGate.cjs")); },
   get handoffBlock() { return require(path.join(__dirname, "handoffBlock.cjs")); },
   get identityBudget() { return require(path.join(__dirname, "identityBudget.cjs")); },
   get identitySurfaceTrim() { return require(path.join(__dirname, "identitySurfaceTrim.cjs")); },

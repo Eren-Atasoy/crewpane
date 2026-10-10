@@ -300,6 +300,14 @@ function supervisorRows(supervisor, doneLimit, outcomeLedger = null) {
       outcome:
         str(rec.outcome) ||
         (outcomeEntry ? str(outcomeEntry.outcome) : (rec.status ? (rec.status === 'done' ? 'passed' : 'failed') : null)),
+      goal: rec.goalState ? {
+        defined: true,
+        round: rec.goalState.rounds ? rec.goalState.rounds.length : 0,
+        maxRounds: (rec.goal && Number(rec.goal.maxRounds)) || 5,
+        status: str(rec.goalState.status) || 'initial',
+        code: str(rec.goalState.code) || 'goal.initial',
+        summary: str(rec.goalState.summary) || null,
+      } : null,
     };
     (rec.status ? done : inflight).push(row);
   }

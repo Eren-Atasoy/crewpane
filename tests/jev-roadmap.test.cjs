@@ -478,4 +478,113 @@ test('Jev Roadmap - Faz 3: supervisor record tracks user override signal in outc
   assert.strictEqual(entry.overriddenBy, 'user', 'overriddenBy signal must be captured in ledger');
 });
 
+test('Jev Roadmap - Faz 4: goalGate evaluateRound and checkStopConditions work accurately', async (t) => {
+  const { createGoalGate, checkStopConditions, isEligibleChecker } = require('../src/agents/goalGate.cjs');
+
+  // 1. Checker kuralı: Kendi işini onaylayamaz
+  assert.strictEqual(isEligibleChecker('worker-1', 'worker-1'), false);
+  assert.strictEqual(isEligibleChecker('worker-1', 'reviewer-2'), true);
+
+  // 2. Durma koşulu: maxRounds dolunca abort
+  const maxStop = checkStopConditions({
+    goal: { maxRounds: 3 },
+    rounds: [{ round: 1 }, { round: 2 }, { round: 3 }],
+  });
+  assert.strictEqual(maxStop.abort, true);
+  assert.strictEqual(maxStop.reason, 'goal.abort.max_rounds_reached');
+
+  // 3. Durma koşulu: abortIfNoProgress (ilerleme durursa)
+  const stallStop = checkStopConditions({
+    goal: { checks: ['npm test', 'npm run lint'], abortIfNoProgress: 2 },
+    rounds: [
+      { round: 1, passedCount: 1 },
+      { round: 2, passedCount: 1 },
+    ],
+  });
+  assert.strictEqual(stallStop.abort, true);
+  assert.strictEqual(stallStop.reason, 'goal.abort.no_progress');
+
+  // 4. Komut koşturma ve LLM-okunur özet
+  let runCount = 0;
+  const gate = createGoalGate({
+    runCommand: async ({ command }) => {
+      runCount++;
+      if (command === 'npm test') return { code: 0, stdout: 'tests passed', stderr: '' };
+      return { code: 1, stdout: '', stderr: 'AssertionError: expected true to be false on test.js:42:10' };
+    },
+  });
+
+  const res = await gate.evaluateRound({
+    goal: { checks: ['npm test', 'npm run lint'] },
+    rounds: [],
+  });
+  assert.strictEqual(res.passed, false);
+  assert.strictEqual(res.passedCount, 1);
+  assert.strictEqual(res.totalChecks, 2);
+  assert.strictEqual(res.failedCheck, 'npm run lint');
+  assert.ok(res.feedback.includes('AssertionError'));
+  assert.strictEqual(runCount, 2, 'Should execute checks sequentially until failure');
+});
+
+test('Jev Roadmap - Faz 4: supervisor checkGoal runs broken test -> fix round -> pass flow', async (t) => {
+  const { createDelegationSupervisor } = require('../src/agents/supervisor/supervisorCore.cjs');
+  const { createTaskOutcomeLedger } = require('../src/agents/taskOutcomeLedger.cjs');
+  const { buildQueueBoard } = require('../src/agents/queueBoard.cjs');
+
+  const ledger = createTaskOutcomeLedger();
+  const supervisor = createDelegationSupervisor({
+    outcomeLedger: ledger,
+    log: () => {},
+    now: () => 1000,
+  });
+
+  // Görev goal ile kaydedildi
+  supervisor.record({
+    delegationId: 'del-goal-1',
+    subtaskId: 'sub-goal-1',
+    title: 'Yeni modül yaz ve testleri geçir',
+    engine: 'claude',
+    model: 'claude-sonnet-5-5',
+    goal: {
+      checks: ['npm test'],
+      maxRounds: 3,
+      abortIfNoProgress: 2,
+    },
+  });
+
+  // 1. Tur: Test bilerek kırık (kod=1)
+  let testFails = true;
+  const round1 = await supervisor.checkGoal('del-goal-1', 'sub-goal-1', {
+    runCommand: async () => {
+      if (testFails) return { code: 1, stdout: 'fail: 1 error on auth.test.js:12' };
+      return { code: 0, stdout: 'all pass' };
+    },
+  });
+  assert.strictEqual(round1.ok, false);
+  assert.strictEqual(round1.evaluation.passed, false);
+  assert.strictEqual(ledger.getEntry('del-goal-1', 'sub-goal-1').turns, 2, 'Turn must increment on failed check');
+
+  // QueueBoard goal ilerlemesini göstermeli
+  const boardDuring = buildQueueBoard({
+    supervisor: { records: { 'del-goal-1:sub-goal-1': supervisor.snapshot().records['del-goal-1:sub-goal-1'] } },
+    outcomeLedger: ledger,
+  });
+  assert.strictEqual(boardDuring.inflight[0].goal.defined, true);
+  assert.strictEqual(boardDuring.inflight[0].goal.round, 1);
+  assert.strictEqual(boardDuring.inflight[0].turns, 2);
+
+  // 2. Tur: Düzeltme yapıldı, testler geçti (kod=0)
+  testFails = false;
+  const round2 = await supervisor.checkGoal('del-goal-1', 'sub-goal-1', {
+    runCommand: async () => ({ code: 0, stdout: 'all 5 tests passed' }),
+  });
+  assert.strictEqual(round2.ok, true);
+  assert.strictEqual(round2.evaluation.passed, true);
+
+  // Settle et
+  const settled = supervisor.settle('del-goal-1', 'sub-goal-1', { status: 'done' });
+  assert.strictEqual(settled, true);
+});
+
+
 
