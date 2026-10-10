@@ -256,6 +256,8 @@ function createDelegationSupervisor(deps) {
           subtaskId: rec.subtaskId,
           engine: rec.engine,
           model: rec.model,
+          effort: input.effort || (rec.jevDecision && rec.jevDecision.effort) || null,
+          overriddenBy: input.overriddenBy || null,
           startedAt: rec.dispatchedAt,
         });
       } catch (err) {

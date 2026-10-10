@@ -37,6 +37,7 @@ const {
   sanitizeResourceGovernor,
   sanitizeAnnouncementsRead,
   sanitizeTelemetryState,
+  sanitizeJev,
 } = require('./sanitizers.cjs');
 
 let _lastPersist = { ok: true, code: null, reason: 'no-write-yet', inPlace: false, file: null };
@@ -83,6 +84,7 @@ function readSettings() {
       if (typeof raw.wakeModelPath === 'string' && raw.wakeModelPath) out.wakeModelPath = raw.wakeModelPath;
       if (typeof raw.keepExitedPanes === 'boolean') out.keepExitedPanes = raw.keepExitedPanes;
       if (typeof raw.autoModelByTaskClass === 'boolean') out.autoModelByTaskClass = raw.autoModelByTaskClass;
+      if ('jev' in raw) out.jev = sanitizeJev(raw.jev);
       if (typeof raw.leaderAutoRefresh === 'string') {
         out.leaderAutoRefresh = leaderRefreshPolicy.normalizeMode(raw.leaderAutoRefresh);
       }
@@ -218,6 +220,9 @@ function writeSettings(patch, opts) {
   );
   next.teamCompose = sanitizeTeamCompose(
     patch && 'teamCompose' in patch ? patch.teamCompose : cur.teamCompose,
+  );
+  next.jev = sanitizeJev(
+    patch && 'jev' in patch ? { ...(cur.jev || {}), ...patch.jev } : cur.jev,
   );
 
   const curScope = teamScope.sanitizeTeamScope(cur.teamScope);

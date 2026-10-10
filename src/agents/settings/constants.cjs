@@ -46,6 +46,10 @@ function defaults() {
     },
     keepExitedPanes: false,
     autoModelByTaskClass: false,
+    jev: {
+      mode: 'suggest',
+      policy: 'balanced',
+    },
     leaderAutoRefresh: 'warn',
     cloudSyncEnabled: false,
     prefsSyncEnabled: true,

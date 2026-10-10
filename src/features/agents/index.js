@@ -15,6 +15,7 @@ const {
   createDelegationBridgeService,
   DelegationBridgeService,
 } = require('./delegationBridgeService');
+const { registerJevIpc } = require('./jevIpc');
 
 module.exports = {
   registerSkillsIpc,
@@ -28,4 +29,5 @@ module.exports = {
   supervisorFingerprint,
   createDelegationBridgeService,
   DelegationBridgeService,
+  registerJevIpc,
 };

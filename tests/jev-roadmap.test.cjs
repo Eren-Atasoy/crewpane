@@ -391,3 +391,91 @@ test('Jev Roadmap - Faz 2: policy selection (frugal, quality, balanced with hist
   assert.ok(balancedRes.reason.signals.some((s) => s.includes('history:pass-rate-90%')));
 });
 
+test('Jev Roadmap - Faz 3: jev.mode and jev.policy settings defaults and sanitization', (t) => {
+  const { defaults } = require('../src/agents/settings/constants.cjs');
+  const { sanitizeJev } = require('../src/agents/settings/sanitizers.cjs');
+
+  // 1. Varsayılanlar
+  const defs = defaults();
+  assert.deepStrictEqual(defs.jev, { mode: 'suggest', policy: 'balanced' });
+
+  // 2. Geçersiz girdi sanitizasyonu
+  assert.deepStrictEqual(sanitizeJev(null), { mode: 'suggest', policy: 'balanced' });
+  assert.deepStrictEqual(sanitizeJev({ mode: 'invalid', policy: 'hack' }), { mode: 'suggest', policy: 'balanced' });
+  assert.deepStrictEqual(sanitizeJev({ mode: 'auto', policy: 'frugal' }), { mode: 'auto', policy: 'frugal' });
+  assert.deepStrictEqual(sanitizeJev({ mode: 'off', policy: 'quality' }), { mode: 'off', policy: 'quality' });
+});
+
+test('Jev Roadmap - Faz 3: jev:route-task and jev:decision-log IPC handlers work correctly', async (t) => {
+  const { registerJevIpc, clearDecisionLogs } = require('../src/features/agents/jevIpc.js');
+
+  clearDecisionLogs();
+  const handlers = new Map();
+  const fakeIpcMain = {
+    handle: (ch, fn) => handlers.set(ch, fn),
+  };
+
+  const fakeSettings = {
+    readSettings: () => ({ jev: { mode: 'suggest', policy: 'balanced' } }),
+  };
+
+  registerJevIpc({
+    ipcMain: fakeIpcMain,
+    agentSettings: fakeSettings,
+    engineAuth: {
+      readAllStatus: async () => ({
+        engines: [{ id: 'claude', installed: true, loggedIn: true, authKind: 'api-key' }],
+      }),
+    },
+    logLine: () => {},
+  });
+
+  assert.ok(handlers.has('jev:route-task'), 'Must register jev:route-task handler');
+  assert.ok(handlers.has('jev:decision-log'), 'Must register jev:decision-log handler');
+
+  // 1. Route task IPC call
+  const routeFn = handlers.get('jev:route-task');
+  const routeResult = await routeFn({}, {
+    task: { title: 'Buton stilini güncelle' },
+  });
+  assert.strictEqual(routeResult.ok, true);
+  assert.strictEqual(routeResult.mode, 'suggest');
+  assert.strictEqual(routeResult.decision.tier, 'routine');
+  assert.ok(routeResult.decision.model);
+
+  // 2. Decision log IPC call
+  const logFn = handlers.get('jev:decision-log');
+  const logResult = await logFn({}, { limit: 10 });
+  assert.strictEqual(logResult.ok, true);
+  assert.strictEqual(logResult.logs.length, 1);
+  assert.strictEqual(logResult.logs[0].task.title, 'Buton stilini güncelle');
+});
+
+test('Jev Roadmap - Faz 3: supervisor record tracks user override signal in outcome ledger', (t) => {
+  const { createTaskOutcomeLedger } = require('../src/agents/taskOutcomeLedger.cjs');
+  const { createDelegationSupervisor } = require('../src/agents/supervisor/supervisorCore.cjs');
+
+  const ledger = createTaskOutcomeLedger();
+  const supervisor = createDelegationSupervisor({
+    outcomeLedger: ledger,
+    log: () => {},
+    now: () => 1000,
+  });
+
+  // Görevi kullanıcı modeli değiştirerek (overriddenBy: 'user') dispatch etti
+  supervisor.record({
+    delegationId: 'del-override-1',
+    subtaskId: 'sub-override-1',
+    engine: 'claude',
+    model: 'claude-opus-5-5',
+    effort: 'high',
+    overriddenBy: 'user',
+  });
+
+  const entry = ledger.getEntry('del-override-1', 'sub-override-1');
+  assert.ok(entry, 'Entry must be in ledger');
+  assert.strictEqual(entry.model, 'claude-opus-5-5');
+  assert.strictEqual(entry.overriddenBy, 'user', 'overriddenBy signal must be captured in ledger');
+});
+
+

@@ -7,6 +7,7 @@ const {
   registerDelegationIpc,
   registerTeamComposeIpc,
   registerTeamScopeIpc,
+  registerJevIpc,
 } = require('../../features/agents');
 const { registerPtyIpc, registerPanesIpc } = require('../../features/terminal');
 const { registerVoiceIpc } = require('../../features/voice');
@@ -276,6 +277,15 @@ function wireAgentsIpc(deps) {
   registerTeamScopeIpc({
     ipcMain,
     authorizeTeamScopeInteractive: deps.authorizeTeamScopeInteractive,
+    logLine,
+  });
+
+  // Jev AI IPC (Faz 3)
+  registerJevIpc({
+    ipcMain,
+    agentSettings,
+    engineAuth: deps.engineAuth,
+    outcomeLedger: deps.outcomeLedger,
     logLine,
   });
 }

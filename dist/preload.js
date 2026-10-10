@@ -589,6 +589,11 @@ var require_agents = __commonJS({
       cancelLogin: () => ipcRenderer.invoke("engineAuth:cancel"),
       /** Oturumu kapatır; sonuç motorun kendi durum komutuyla DOĞRULANIR → { ok, status }. */
       logout: (engine, profileId) => ipcRenderer.invoke("engineAuth:logout", { engine, profileId }),
+      // ── JEV AI — AKILLI MODEL YÖNLENDİRİCİ (Faz 3) ──────────────────────────────
+      /** Görev zorluğuna ve bağlı motorlara göre optimal model önerisi alır. */
+      routeTask: (params) => ipcRenderer.invoke("jev:route-task", params),
+      /** Jev karar geçmişini listeler. */
+      decisionLog: (params) => ipcRenderer.invoke("jev:decision-log", params),
       // ── ENG-08 — API ANAHTARI YEDEĞİ (abonelik birinci sınıf, bu YEDEK yol) ────
       // Anahtar TEK YÖN akar: renderer → main → vault. Geri dönen yüzeyde sır YOKTUR
       // (yalnız `{ ok, error, status }`); `status.apiKeySaved` bir BAYRAKtır, değer değil.

@@ -25,6 +25,7 @@ const paneEarlyExit = require('../../terminal/paneEarlyExit.cjs');
 const paneScreen = require('../../terminal/paneScreen.cjs');
 const livePaneRegistry = require('../../agents/livePaneRegistry.cjs');
 const workspaceOnboarding = require('../../agents/workspaceOnboarding.cjs');
+const jevRouter = require('../../agents/jevRouter.cjs');
 
 const PANE_BUFFER_MAX = 256 * 1024;
 const PANE_BUFFER_SLACK = 64 * 1024;
@@ -642,6 +643,49 @@ function buildModelTrackingProps(plan, modelInfo) {
   };
 }
 
+function applyJevRouting(opts, settings, deps) {
+  if (!opts || opts.model !== 'auto') return opts;
+  const jevCfg = (settings && settings.jev) || { mode: 'suggest', policy: 'balanced' };
+  if (jevCfg.mode === 'off') return opts;
+
+  let decision = null;
+  try {
+    const task = {
+      title: opts.title || opts.label || opts.agentId || 'Terminal Task',
+      description: opts.prompt || opts.taskDescription || '',
+    };
+    decision = jevRouter.decide({
+      task,
+      engines: [{ id: opts.commandKey || 'claude', installed: true, loggedIn: true }],
+      policy: jevCfg.policy,
+    });
+  } catch (_e) {
+    return opts;
+  }
+
+  if (!decision || decision.skip) return opts;
+
+  if (jevCfg.mode === 'auto') {
+    if (decision.model) opts.model = decision.model;
+    if (decision.effort && !opts.effort) opts.effort = decision.effort;
+    deps.logLine(`[jev] auto-routed: model=${decision.model} effort=${decision.effort} reason=${decision.reason && decision.reason.code}`);
+  } else if (jevCfg.mode === 'suggest') {
+    try {
+      const appWin = deps.getAppWindow && deps.getAppWindow();
+      if (appWin && !appWin.isDestroyed()) {
+        appWin.webContents.send('jev:decision-log', {
+          type: 'suggestion',
+          agentId: opts.agentId,
+          decision,
+        });
+      }
+    } catch {
+      /* UI bildirimi akışı düşüremez */
+    }
+  }
+  return opts;
+}
+
 class PtySpawnService {
   constructor(deps = {}) {
     this.deps = Object.assign({}, defaultDeps, deps);
@@ -729,8 +773,11 @@ class PtySpawnService {
     const limitVerdict = checkSpawnLimit(opts, this.deps.ptys.size, this.deps.planDenial, this.deps.logLine);
     if (limitVerdict) return limitVerdict;
 
-    const promptFileSink = buildPromptFileSink(opts, this.deps.crewpaneHome(), this.deps.logLine);
-    const plan = this.buildSpawnPlan(opts, trustedExtra, promptFileSink);
+    const settings = this.deps.readSettings();
+    const routedOpts = applyJevRouting({ ...opts }, settings, this.deps);
+
+    const promptFileSink = buildPromptFileSink(routedOpts, this.deps.crewpaneHome(), this.deps.logLine);
+    const plan = this.buildSpawnPlan(routedOpts, trustedExtra, promptFileSink);
     applyEngineApiKeyEnv(plan, this.deps.engineKeyStore(), this.deps.logLine);
     const maskedNew = secretRedactor.registerEnv(plan.env);
     if (maskedNew) this.deps.logLine(`integrations: ${maskedNew} anahtar maskeleme kapsamına alındı`);

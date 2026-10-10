@@ -83,6 +83,7 @@ function buildStartEntry(existing, input, now) {
     settledAt: null,
     settledBy: null,
     outcome: null,
+    overriddenBy: input.overriddenBy || (existing ? existing.overriddenBy : null),
   };
 }
 
@@ -228,6 +229,7 @@ function createTaskOutcomeLedger(opts = {}) {
     if (input.engine) entry.engine = String(input.engine);
     if (input.model) entry.model = String(input.model);
     if (input.effort) entry.effort = String(input.effort);
+    if (input.overriddenBy) entry.overriddenBy = String(input.overriddenBy);
 
     if (numOrNull(input.tokensIn) !== null) entry.tokensIn = input.tokensIn;
     if (numOrNull(input.tokensOut) !== null) entry.tokensOut = input.tokensOut;

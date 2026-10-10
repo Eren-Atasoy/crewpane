@@ -189,6 +189,14 @@ function sanitizeTelemetryState(raw) {
   return base;
 }
 
+function sanitizeJev(raw) {
+  const base = { mode: 'suggest', policy: 'balanced' };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return base;
+  const mode = ['off', 'suggest', 'auto'].includes(raw.mode) ? raw.mode : base.mode;
+  const policy = ['frugal', 'balanced', 'quality'].includes(raw.policy) ? raw.policy : base.policy;
+  return { mode, policy };
+}
+
 module.exports = {
   sanitizeDepartmentDirs,
   sanitizeProjectIsolation,
@@ -206,4 +214,5 @@ module.exports = {
   sanitizeResourceGovernor,
   sanitizeAnnouncementsRead,
   sanitizeTelemetryState,
+  sanitizeJev,
 };
