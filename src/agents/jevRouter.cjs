@@ -9,10 +9,11 @@
  * (Claude, Codex, Gemini vb.) arasından fiyat-performans ve hızı maksimize eden
  * en uygun modeli dinamik olarak seçer.
  *
- * Ayarlar üzerinden açılıp kapatılabilir (varsayılan: kullanıcının kontrolünde).
+ * Faz 2: saf `jev/decide.cjs` modülünün ince sarmalayıcısıdır.
  */
 
 const DEFAULT_PRICING = require('./modelPricing.json');
+const { decide, classifyKatmanA, EXPERT_KEYWORDS, ROUTINE_KEYWORDS } = require('./jev/decide.cjs');
 
 const ENGINE_TIER_FALLBACKS = Object.freeze({
   codex: { routine: 'gpt-5.6-luna', standard: 'gpt-5.6-terra', expert: 'gpt-5.6-sol' },
@@ -20,33 +21,21 @@ const ENGINE_TIER_FALLBACKS = Object.freeze({
   antigravity: { routine: 'gemini-3.8-flash', standard: 'gemini-3.7-flash', expert: 'gemini-3.1-pro' },
 });
 
-// Görev zorluk tespiti için anahtar kelime sözlüğü
-const ROUTINE_PATTERNS = [
-  /\b(css|stil|style|renk|color|buton|button|padding|margin|font|typo|yazım|düzelt|çevir|translate|readme|doküman|doc|yorum|comment|log)\b/i,
-  /\b(küçük|ufak|basit|kolay|hızlı|minor|simple|quick|easy)\b/i,
-];
+const ROUTINE_PATTERNS = Object.freeze(
+  ROUTINE_KEYWORDS.map((k) => new RegExp(`\\b${k}\\b`, 'i'))
+);
 
-const EXPERT_PATTERNS = [
-  /\b(mimari|architecture|refactor|yeniden yapılandır|güvenlik|security|vulnerability|açık|exploit|smart contract|sözleşme|concurrency|race condition|deadlock|migration|migrasyon|algoritma|algorithm|optimizasyon|optimize|tdd|test-driven)\b/i,
-  /\b(kritik|ağır|complex|karmaşık|critical|p0|urgent)\b/i,
-];
+const EXPERT_PATTERNS = Object.freeze(
+  EXPERT_KEYWORDS.map((k) => new RegExp(`\\b${k}\\b`, 'i'))
+);
 
 /**
  * Görevin karmaşıklık sınıfını tespit eder: 'routine' | 'standard' | 'expert'
  */
 function classifyTask(taskText) {
   if (!taskText || typeof taskText !== 'string') return 'standard';
-  const text = taskText.toLowerCase();
-
-  for (const pattern of EXPERT_PATTERNS) {
-    if (pattern.test(text)) return 'expert';
-  }
-
-  for (const pattern of ROUTINE_PATTERNS) {
-    if (pattern.test(text)) return 'routine';
-  }
-
-  return 'standard';
+  const result = classifyKatmanA({ title: taskText });
+  return result.tier;
 }
 
 function resolveCodexModel(tier, pricing) {
@@ -73,15 +62,48 @@ function resolveTierModel(engine, tier, pricing = DEFAULT_PRICING) {
   return claudeAliases[aliasKey] || aliasKey;
 }
 
+function pickFallbackEngine(availableEngines, currentEngine) {
+  if (Array.isArray(availableEngines) && availableEngines.includes('gemini')) return 'gemini';
+  if (Array.isArray(availableEngines) && availableEngines.includes('claude')) return 'claude';
+  return currentEngine;
+}
+
+function resolveEffort(taskClass, effort) {
+  if (effort) return effort;
+  if (taskClass === 'routine') return 'low';
+  if (taskClass === 'expert') return 'high';
+  return 'medium';
+}
+
+function buildEngineList(availableEngines) {
+  return (availableEngines || []).map((id) => ({
+    id,
+    installed: true,
+    loggedIn: true,
+    authKind: id === 'gemini' ? 'subscription' : 'api-key',
+  }));
+}
+
+function buildRouterOutput(decision, selectedEngine, pricing) {
+  const taskClass = decision.tier || 'standard';
+  const model = decision.model || resolveTierModel(selectedEngine, taskClass, pricing);
+  const effort = resolveEffort(taskClass, decision.effort);
+  const reasonCode = (decision.reason && decision.reason.code) || 'jev.reason.standard_balanced';
+
+  return {
+    taskClass,
+    engine: selectedEngine,
+    model,
+    effort,
+    reason: decision.reason || { code: reasonCode, tier: taskClass, signals: [] },
+    reasonCode,
+    alternatives: decision.alternatives || [],
+    skip: decision.skip,
+  };
+}
+
 /**
  * Bağlı AI motorları ve görev gereksinimine göre en uygun modeli seçer.
- * @param {Object} params
- * @param {string} params.title - Görev başlığı
- * @param {string} [params.description] - Görev açıklaması
- * @param {string} [params.currentEngine] - Ajanın atanmış varsayılan motoru (örn. 'claude')
- * @param {Array<string>} [params.availableEngines] - Kullanıcının giriş yaptığı aktif motorlar
- * @param {Object} [params.pricing] - Fiyatlandırma ve alias tablosu
- * @returns {Object} Routing kararı
  */
 function routeTaskWithJev(params = {}) {
   const {
@@ -90,49 +112,30 @@ function routeTaskWithJev(params = {}) {
     currentEngine = 'claude',
     availableEngines = ['claude'],
     pricing = DEFAULT_PRICING,
+    policy = 'balanced',
+    history = null,
+    classifier = null,
   } = params;
-  const combinedText = `${title} ${description}`.trim();
-  const taskClass = classifyTask(combinedText);
 
-  const selectedEngine = availableEngines.includes('gemini')
-    ? 'gemini'
-    : availableEngines.includes('claude')
-      ? 'claude'
-      : currentEngine;
+  const engines = buildEngineList(availableEngines);
+  const decision = decide({
+    task: { title, description },
+    engines,
+    catalog: { pricing },
+    policy,
+    history,
+    classifier,
+  });
 
-  const effortMap = {
-    routine: 'low',
-    standard: 'medium',
-    expert: 'high',
-  };
-
-  const reasonCodeMap = {
-    routine: 'jev.reason.routine_lightweight',
-    standard: 'jev.reason.standard_balanced',
-    expert: 'jev.reason.expert_deep_reasoning',
-  };
-
-  const effort = effortMap[taskClass] || 'medium';
-  const model = resolveTierModel(selectedEngine, taskClass, pricing);
-
-  return {
-    taskClass,
-    engine: selectedEngine,
-    model,
-    effort,
-    reason: {
-      code: reasonCodeMap[taskClass] || 'jev.reason.standard_balanced',
-      tier: taskClass,
-    },
-    // Geriye dönük uyumluluk (metin arayan çağıranlar için)
-    reasonCode: reasonCodeMap[taskClass] || 'jev.reason.standard_balanced',
-  };
+  const selectedEngine = decision.engine || pickFallbackEngine(availableEngines, currentEngine);
+  return buildRouterOutput(decision, selectedEngine, pricing);
 }
 
 module.exports = {
   classifyTask,
   resolveTierModel,
   routeTaskWithJev,
+  decide,
   ROUTINE_PATTERNS,
   EXPERT_PATTERNS,
 };

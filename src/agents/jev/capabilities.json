@@ -1,0 +1,112 @@
+{
+  "$schema": "capabilities-v1",
+  "updatedAt": "2026-10-10",
+  "tiers": ["routine", "standard", "expert"],
+  "models": {
+    "claude-opus-5-5": {
+      "engine": "claude",
+      "alias": "opus",
+      "tier": "expert",
+      "contextWindow": 200000,
+      "maxOutput": 8192,
+      "effort": "high",
+      "strengths": ["deep-reasoning", "architecture", "security", "complex-refactoring"],
+      "qualityScore": 0.98
+    },
+    "claude-sonnet-5-5": {
+      "engine": "claude",
+      "alias": "sonnet",
+      "tier": "standard",
+      "contextWindow": 200000,
+      "maxOutput": 8192,
+      "effort": "medium",
+      "strengths": ["balanced", "feature-implementation", "code-generation", "testing"],
+      "qualityScore": 0.90
+    },
+    "claude-haiku-5-5": {
+      "engine": "claude",
+      "alias": "haiku",
+      "tier": "routine",
+      "contextWindow": 200000,
+      "maxOutput": 8192,
+      "effort": "low",
+      "strengths": ["fast", "documentation", "css", "formatting", "translation"],
+      "qualityScore": 0.78
+    },
+    "claude-fable-5-1": {
+      "engine": "claude",
+      "alias": "fable",
+      "tier": "standard",
+      "contextWindow": 200000,
+      "maxOutput": 8192,
+      "effort": "medium",
+      "strengths": ["creative", "writing", "design"],
+      "qualityScore": 0.88
+    },
+    "gpt-5.6-sol": {
+      "engine": "codex",
+      "alias": "sol",
+      "tier": "expert",
+      "contextWindow": 200000,
+      "maxOutput": 16384,
+      "effort": "high",
+      "strengths": ["deep-reasoning", "architecture", "complex-refactoring"],
+      "qualityScore": 0.97
+    },
+    "gpt-5.6-terra": {
+      "engine": "codex",
+      "alias": "terra",
+      "tier": "standard",
+      "contextWindow": 200000,
+      "maxOutput": 8192,
+      "effort": "medium",
+      "strengths": ["general-coding", "balanced", "testing"],
+      "qualityScore": 0.89
+    },
+    "gpt-5.6-luna": {
+      "engine": "codex",
+      "alias": "luna",
+      "tier": "routine",
+      "contextWindow": 128000,
+      "maxOutput": 4096,
+      "effort": "low",
+      "strengths": ["fast", "formatting", "css", "scaffolding"],
+      "qualityScore": 0.76
+    },
+    "gemini-3.1-pro": {
+      "engine": "gemini",
+      "alias": "pro",
+      "tier": "expert",
+      "contextWindow": 1000000,
+      "maxOutput": 8192,
+      "effort": "high",
+      "strengths": ["large-context", "reasoning", "multilingual"],
+      "qualityScore": 0.95
+    },
+    "gemini-3.7-flash": {
+      "engine": "gemini",
+      "alias": "flash",
+      "tier": "standard",
+      "contextWindow": 1000000,
+      "maxOutput": 8192,
+      "effort": "medium",
+      "strengths": ["fast", "large-context", "multimodal"],
+      "qualityScore": 0.87
+    },
+    "gemini-3.8-flash": {
+      "engine": "gemini",
+      "alias": "flash-lite",
+      "tier": "routine",
+      "contextWindow": 1000000,
+      "maxOutput": 8192,
+      "effort": "low",
+      "strengths": ["fast", "cheap", "routine-tasks"],
+      "qualityScore": 0.79
+    }
+  },
+  "tierDefaults": {
+    "routine": { "effort": "low" },
+    "standard": { "effort": "medium" },
+    "expert": { "effort": "high" }
+  }
+}

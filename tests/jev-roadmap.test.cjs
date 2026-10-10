@@ -238,3 +238,156 @@ test('Jev Roadmap - Faz 1: queueBoard exposes cost, turns, retries, and outcome 
   assert.ok(typeof row.costUsd === 'number' && row.costUsd > 0);
 });
 
+test('Jev Roadmap - Faz 2: decide() zero-model pre-checks skip execution cleanly', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+
+  // 1. Kuyruk boş
+  const res1 = decide({ queueEmpty: true });
+  assert.strictEqual(res1.skip?.code, 'empty-queue');
+
+  // 2. Boş görev tanımı
+  const res2 = decide({ task: {} });
+  assert.strictEqual(res2.skip?.code, 'empty-task');
+
+  // 3. Tekrar eden görev hash'i (duplicate-task)
+  const task = { title: 'Düğme rengi düzelt', description: 'Mavi yap' };
+  const res3 = decide({
+    task,
+    lastTaskHash: 'Düğme rengi düzelt::Mavi yap::',
+  });
+  assert.strictEqual(res3.skip?.code, 'duplicate-task');
+
+  // 4. Halihazırda koşan görev (already-running)
+  const res4 = decide({
+    task,
+    activeTasks: [task],
+  });
+  assert.strictEqual(res4.skip?.code, 'already-running');
+});
+
+test('Jev Roadmap - Faz 2: engine discovery filters only installed and loggedIn engines', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+
+  // 1. Hiç motor yok veya hiçbiri giriş yapmamış
+  const noEngRes = decide({
+    task: { title: 'Dosya listesi göster' },
+    engines: [
+      { id: 'claude', installed: true, loggedIn: false },
+      { id: 'codex', installed: false, loggedIn: false },
+    ],
+  });
+  assert.strictEqual(noEngRes.engine, null);
+  assert.strictEqual(noEngRes.reason.code, 'no-engine');
+
+  // 2. Tek motor hazır
+  const singleRes = decide({
+    task: { title: 'Dosya listesi göster' },
+    engines: [
+      { id: 'codex', installed: true, loggedIn: true },
+      { id: 'claude', installed: true, loggedIn: false },
+    ],
+  });
+  assert.strictEqual(singleRes.engine, 'codex');
+  assert.ok(singleRes.model);
+});
+
+test('Jev Roadmap - Faz 2: risk keywords cannot be downgraded by routine words or classifier', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+
+  const installedEngines = [{ id: 'claude', installed: true, loggedIn: true }];
+
+  // 'basit ve kolay' var ama 'güvenlik' ve 'refactor' de var -> Katman A expert olmalı ve aşağı inemez!
+  const riskyRes = decide({
+    task: {
+      title: 'Basit ve kolay güvenlik refactor düzeltmesi',
+      description: 'Hızlıca authentication açığını kapat',
+    },
+    engines: installedEngines,
+  });
+  assert.strictEqual(riskyRes.tier, 'expert');
+  assert.strictEqual(riskyRes.effort, 'high');
+  assert.ok(riskyRes.reason.signals.includes('signal:risk-overrides-routine'));
+
+  // Sınıflandırıcı (Katman B) yüksek güvenle bile 'routine' dese, riskli kelime aşağı çekmeyi engeller
+  const spoofClassifier = () => ({ tier: 'routine', confidence: 0.99 });
+  const blockedRes = decide({
+    task: {
+      title: 'Kritik veritabanı migration',
+      description: 'Hızlıca hallet',
+    },
+    engines: installedEngines,
+    classifier: spoofClassifier,
+  });
+  assert.strictEqual(blockedRes.tier, 'expert');
+  assert.ok(blockedRes.reason.signals.includes('classifier:downgrade-blocked-by-risk'));
+});
+
+test('Jev Roadmap - Faz 2: classifier low confidence fallback and valid adoption', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+  const installedEngines = [{ id: 'claude', installed: true, loggedIn: true }];
+
+  // 1. Düşük güven (< 0.7) -> Katman A fallback
+  const lowConfClassifier = () => ({ tier: 'expert', confidence: 0.55 });
+  const fallbackRes = decide({
+    task: { title: 'CSS buton rengini mavi yap' }, // Katman A -> routine
+    engines: installedEngines,
+    classifier: lowConfClassifier,
+  });
+  assert.strictEqual(fallbackRes.tier, 'routine');
+  assert.ok(fallbackRes.reason.signals.includes('classifier:low-confidence-fallback'));
+
+  // 2. Yeterli güven (>= 0.7) risksiz görevde benimsenir
+  const goodClassifier = () => ({ tier: 'standard', confidence: 0.88 });
+  const adoptedRes = decide({
+    task: { title: 'Yeni bir arayüz bileşeni ekle' },
+    engines: installedEngines,
+    classifier: goodClassifier,
+  });
+  assert.strictEqual(adoptedRes.tier, 'standard');
+  assert.ok(adoptedRes.reason.signals.includes('classifier:adopted'));
+});
+
+test('Jev Roadmap - Faz 2: policy selection (frugal, quality, balanced with history)', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+
+  const multipleEngines = [
+    { id: 'claude', installed: true, loggedIn: true, authKind: 'api-key' },
+    { id: 'gemini', installed: true, loggedIn: true, authKind: 'subscription' },
+  ];
+
+  const standardTask = { title: 'Kullanıcı profil sayfasına avatar yükleme desteği ekle' };
+
+  // 1. Frugal: Abonelik (ücretsiz kota / $0 ilave maliyet) veya en ucuz modeli önceler
+  const frugalRes = decide({
+    task: standardTask,
+    engines: multipleEngines,
+    policy: 'frugal',
+  });
+  assert.strictEqual(frugalRes.engine, 'gemini');
+  assert.strictEqual(frugalRes.reason.code, 'jev.reason.frugal_cheapest');
+
+  // 2. Quality: En yüksek kalitedeki modeli seçer
+  const qualityRes = decide({
+    task: { title: 'Kritik mimari refactor ve optimizasyon' },
+    engines: multipleEngines,
+    policy: 'quality',
+  });
+  assert.strictEqual(qualityRes.tier, 'expert');
+  assert.strictEqual(qualityRes.reason.code, 'jev.reason.quality_best');
+
+  // 3. Balanced: Geçmişte >= %80 başarı oranı olan modeli seçer
+  const fakeHistory = {
+    models: {
+      'claude-sonnet-5-5': { totalRuns: 10, passedRuns: 9 }, // %90 başarı
+    },
+  };
+  const balancedRes = decide({
+    task: standardTask,
+    engines: [{ id: 'claude', installed: true, loggedIn: true }],
+    policy: 'balanced',
+    history: fakeHistory,
+  });
+  assert.strictEqual(balancedRes.reason.code, 'jev.reason.balanced_historical');
+  assert.ok(balancedRes.reason.signals.some((s) => s.includes('history:pass-rate-90%')));
+});
+

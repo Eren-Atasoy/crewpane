@@ -96,6 +96,7 @@ module.exports = {
   get submitOutcome() { return require(path.join(__dirname, "submitOutcome.cjs")); },
   get taskClaim() { return require(path.join(__dirname, "taskClaim.cjs")); },
   get taskCode() { return require(path.join(__dirname, "taskCode.cjs")); },
+  get jevDecide() { return require(path.join(__dirname, "jev", "decide.cjs")); },
   get taskOutcomeLedger() { return require(path.join(__dirname, "taskOutcomeLedger.cjs")); },
   get teamCompose() { return require(path.join(__dirname, "teamCompose.cjs")); },
   get teamResolve() { return require(path.join(__dirname, "teamResolve.cjs")); },
