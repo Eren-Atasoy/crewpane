@@ -76,12 +76,15 @@ function registerDelegationIpc({
         // e2e dikişi: "pane boşta" eşiği üründe 2 dakikadır; test o kadar bekleyemez.
         // (Aynı desen supervisor'ın CREWPANE_SUPERVISOR_* dikişlerinde kullanılıyor.)
         const idleEnv = Number(process.env.CREWPANE_QUEUEBOARD_IDLE_MS);
+        const sup = ensureDelegationSupervisor();
+        const outcomeLedger = sup && typeof sup.getOutcomeLedger === 'function' ? sup.getOutcomeLedger() : null;
         const board = queueBoard.buildQueueBoard({
           now: Date.now(),
           ...(Number.isFinite(idleEnv) && idleEnv > 0 ? { idleMs: idleEnv } : {}),
           supervisor: delegationSupervisorStore.loadState(crewpaneHome()),
           queueState: delegationQueueStore.loadQueueState(crewpaneHome()),
           resumeQueue: resumeQueueStore.loadQueue(crewpaneHome()),
+          outcomeLedger,
           panes,
         });
         return {

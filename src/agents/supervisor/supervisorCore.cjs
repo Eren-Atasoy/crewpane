@@ -524,6 +524,7 @@ function createDelegationSupervisor(deps) {
     externalShutdownNote,
     consumeBriefings: (t) => consumeBriefings(typeof t === 'number' ? t : now(), { state, io, touch, persist, log }),
     snapshot: () => JSON.parse(JSON.stringify(state)),
+    getOutcomeLedger: () => io.outcomeLedger,
     config: () => ({ ...cfg }),
   };
 }

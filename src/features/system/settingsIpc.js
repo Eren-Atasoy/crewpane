@@ -267,6 +267,7 @@ function registerSettingsIpc({
       theme: s.theme,
       notifications: s.notifications,
       browserTrust: s.browserTrust,
+      jev: s.jev,
       teamScope: teamScope.sanitizeTeamScope(agentSettings.readSettings().teamScope),
       browserTrustBuiltins: {
         trusted: [...browserTrustMod.BUILTIN_TRUSTED],
