@@ -272,6 +272,21 @@
         "gemini-key"
       ],
       "riskNotes": ""
+    },
+    {
+      "name": "motion-studio",
+      "description": "Deterministic programmatic animation and motion graphics. Rules: frame is a pure function of frame number (no timers/randomness), embedded fonts, fixed scene dimensions, ffmpeg H.264 with explicit pixel aspect ratio. Headless smoke test counters and seamless loop checks.",
+      "license": "MIT",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/crewpane/crewpane",
+        "upstreamCommit": "7e69c1ac",
+        "fetchedAt": "2026-10-10"
+      },
+      "sha256": "6a4beaf545f6876f3241228291e28993aab94638be273192f7cb9c70699eb108",
+      "sizeBytes": 2929,
+      "requires": [],
+      "riskNotes": ""
     }
   ]
 }

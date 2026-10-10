@@ -736,6 +736,133 @@ test('Jev Roadmap - Faz 5: generateWeeklyReport accurately calculates cost vs es
   assert.strictEqual(freshReport.canRecommendAuto, false, 'Cannot recommend auto mode when history < 14 days');
 });
 
+test('Jev Roadmap - Faz 6a: scanDiffForSecrets detects secret, masks value, returns warning with line number', (t) => {
+  const { scanDiffForSecrets } = require('../src/services/mergeService.cjs');
+
+  const diffWithSecret = `
+diff --git a/src/config.js b/src/config.js
+--- a/src/config.js
++++ b/src/config.js
+@@ -10,4 +10,5 @@
+ const port = 3000;
+ const host = 'localhost';
++const apiKey = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789-AA';
+ const env = 'production';
+`.trim();
+
+  const scan = scanDiffForSecrets(diffWithSecret);
+  assert.strictEqual(scan.ok, false);
+  assert.ok(scan.findings.length >= 1);
+  assert.strictEqual(scan.warning.code, 'secret-in-diff');
+  assert.strictEqual(scan.findings[0].file, 'src/config.js');
+  assert.strictEqual(scan.findings[0].line, 12);
+  assert.strictEqual(scan.findings[0].location, 'src/config.js:12');
+  // Değer maskelenmiş olmalı, orijinal anahtar sızmamalı
+  assert.ok(!scan.findings[0].snippet.includes('abcdefghijklmnopqrstuvwxyz'));
+  assert.ok(scan.findings[0].snippet.includes('[gizlendi]') || scan.findings[0].snippet.includes('••••'));
+
+  // Temiz diff
+  const cleanDiff = `
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,4 @@
+ # Proje
++Yeni açıklama eklendi.
+`.trim();
+
+  const cleanScan = scanDiffForSecrets(cleanDiff);
+  assert.strictEqual(cleanScan.ok, true);
+  assert.strictEqual(cleanScan.warning, null);
+  assert.strictEqual(cleanScan.findings.length, 0);
+});
+
+test('Jev Roadmap - Faz 6b: memory validity with supersededBy and validUntil fields', async (t) => {
+  const { composeFact } = require('../src/memory/agentMemory.cjs');
+  const { parseFact } = require('../src/memory/memoryGraph.cjs');
+  const { recall, isMemoryRecordValid } = require('../src/memory/memoryRecall.cjs');
+
+  // 1. composeFact & parseFact
+  const fact = composeFact({
+    name: 'api-migration-guide',
+    description: 'V1 to V2 migration steps',
+    body: 'Use the new endpoints.',
+    supersededBy: 'api-v3-migration',
+    validUntil: 1700000000000,
+  });
+  assert.ok(fact.content.includes('supersededBy: api-v3-migration'));
+  assert.ok(fact.content.includes('validUntil: 1700000000000'));
+
+  const parsed = parseFact(fact.content);
+  assert.strictEqual(parsed.supersededBy, 'api-v3-migration');
+  assert.strictEqual(parsed.validUntil, 1700000000000);
+
+  // 2. isMemoryRecordValid checks
+  const nowTime = 1750000000000;
+  assert.strictEqual(isMemoryRecordValid({ supersededBy: 'other-fact' }, { now: () => nowTime }), false);
+  assert.strictEqual(isMemoryRecordValid({ validUntil: 1700000000000 }, { now: () => nowTime }), false);
+  assert.strictEqual(isMemoryRecordValid({ validUntil: 1800000000000 }, { now: () => nowTime }), true);
+  assert.strictEqual(isMemoryRecordValid({ supersededBy: 'other' }, { includeInvalid: true }), true);
+
+  // 3. recall() filters expired/superseded records by default
+  const fakeSearch = async () => ({
+    ok: true,
+    results: [
+      { name: 'valid-record', text: 'Clean fact', score: 0.9 },
+      { name: 'superseded-record', text: 'Old fact', supersededBy: 'new-record', score: 0.85 },
+      { name: 'expired-record', text: 'Expired fact', validUntil: 1600000000000, score: 0.8 },
+    ],
+  });
+
+  const defaultRecall = await recall({
+    workspaceRoot: 'd:/mock',
+    query: 'fact',
+    search: fakeSearch,
+    now: () => nowTime,
+  });
+  assert.strictEqual(defaultRecall.results.length, 1);
+  assert.strictEqual(defaultRecall.results[0].name, 'valid-record');
+
+  // includeInvalid: true tüm kayıtları döner
+  const allRecall = await recall({
+    workspaceRoot: 'd:/mock',
+    query: 'fact',
+    search: fakeSearch,
+    now: () => nowTime,
+    includeInvalid: true,
+  });
+  assert.strictEqual(allRecall.results.length, 3);
+});
+
+test('Jev Roadmap - Faz 6c: motion-studio builtin skill catalog integrity and rules', (t) => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const crypto = require('node:crypto');
+
+  const catalogPath = path.join(__dirname, '..', 'builtin-skills', 'catalog.json');
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+
+  const entry = catalog.skills.find((s) => s.name === 'motion-studio');
+  assert.ok(entry, 'motion-studio must exist in builtin-skills/catalog.json');
+  assert.strictEqual(entry.license, 'MIT');
+
+  const skillPath = path.join(__dirname, '..', 'builtin-skills', 'motion-studio', 'SKILL.md');
+  assert.ok(fs.existsSync(skillPath), 'SKILL.md must exist in builtin-skills/motion-studio');
+
+  const content = fs.readFileSync(skillPath);
+  const calculatedSha = crypto.createHash('sha256').update(content).digest('hex');
+
+  assert.strictEqual(entry.sizeBytes, content.length, 'Catalog sizeBytes must match physical file size');
+  assert.strictEqual(entry.sha256, calculatedSha, 'Catalog sha256 must match physical file hash');
+
+  const text = content.toString('utf8');
+  assert.ok(text.includes('ffmpeg'));
+  assert.ok(text.includes('H.264'));
+  assert.ok(text.includes('Seam Check') || text.includes('seam check'));
+  assert.ok(text.includes('Smoke Test') || text.includes('smoke test'));
+});
+
+
 
 
 

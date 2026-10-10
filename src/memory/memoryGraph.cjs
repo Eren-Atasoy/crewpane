@@ -33,10 +33,13 @@ const KNOWN_TYPES = ['project', 'feedback', 'reference', 'user'];
  * sabitler, ajan adına özel dal yoktur. Sayısı `CORE_DEFAULTS.maxAlways` ile
  * SINIRLIDIR — "her şeyi sabitle" çekirdeği doldurmaya dönüşemesin.
  */
-/** Parse a fact file's frontmatter (name/description/type/always) + its [[link]] slugs. Pure. */
+/** Parse a fact file's frontmatter (name/description/type/always/supersededBy/validUntil) + its [[link]] slugs. Pure. */
 function parseFact(raw) {
   const name = (raw.match(/^name:\s*(.+)$/m) || [])[1];
   const description = (raw.match(/^description:\s*(.+)$/m) || [])[1] || '';
+  const supersededBy = (raw.match(/^supersededBy:\s*(.+)$/m) || [])[1] || null;
+  const validUntilRaw = (raw.match(/^validUntil:\s*(.+)$/m) || [])[1] || null;
+  const validUntil = validUntilRaw ? (Number(validUntilRaw) || validUntilRaw.trim()) : null;
   // metadata.type — a line "  type: X" (NOT "node_type: X")
   const typeM = raw.match(/^[ \t]+type:\s*(\w+)/m);
   const type = typeM && KNOWN_TYPES.includes(typeM[1]) ? typeM[1] : 'reference';
@@ -44,7 +47,15 @@ function parseFact(raw) {
   // sabitlenir; yazılmayan/bozuk değer `false` (sessizce ayrıcalık verilmez).
   const always = /^[ \t]+always:\s*true\s*$/m.test(raw);
   const links = [...raw.matchAll(/\[\[([a-z0-9._-]+)\]\]/g)].map((m) => m[1]);
-  return { name: (name || '').trim(), description: description.trim(), type, always, links };
+  return {
+    name: (name || '').trim(),
+    description: description.trim(),
+    supersededBy: supersededBy ? supersededBy.trim() : null,
+    validUntil,
+    type,
+    always,
+    links,
+  };
 }
 
 /** List *.md fact files (excluding MEMORY.md) in a dir. [] when the dir is absent. */

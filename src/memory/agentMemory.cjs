@@ -105,21 +105,27 @@ function readIndex(dir) {
 }
 
 /** Compose one fact file (frontmatter + body). Pure. Returns { slug, content }. */
-function composeFact({ name, description, type, body } = {}) {
+function composeFact({ name, description, type, body, supersededBy, validUntil } = {}) {
   const slug = safeSlug(name);
-  const content = [
+  const lines = [
     '---',
     `name: ${slug}`,
     `description: ${String(description || '').replace(/\s+/g, ' ').trim()}`,
-    'metadata:',
-    `  type: ${type || 'reference'}`,
-    '  version: 1',
-    '---',
-    '',
-    String(body || '').trim(),
-    '',
-  ].join('\n');
-  return { slug, content };
+  ];
+  if (supersededBy) {
+    lines.push(`supersededBy: ${safeSlug(supersededBy)}`);
+  }
+  if (validUntil) {
+    lines.push(`validUntil: ${typeof validUntil === 'number' ? validUntil : String(validUntil).trim()}`);
+  }
+  lines.push('metadata:');
+  lines.push(`  type: ${type || 'reference'}`);
+  lines.push('  version: 1');
+  lines.push('---');
+  lines.push('');
+  lines.push(String(body || '').trim());
+  lines.push('');
+  return { slug, content: lines.join('\n') };
 }
 
 /**

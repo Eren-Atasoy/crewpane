@@ -366,6 +366,43 @@ function focusedMemoryBlock({ workspaceRoot, agentId, query, homedir, budget = {
  * @param {string} [o.agentId] verilirse seçki bloğu da döner (bağlam yüzeyi)
  * @returns {Promise<{ok:boolean, found:boolean, query:string, results:Array,
  *                    text:string, degraded:boolean, reason?:string, masked:number}>}
+ */
+function isMemoryRecordValid(record, { now = Date.now(), includeInvalid = false } = {}) {
+  if (includeInvalid) return true;
+  if (!record) return false;
+  if (record.supersededBy) return false;
+  if (record.validUntil) {
+    const currentTime = typeof now === 'function' ? now() : (typeof now === 'number' ? now : Date.now());
+    const vTime = typeof record.validUntil === 'number' ? record.validUntil : Date.parse(record.validUntil);
+    if (Number.isFinite(vTime) && vTime < currentTime) return false;
+  }
+  return true;
+}
+
+function formatRecallHit(r, q) {
+  const rawExcerpt = String(r.excerpt || '') || excerptFor(r.text, q);
+  const excerpt = maskSecrets(rawExcerpt);
+  const isMasked = excerpt !== rawExcerpt;
+  return {
+    hit: {
+      source: r.docPath || r.name || '(bilinmiyor)',
+      name: r.name || '',
+      scope: r.scope || '',
+      heading: Array.isArray(r.headingPath) && r.headingPath.length ? r.headingPath.join(' › ') : '',
+      lineStart: r.lineStart ?? null,
+      lineEnd: r.lineEnd ?? null,
+      excerpt,
+      matchedBy: Array.isArray(r.matchedBy) ? r.matchedBy : [],
+      score: typeof r.score === 'number' ? r.score : null,
+      supersededBy: r.supersededBy || null,
+      validUntil: r.validUntil || null,
+    },
+    isMasked,
+  };
+}
+
+/**
+ * UÇ: `recall` — tek çağırma noktası.
  *
  * SÖZLEŞME — bu DÖRDÜ ucun VAADİDİR, çağıran bunlara güvenir:
  *   • her sonuç KAYNAK (dosya + satır) ve ALINTI taşır,
@@ -374,8 +411,20 @@ function focusedMemoryBlock({ workspaceRoot, agentId, query, homedir, budget = {
  *   • arama KOŞAMADIYSA (indeks yok, arka uç yok, hata) `measured:false` + ÖLÇEMEDİM
  *     metni döner — "bulamadım" DEMEZ, çünkü aranmadı,
  *   • gösterilen her metin sır maskesinden geçer.
+ *   • süresi geçmiş (validUntil) veya yerini başkasına bırakmış (supersededBy) kayıtlar
+ *     varsayılan olarak elenir (includeInvalid: true ile açıkça istenebilir).
  */
-async function recall({ workspaceRoot, query, k = 5, search, agentId = null, homedir, cliPath = null } = {}) {
+async function recall({
+  workspaceRoot,
+  query,
+  k = 5,
+  search,
+  agentId = null,
+  homedir,
+  cliPath = null,
+  includeInvalid = false,
+  now = Date.now,
+} = {}) {
   const q = String(query || '').trim();
   if (!q) return { ok: false, found: false, measured: false, query: '', results: [], text: 'Boş sorgu.', degraded: false, reason: 'empty_query', masked: 0 };
   if (typeof search !== 'function') {
@@ -398,28 +447,15 @@ async function recall({ workspaceRoot, query, k = 5, search, agentId = null, hom
     });
   }
 
-  const hits = Array.isArray(raw && raw.results) ? raw.results : [];
+  const rawHits = Array.isArray(raw && raw.results) ? raw.results : [];
+  const hits = rawHits.filter((r) => isMemoryRecordValid(r, { now, includeInvalid }));
   let masked = 0;
-  const results = hits.map((r) => {
-    // ALINTI GARANTİSİ: arka uç hazır alıntı vermediyse (ör. CLI'ın saf-JS taraması
-    // ham `text` döndürür) burada üretilir. Boş tırnak göstermek "kaynak + alıntı"
-    // sözleşmesini sessizce çiğnemek olurdu — ilk koşuda tam olarak bu oldu.
-    const rawExcerpt = String(r.excerpt || '') || excerptFor(r.text, q);
-    const excerpt = maskSecrets(rawExcerpt);
-    if (excerpt !== rawExcerpt) masked += 1;
-    return {
-      // KAYNAK — "bu nereden geldi?" sorusunun cevabı. Üçü de zorunlu.
-      source: r.docPath || r.name || '(bilinmiyor)',
-      name: r.name || '',
-      scope: r.scope || '',
-      heading: Array.isArray(r.headingPath) && r.headingPath.length ? r.headingPath.join(' › ') : '',
-      lineStart: r.lineStart ?? null,
-      lineEnd: r.lineEnd ?? null,
-      excerpt,
-      matchedBy: Array.isArray(r.matchedBy) ? r.matchedBy : [],
-      score: typeof r.score === 'number' ? r.score : null,
-    };
-  });
+  const results = [];
+  for (const r of hits) {
+    const formatted = formatRecallHit(r, q);
+    if (formatted.isMasked) masked += 1;
+    results.push(formatted.hit);
+  }
 
   const found = results.length > 0;
   const out = {
@@ -472,4 +508,5 @@ module.exports = {
   focusedMemoryBlock,
   formatRecall,
   recall,
+  isMemoryRecordValid,
 };

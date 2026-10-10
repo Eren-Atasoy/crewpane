@@ -95,25 +95,54 @@ async function preflight(repo, target, branch) {
 function scanDiffForSecrets(diffText) {
   const findings = [];
   let file = null;
-  for (const line of String(diffText || '').split('\n')) {
+  let currentLine = 0;
+
+  for (const rawLine of String(diffText || '').split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
     const hdr = /^\+\+\+ b\/(.+)$/.exec(line);
-    if (hdr) { file = hdr[1]; continue; }
-    if (!line.startsWith('+') || line.startsWith('+++')) continue;
-    const r = mask.maskSecretsDetailed(line.slice(1));
-    if (!r.masked) continue;
-    const prev = findings.find((f) => f.file === file);
-    if (prev) {
-      prev.count += r.masked;
-      for (const k of r.kinds) if (!prev.kinds.includes(k)) prev.kinds.push(k);
-    } else {
-      findings.push({ file: file || '(bilinmeyen dosya)', kinds: [...r.kinds], count: r.masked });
+    if (hdr) {
+      file = hdr[1];
+      continue;
+    }
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (hunk) {
+      currentLine = parseInt(hunk[1], 10);
+      continue;
+    }
+    if (line.startsWith('+++')) continue;
+    if (line.startsWith('+')) {
+      const addedText = line.slice(1);
+      const r = mask.maskSecretsDetailed(addedText);
+      if (r.masked) {
+        findings.push({
+          file: file || '(bilinmeyen dosya)',
+          line: currentLine,
+          location: `${file || '(bilinmeyen dosya)'}:${currentLine}`,
+          kinds: [...r.kinds],
+          count: r.masked,
+          snippet: mask.maskSecrets(addedText).trim(),
+        });
+      }
+      currentLine++;
+    } else if (!line.startsWith('-')) {
+      currentLine++;
     }
   }
+
+  const warning = findings.length
+    ? {
+      code: 'secret-in-diff',
+      message: `sır taraması ${findings.length} yerde bulgu verdi`,
+      findings,
+    }
+    : null;
+
   return {
     ok: findings.length === 0,
     findings,
+    warning,
     why: findings.length
-      ? `sır taraması ${findings.length} dosyada bulgu verdi: ${findings.map((f) => `${f.file} (${f.kinds.join(',')})`).join(', ')}`
+      ? `sır taraması ${findings.length} yerde bulgu verdi: ${findings.map((f) => `${f.location} (${f.kinds.join(',')})`).join(', ')}`
       : 'sır taraması temiz',
   };
 }
@@ -206,7 +235,8 @@ async function review(taskId, { homedir, repoPath, target, setting, autopilot, g
     dirty: st.dirty,
     conflict: !pre.clean,
     conflictFiles: pre.files,
-    secretScan: { ok: secrets.ok, findings: secrets.findings },  // DEĞER YOK, yalnız dosya+tür
+    secretScan: { ok: secrets.ok, findings: secrets.findings, warning: secrets.warning, why: secrets.why },
+    warning: secrets.warning || null,
     gate: gate || null,
     approval: decision,
     preconditions: pcs,
@@ -230,8 +260,11 @@ async function merge(taskId, { homedir, repoPath, target, title, setting, autopi
 
   const card = await review(taskId, { homedir, repoPath: repo, target: tgt, setting, autopilot, gate, now });
   if (!card.ok) return { ok: false, why: card.why };
+  if (card.secretScan && !card.secretScan.ok) {
+    return { ok: false, why: `merge BLOKE: ${card.secretScan.why}`, warning: card.secretScan.warning, card, state: 'review' };
+  }
   if (card.approval.blocked) {
-    return { ok: false, why: `merge BLOKE: ${card.approval.why}`, card, state: card.conflict ? 'conflict' : 'review' };
+    return { ok: false, why: `merge BLOKE: ${card.approval.why}`, warning: card.warning, card, state: card.conflict ? 'conflict' : 'review' };
   }
   if (!card.preconditions.ok) return { ok: false, why: card.preconditions.why, card };
   if (!card.approval.auto && !approvedBy) {
