@@ -46,6 +46,7 @@ function createDelegationSupervisor(deps) {
     wakeVerifiable: d.wakeVerifiable || (() => false),
     leaderTranscriptHas: d.leaderTranscriptHas || (() => null),
     sleep: d.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))),
+    outcomeLedger: d.outcomeLedger || null,
   };
 
   let state = normalizeState(io.loadState());
@@ -161,6 +162,27 @@ function createDelegationSupervisor(deps) {
     rec.reason = reason || null;
     rec.settleBytes = rec.paneSeen ? rec.paneSeen.bytes : null;
     touch();
+
+    const ledger = io.outcomeLedger;
+    if (ledger && typeof ledger.settle === 'function') {
+      try {
+        ledger.settle({
+          delegationId: rec.delegationId,
+          subtaskId: rec.subtaskId,
+          outcome: status,
+          settledBy: by,
+          settledAt: rec.settledAt,
+          engine: rec.engine || null,
+          model: rec.model || null,
+          tokensIn: rec.tokensIn,
+          tokensOut: rec.tokensOut,
+          cacheRead: rec.cacheRead,
+          costUsd: rec.costUsd,
+        });
+      } catch (err) {
+        log(`supervisor: outcomeLedger.settle hatası: ${err.message}`);
+      }
+    }
   }
 
   function record(input) {
@@ -205,6 +227,12 @@ function createDelegationSupervisor(deps) {
       paneSeen: (prev && prev.paneSeen) || { bytes: -1, at: now() },
       paneGoneAt: 0,
       board: (prev && prev.board) || { dispatchAt: 0, dispatchAction: null, reviewAt: 0, reviewAction: null },
+      engine: input.engine || null,
+      model: input.model || null,
+      tokensIn: 0,
+      tokensOut: 0,
+      cacheRead: 0,
+      costUsd: null,
     };
     {
       const buf = rec.paneId ? safeBuffer(rec.paneId) : '';
@@ -219,6 +247,22 @@ function createDelegationSupervisor(deps) {
     persist();
     log(`supervisor: kayıt açıldı ${key} agent=${rec.agentId} pane=${rec.paneId} kanıt=${rec.evidencePath || '-'}`);
     void runBoardSync(rec, BOARD_PHASES.DISPATCH);
+
+    const ledger = io.outcomeLedger;
+    if (ledger && typeof ledger.recordStart === 'function') {
+      try {
+        ledger.recordStart({
+          delegationId: rec.delegationId,
+          subtaskId: rec.subtaskId,
+          engine: rec.engine,
+          model: rec.model,
+          startedAt: rec.dispatchedAt,
+        });
+      } catch (err) {
+        log(`supervisor: outcomeLedger.recordStart hatası: ${err.message}`);
+      }
+    }
+
     return rec;
   }
 
@@ -229,6 +273,13 @@ function createDelegationSupervisor(deps) {
     let status = (outcome && outcome.status) || 'done';
     let by = SETTLE_SOURCES.RENDERER;
     let reason = (outcome && outcome.reason) || null;
+
+    if (outcome) {
+      if (outcome.tokensIn !== undefined) rec.tokensIn = outcome.tokensIn;
+      if (outcome.tokensOut !== undefined) rec.tokensOut = outcome.tokensOut;
+      if (outcome.cacheRead !== undefined) rec.cacheRead = outcome.cacheRead;
+      if (outcome.costUsd !== undefined) rec.costUsd = outcome.costUsd;
+    }
 
     if (status !== 'done') {
       const seen = evidenceSeen(rec, io);

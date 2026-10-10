@@ -249,11 +249,16 @@ function resumeRows(resumeQueue, now) {
 }
 
 /** `delegation-supervisor.json` → uçuştaki (status=null) ve biten kayıtlar. */
-function supervisorRows(supervisor, doneLimit) {
+function supervisorRows(supervisor, doneLimit, outcomeLedger = null) {
   const records = Object.values(obj(obj(supervisor).records)).filter((r) => r && typeof r === 'object');
   const inflight = [];
   const done = [];
   for (const rec of records) {
+    const outcomeEntry =
+      outcomeLedger && typeof outcomeLedger.getEntry === 'function'
+        ? outcomeLedger.getEntry(rec.delegationId, rec.subtaskId)
+        : null;
+
     const row = {
       id: `sup:${str(rec.key) || `${rec.delegationId}:${rec.subtaskId}`}`,
       // DELEG-COMMS-01 — UÇUŞTAKİ İŞİ DURDURMANIN ANAHTARI. Satır kimliği (`sup:…`)
@@ -284,6 +289,17 @@ function supervisorRows(supervisor, doneLimit) {
       blockedBy: [],
       settledAt: num(rec.settledAt),
       reason: str(rec.reason),
+      // Faz 1: Maliyet, tur, tekrar ve sonuç göstergeleri (kod döner, metin değil)
+      costUsd: num(rec.costUsd) ?? (outcomeEntry ? num(outcomeEntry.costUsd) : null),
+      turns: Number.isInteger(rec.turns)
+        ? rec.turns
+        : (outcomeEntry && Number.isInteger(outcomeEntry.turns) ? outcomeEntry.turns : (rec.status ? 1 : null)),
+      retries: Number.isInteger(rec.retries)
+        ? rec.retries
+        : (outcomeEntry && Number.isInteger(outcomeEntry.retries) ? outcomeEntry.retries : 0),
+      outcome:
+        str(rec.outcome) ||
+        (outcomeEntry ? str(outcomeEntry.outcome) : (rec.status ? (rec.status === 'done' ? 'passed' : 'failed') : null)),
     };
     (rec.status ? done : inflight).push(row);
   }
@@ -365,7 +381,7 @@ function buildQueueBoard(input) {
   const doneLimit = num(i.doneLimit) ?? DEFAULT_DONE_LIMIT;
 
   const waiting = [...queuedRows(i.queueState, now), ...pausedRows(i.queueState), ...resumeRows(i.resumeQueue, now)];
-  const { inflight, done } = supervisorRows(i.supervisor, doneLimit);
+  const { inflight, done } = supervisorRows(i.supervisor, doneLimit, i.outcomeLedger || null);
   const warnings = blockageWarnings(waiting, inflight, i.panes, now, idleMs);
 
   return {
