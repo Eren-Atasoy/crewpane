@@ -5,12 +5,22 @@ const path = require('node:path');
 const os = require('node:os');
 const logTarget = require('../../services/logTarget.cjs');
 const crewpaneEnv = require('../../config/crewpaneEnv.cjs');
-const secretRedactor = require('../../security/secretRedactor.cjs');
+const secretRedactorMod = require('../../security/secretRedactor.cjs');
 const { renameWithRetrySync } = require('../../../platform/atomicWrite.cjs');
 
 let LOG_PATH = null;
 let LOG_TARGET = null;
 let canWriteStdout = () => true;
+
+let activeRedactor = typeof secretRedactorMod.createSecretRedactor === 'function'
+  ? secretRedactorMod.createSecretRedactor()
+  : (typeof secretRedactorMod.redact === 'function' ? secretRedactorMod : { redact: (s) => s });
+
+function setSecretRedactor(redactor) {
+  if (redactor && typeof redactor.redact === 'function') {
+    activeRedactor = redactor;
+  }
+}
 
 function setStdoutGuard(guardFn) {
   if (typeof guardFn === 'function') {
@@ -80,7 +90,7 @@ function initLog({ app, isPackaged, mode, logsDir, homeEnv, osHome, argv, e2e, l
  * Appends a line to the active log file and stdout with secret redaction.
  */
 function logLine(rawMsg) {
-  const msg = secretRedactor.redact(String(rawMsg));
+  const msg = activeRedactor ? activeRedactor.redact(String(rawMsg)) : String(rawMsg);
   try {
     if (LOG_PATH) fs.appendFileSync(LOG_PATH, msg + '\n');
   } catch {
@@ -107,4 +117,5 @@ module.exports = {
   getLogPath,
   getLogTarget,
   setStdoutGuard,
+  setSecretRedactor,
 };

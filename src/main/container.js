@@ -164,6 +164,7 @@ function _createSystemServicesGroup(state, bootstrapCtx) {
   });
 
   state.secretRedactor = createSecretRedactor({ mask: integrationCatalog.maskSecret });
+  logger.setSecretRedactor(state.secretRedactor);
 
   state.backendEnvService = createBackendEnvService({
     repoRoot: REPO_ROOT,
