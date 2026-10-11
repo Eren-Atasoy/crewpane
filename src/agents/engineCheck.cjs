@@ -100,10 +100,29 @@ function probeWin32(cmd, deps = {}) {
  * `deps.execFile` / `deps.platform` are injectable for tests.
  */
 function probeOne(rawCmd, deps = {}) {
+  // Jev AI bir model yönlendirici (orchestrator) motorudur; harici bir CLI ikilisi yoktur,
+  // uygulamanın içine gömülüdür (built-in) ve her zaman mevcuttur.
+  if (rawCmd === 'jev') {
+    return Promise.resolve({
+      found: true,
+      path: 'built-in',
+      state: 'present',
+      reason: null,
+    });
+  }
+
   const platform = deps.platform || process.platform
   // ENG-21 (G1) — çağıranlar (checkEngines, engineAuth.resolveBin) MOTOR KİMLİĞİ
   // geçiyor; aranacak şey ise İKİLİDİR. Çeviri tek yerde, defterden.
   const cmd = binFor(rawCmd)
+  if (cmd === 'jev') {
+    return Promise.resolve({
+      found: true,
+      path: 'built-in',
+      state: 'present',
+      reason: null,
+    });
+  }
   if (platform === 'win32') return Promise.resolve(probeWin32(cmd, deps))
 
   const exec = deps.execFile || execFile
