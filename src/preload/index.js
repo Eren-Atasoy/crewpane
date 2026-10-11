@@ -24,3 +24,4 @@ require('./bridges/sync.js');
 require('./bridges/browser.js');
 require('./bridges/system.js');
 require('./bridges/test.js');
+require('./bridges/jevUiBridge.js');
