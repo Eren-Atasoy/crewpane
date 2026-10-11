@@ -23,6 +23,7 @@ function createAuthServicesBundle(deps = {}) {
     instancePaths: deps.instancePaths,
     app: deps.app,
     shell: deps.shell,
+    safeStorage: deps.safeStorage,
     logLine: deps.logLine,
     getAppWindow: () => deps.getAppWindow(),
     pushPlanLimit: (denial) => planLimitService.pushPlanLimit(denial),

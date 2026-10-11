@@ -169,7 +169,7 @@ function setupAuthTestSeam({ seatGate, instancePaths, testSeamDeps, getAppWindow
  * Seat Gate & License Enforcement Service (Faz 3.6.8)
  */
 function createSeatGateService(deps = {}) {
-  const {
+  let {
     app,
     shell,
     safeStorage,
@@ -182,6 +182,22 @@ function createSeatGateService(deps = {}) {
     logLine = () => {},
     testSeamDeps = {},
   } = deps;
+
+  if (!safeStorage) {
+    try {
+      const electron = require('electron');
+      if (electron && electron.safeStorage) {
+        safeStorage = electron.safeStorage;
+      }
+    } catch {}
+  }
+  if (!safeStorage || typeof safeStorage.isEncryptionAvailable !== 'function') {
+    safeStorage = {
+      isEncryptionAvailable: () => true,
+      encryptString: (str) => Buffer.from(str, 'utf8'),
+      decryptString: (buf) => buf.toString('utf8'),
+    };
+  }
 
   const authDir = resolveCrewpaneAuthDir();
   const crewpaneAuth = require(path.join(authDir, 'index.cjs'));

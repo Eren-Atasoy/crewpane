@@ -14,6 +14,7 @@ const {
   globalShortcut,
   Notification,
   nativeImage,
+  safeStorage,
 } = require('electron');
 
 const path = require('node:path');
@@ -313,6 +314,7 @@ function _createAuthAndWorkspaceServices(state) {
   const authBundle = createAuthServicesBundle({
     app,
     shell,
+    safeStorage,
     instancePaths,
     ptys,
     agentSettings,

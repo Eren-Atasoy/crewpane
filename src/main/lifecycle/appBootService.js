@@ -358,7 +358,13 @@ class AppBootService {
       logLine(`keychain scope migration error: ${e.message}`);
     }
 
-    if (typeof initSeatGate === 'function') initSeatGate();
+    if (typeof initSeatGate === 'function') {
+      try {
+        initSeatGate();
+      } catch (e) {
+        logLine(`[seatGate] başlatma hatası: ${e.message}`);
+      }
+    }
     if (typeof bindAccountRoot === 'function') {
       await bindAccountRoot('boot').catch((e) => logLine(`[account] bağlama hatası: ${e.message}`));
     }

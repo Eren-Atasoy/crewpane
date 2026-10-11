@@ -11,6 +11,7 @@ function createAuthService(deps = {}) {
     instancePaths,
     app,
     shell,
+    safeStorage,
     logLine = () => {},
     getAppWindow = () => null,
     pushPlanLimit = () => {},
@@ -46,6 +47,7 @@ function createAuthService(deps = {}) {
   const seatGateService = createSeatGateService({
     app,
     shell,
+    safeStorage,
     logLine,
     getAppWindow,
     instancePaths,
