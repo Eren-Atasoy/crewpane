@@ -202,4 +202,20 @@ function createSecretRedactor(opts = {}) {
   };
 }
 
-module.exports = { createSecretRedactor, MIN_SECRET_LENGTH, MAX_SECRETS };
+const defaultInstance = createSecretRedactor();
+
+module.exports = {
+  createSecretRedactor,
+  MIN_SECRET_LENGTH,
+  MAX_SECRETS,
+  register: (...args) => defaultInstance.register(...args),
+  registerEnv: (...args) => defaultInstance.registerEnv(...args),
+  redact: (...args) => defaultInstance.redact(...args),
+  redactDsnCredentials: (...args) => defaultInstance.redactDsnCredentials(...args),
+  redactTail: (...args) => defaultInstance.redactTail(...args),
+  redactDeep: (...args) => defaultInstance.redactDeep(...args),
+  maxLength: defaultInstance.maxLength,
+  size: () => defaultInstance.size(),
+  clear: () => defaultInstance.clear(),
+  defaultInstance,
+};

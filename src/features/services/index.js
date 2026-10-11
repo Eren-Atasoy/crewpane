@@ -8,6 +8,7 @@ const { registerGitIpc } = require('./gitIpc');
 const { registerTaskIpc } = require('./taskIpc');
 const { registerCodeIntelIpc } = require('./codeIntelIpc');
 const { registerWorkspaceIpc } = require('./workspaceIpc');
+const { registerSystemIpc } = require('../system');
 
 const { createIntegrationService } = require('./integrationService');
 const { createBrowserService, BrowserService } = require('./browserService');
@@ -39,5 +40,6 @@ module.exports = {
   registerTaskIpc,
   registerCodeIntelIpc,
   registerWorkspaceIpc,
+  registerSystemIpc,
 };
 

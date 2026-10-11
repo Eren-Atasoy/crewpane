@@ -28,7 +28,7 @@
   window.ptyApi.onData(({ paneId, data }) => {
     if (myPaneId && paneId !== myPaneId) return;
     term.write(data);
-    if (isAutotest) {
+    if (isAutotest && window.spikeProbe) {
       renderedBuf += data;
       window.spikeProbe.rendered(data);
     }
@@ -47,7 +47,7 @@
   window.ptyApi.onExit(({ paneId, code }) => {
     if (myPaneId && paneId !== myPaneId) return;
     term.write(`\r\n\x1b[33m[pty exited: ${code}]\x1b[0m\r\n`);
-    if (isAutotest) {
+    if (isAutotest && window.spikeProbe) {
       const ok = renderedBuf.includes('SPIKE_PTY_OK');
       window.spikeProbe.done({
         roundTripOk: ok,

@@ -1,7 +1,6 @@
 'use strict';
 
 const {
-  registerSystemIpc,
   registerGitIpc,
   registerTaskIpc,
   registerCodeIntelIpc,
@@ -17,7 +16,7 @@ const { registerSpritesIpc } = require('../../features/sprites');
 const { registerOfficeIpc } = require('../../features/office');
 const { registerResourceIpc } = require('../../features/resource');
 const { registerUpdateIpc } = require('../../features/update');
-const { registerMediaIpc } = require('../../features/system');
+const { registerMediaIpc, registerSystemIpc } = require('../../features/system');
 
 /**
  * Wires Services, Workspace, Files, Git, Worktree, and Window IPC handlers.

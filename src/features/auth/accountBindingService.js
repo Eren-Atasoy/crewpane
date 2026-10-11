@@ -120,7 +120,7 @@ async function resolveAccountSnapshot(seatGatePromise, logLine) {
   try {
     if (seatGatePromise) {
       const sg = await seatGatePromise;
-      snapshot = sg ? sg.evaluate() : null;
+      snapshot = sg && typeof sg.evaluate === 'function' ? sg.evaluate() : sg;
     }
   } catch (e) {
     logLine(`[account] oturum okunamadı (${e.message}) — anonim köke bağlanılıyor`);

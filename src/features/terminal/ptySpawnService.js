@@ -779,7 +779,8 @@ class PtySpawnService {
     const promptFileSink = buildPromptFileSink(routedOpts, this.deps.crewpaneHome(), this.deps.logLine);
     const plan = this.buildSpawnPlan(routedOpts, trustedExtra, promptFileSink);
     applyEngineApiKeyEnv(plan, this.deps.engineKeyStore(), this.deps.logLine);
-    const maskedNew = secretRedactor.registerEnv(plan.env);
+    const redactor = this.deps.secretRedactor || secretRedactor;
+    const maskedNew = redactor && typeof redactor.registerEnv === 'function' ? redactor.registerEnv(plan.env) : 0;
     if (maskedNew) this.deps.logLine(`integrations: ${maskedNew} anahtar maskeleme kapsamına alındı`);
 
     const paneId = `pane-${++this.paneSeq}`;
