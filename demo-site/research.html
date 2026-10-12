@@ -1,0 +1,139 @@
+<!doctype html>
+<!--
+  Kahve fiyatları — AgentSpace tanıtım turuyla gelen ÖRNEK sayfa (ONB-F2, senaryo sayfası).
+  Kurgusal: gerçek bir marka, kişi, adres, telefon ya da e-posta içermez (`.example`
+  alan adı RFC 2606 ile ayrılmıştır). Tamamen çevrimdışı: web fontu, CDN, analitik, uzak
+  görsel ve ağ çağrısı YOK. Sample page that ships with AgentSpace; makes no network requests.
+-->
+<html lang="tr" data-lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kahve fiyatları — tek sayfalık özet</title>
+<meta name="color-scheme" content="dark">
+<style>
+:root{
+  --bg:#1c1510; --surface:#2a2019; --text:#f6ede3; --muted:#c2ab95; --line:#45362a;
+  --accent:#d9632b; --accent2:#e9c46a;
+  --display: "Avenir Next", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --body: "Charter", "Iowan Old Style", Georgia, "Times New Roman", serif;
+}
+*,*::before,*::after{ box-sizing:border-box; }
+html{ scroll-behavior:smooth; }
+@media (prefers-reduced-motion: reduce){ html{ scroll-behavior:auto; } }
+body{ margin:0; background:var(--bg); color:var(--text); font-family:var(--body); font-size:17px; line-height:1.6; }
+[data-lang="tr"] [data-when="en"]{ display:none !important; }
+[data-lang="en"] [data-when="tr"]{ display:none !important; }
+.top{ position:sticky; top:0; display:flex; align-items:center; gap:12px; padding:12px clamp(16px,5vw,56px); background:var(--bg); border-bottom:1px solid var(--line); z-index:2; }
+.mark{ font-family:var(--display); font-weight:800; letter-spacing:.02em; }
+.mark i{ display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--accent); margin-right:8px; }
+.sp{ flex:1; }
+.lang{ display:flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+.lang button{ background:none; border:0; color:var(--muted); padding:4px 10px; font:600 12px var(--display); cursor:pointer; }
+.lang button[aria-pressed="true"]{ background:var(--text); color:var(--bg); }
+.btn{ display:inline-block; background:var(--accent); color:#fff; border:0; border-radius:10px; padding:10px 18px; font:700 15px var(--display); text-decoration:none; cursor:pointer; }
+main{ max-width:980px; margin:0 auto; padding:0 clamp(16px,5vw,56px) 64px; }
+section{ padding:56px 0; border-bottom:1px solid var(--line); }
+.kicker{ font:700 12px var(--display); letter-spacing:.14em; text-transform:uppercase; color:var(--accent2); }
+h1{ font-family:var(--display); font-size:clamp(34px,6vw,60px); line-height:1.05; margin:14px 0 18px; }
+h2{ font-family:var(--display); font-size:clamp(24px,3.4vw,34px); margin:0 0 18px; color:var(--accent); }
+.lede{ max-width:60ch; color:var(--muted); font-size:19px; }
+ul.grid{ list-style:none; padding:0; margin:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; }
+ul.grid li{ background:var(--surface); border:1px solid var(--line); border-top:4px solid var(--accent); border-radius:12px; padding:16px; }
+ul.grid b{ display:block; font-family:var(--display); margin-bottom:6px; }
+ul.grid .d{ color:var(--muted); font-size:15px; }
+.screen{ background:var(--surface); border:1px solid var(--line); border-radius:18px; padding:28px; font:700 22px var(--display); }
+.card{ background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:22px; max-width:560px; }
+.field{ display:flex; flex-direction:column; gap:6px; margin-bottom:14px; }
+.field label{ font:600 13px var(--display); color:var(--muted); }
+.field input{ font:16px var(--body); padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--text); }
+.demo-filled{ outline:2px solid var(--accent2); outline-offset:1px; }
+.sample-msg{ display:none; margin-top:14px; padding:12px; border-radius:10px; background:var(--bg); border:1px dashed var(--accent); }
+.sample-msg.on{ display:block; }
+footer{ text-align:center; color:var(--muted); font-size:13px; padding:24px 16px 40px; }
+@media (max-width:520px){ .top .btn{ display:none; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <span class="mark"><i aria-hidden="true"></i><span data-when="tr">Kahve fiyatları</span><span data-when="en">Coffee prices</span></span>
+  <span class="sp"></span>
+  <div class="lang" role="group" aria-label="Dil / Language">
+    <button type="button" id="btn-tr" aria-pressed="true" onclick="setLang('tr')">TR</button>
+    <button type="button" id="btn-en" aria-pressed="false" onclick="setLang('en')">EN</button>
+  </div>
+  <a class="btn" href="#s5"><span data-when="tr">Göster</span><span data-when="en">Show</span></a>
+</header>
+<main>
+  <section id="s1" data-step="1">
+    <p class="kicker"><span data-when="tr">12 dükkân · 5 kaynak</span><span data-when="en">12 shops · 5 sources</span></p>
+    <h1><span data-when="tr">Bir fincan filtre kahve ortalama 95 TL.</span><span data-when="en">A cup of filter coffee costs 95 TL on average.</span></h1>
+    <p class="lede"><span data-when="tr">Şehrin 12 kahve dükkânının menüsü, 5 farklı kaynaktan toplandı ve tek tek karşılaştırıldı.</span><span data-when="en">The menus of 12 coffee shops in the city were collected from 5 different sources and compared one by one.</span></p>
+  </section>
+  <section id="s2" data-step="2">
+    <h2><span data-when="tr">Öne çıkanlar</span><span data-when="en">Highlights</span></h2>
+    <ul class="grid"><li><b><span data-when="tr">En uygun</span><span data-when="en">Cheapest</span></b><span class="d"><span data-when="tr">Semt kahvecileri, 70 TL.</span><span data-when="en">Neighbourhood cafés, 70 TL.</span></span></li><li><b><span data-when="tr">En pahalı</span><span data-when="en">Most expensive</span></b><span class="d"><span data-when="tr">Zincir dükkânlar, 130 TL.</span><span data-when="en">Chain shops, 130 TL.</span></span></li><li><b><span data-when="tr">Fark</span><span data-when="en">Difference</span></b><span class="d"><span data-when="tr">Yüzde 85.</span><span data-when="en">85 per cent.</span></span></li></ul>
+  </section>
+  <section id="s3" data-step="3">
+    <h2><span data-when="tr">Nasıl toplandı?</span><span data-when="en">How it was collected</span></h2>
+    <div class="screen"><span data-when="tr">Menü fotoğrafları, dükkân sayfaları ve üç sipariş uygulaması; her fiyat en az iki kaynakta arandı.</span><span data-when="en">Menu photos, shop pages and three ordering apps; every price was checked in at least two sources.</span></div>
+  </section>
+  <section id="s4" data-step="4">
+    <h2><span data-when="tr">Semtlere göre</span><span data-when="en">By district</span></h2>
+    <ul class="grid"><li><b><span data-when="tr">Kadıköy</span><span data-when="en">Kadıköy</span></b><span class="d"><span data-when="tr">Ortalama 102 TL.</span><span data-when="en">Average 102 TL.</span></span></li><li><b><span data-when="tr">Beşiktaş</span><span data-when="en">Beşiktaş</span></b><span class="d"><span data-when="tr">Ortalama 110 TL.</span><span data-when="en">Average 110 TL.</span></span></li></ul>
+    <p style="margin-top:18px"><a href="mailto:ozet@kahvefiyat.example">ozet@kahvefiyat.example</a></p>
+  </section>
+  <section id="s5" data-step="5">
+    <h2><span data-when="tr">Semtine göre bak</span><span data-when="en">Look up your district</span></h2>
+    <p class="lede"><span data-when="tr">Semtini yaz, o semtin ortalamasını gösterelim.</span><span data-when="en">Type your district and we will show its average.</span></p>
+    <div class="card">
+      <form id="booking" novalidate>
+        <div class="field"><label for="f0"><span data-when="tr">Semt</span><span data-when="en">District</span></label><input id="f0" type="text" autocomplete="off" data-demo="Kadıköy"></div>
+        <button class="btn" type="submit"><span data-when="tr">Göster</span><span data-when="en">Show</span></button>
+        <p class="sample-msg" id="sample-msg" role="status"><span data-when="tr"><b>Bu bir örnek sayfa.</b> Hiçbir bilgi hiçbir yere gönderilmiyor; sayfa tamamen bilgisayarınızda açılıyor.</span><span data-when="en"><b>This is a sample page.</b> Nothing is sent anywhere; the page runs entirely on your computer.</span></p>
+      </form>
+    </div>
+  </section>
+</main>
+<footer><span data-when="tr">örnek sayfa · kurgusal · çevrimdışı çalışır</span><span data-when="en">sample page &middot; fictional &middot; works offline</span></footer>
+<script>
+function setLang(lang){
+  var l = (lang === 'en') ? 'en' : 'tr';
+  var root = document.documentElement;
+  root.setAttribute('data-lang', l);
+  root.setAttribute('lang', l);
+  document.title = (l === 'en') ? "Coffee prices - a one-page summary" : "Kahve fiyatları — tek sayfalık özet";
+  document.getElementById('btn-tr').setAttribute('aria-pressed', String(l === 'tr'));
+  document.getElementById('btn-en').setAttribute('aria-pressed', String(l === 'en'));
+}
+(function(){
+  var q = '';
+  try { q = (location.search || '') + (location.hash || ''); } catch (e) { q = ''; }
+  if (/(^|[?&#])lang=en\b/.test(q) || /#en$/.test(q)) setLang('en');
+})();
+/* Form ÖRNEKTİR: hiçbir yere göndermez ve bunu söyler. */
+document.getElementById('booking').addEventListener('submit', function(e){
+  e.preventDefault();
+  document.getElementById('sample-msg').classList.add('on');
+});
+
+/* ONB-F2 — TANITIM TURU (yalnız bu sayfanın içinde, ağ yok):
+   ?accent=warm|olive|navy → kullanıcının turdaki karar rengi (KAPALI küme; başka değer yok sayılır).
+   ?autofill=1            → "ekipten biri sayfayı deniyor": bölümler sırayla, sonra form dolar ve gönderilir.
+   Form yine hiçbir yere göndermez; örnek mesajı görünür. */
+(function(){
+  var q = ''; try { q = location.search || ''; } catch (e) { q = ''; }
+  var C = { warm: '#d9632b', olive: '#5f7f1f', navy: '#2d4f9e' };
+  var m = /[?&]accent=(warm|olive|navy)(?:&|$)/.exec(q);
+  if (m) document.documentElement.style.setProperty('--accent', C[m[1]]);
+  if (!/[?&]autofill=1(?:&|$)/.test(q)) return;
+  var form = document.getElementById('booking'); if (!form) return;
+  var fields = Array.prototype.slice.call(form.querySelectorAll('[data-demo]'));
+  function go(id){ var el = document.getElementById(id); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  [['s2', 1300], ['s3', 2600], ['s4', 3900], ['s5', 5200]].forEach(function(p){ setTimeout(function(){ go(p[0]); }, p[1]); });
+  fields.forEach(function(f, i){ setTimeout(function(){ f.value = f.getAttribute('data-demo'); f.classList.add('demo-filled'); }, 7000 + i * 1100); });
+  setTimeout(function(){ if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event('submit', { cancelable: true })); }, 7000 + fields.length * 1100 + 600);
+})();
+</script>
+</body>
+</html>

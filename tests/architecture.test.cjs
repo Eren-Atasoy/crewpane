@@ -80,6 +80,7 @@ test('Architecture: Root directory remains clean (no loose cjs/js files)', (t) =
     'package-lock.json',
     // Project
     'ARCHITECTURE.md',
+    'CREWPANE_FEATURES.md',
     'CREWPANE_ROADMAP.md',
     'README.md',
     'bakedBuild.json',

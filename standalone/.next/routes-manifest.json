@@ -29,6 +29,78 @@
         "nxtPfilename": "nxtPfilename"
       },
       "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/comments",
+      "regex": "^/api/reports/([^/]+?)/comments(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/comments(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/design",
+      "regex": "^/api/reports/([^/]+?)/design(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/design(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/draft",
+      "regex": "^/api/reports/([^/]+?)/draft(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/draft(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/evidence",
+      "regex": "^/api/reports/([^/]+?)/evidence(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/evidence(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/page",
+      "regex": "^/api/reports/([^/]+?)/page(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/page(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/page-state",
+      "regex": "^/api/reports/([^/]+?)/page\\-state(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/page\\-state(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/sayfa-bagi",
+      "regex": "^/api/reports/([^/]+?)/sayfa\\-bagi(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/sayfa\\-bagi(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/state",
+      "regex": "^/api/reports/([^/]+?)/state(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/state(?:/)?$"
+    },
+    {
+      "page": "/api/reports/[filename]/versions",
+      "regex": "^/api/reports/([^/]+?)/versions(?:/)?$",
+      "routeKeys": {
+        "nxtPfilename": "nxtPfilename"
+      },
+      "namedRegex": "^/api/reports/(?<nxtPfilename>[^/]+?)/versions(?:/)?$"
     }
   ],
   "staticRoutes": [
@@ -61,6 +133,18 @@
       "regex": "^/api/reports(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/api/reports(?:/)?$"
+    },
+    {
+      "page": "/api/reports/claude-esleme",
+      "regex": "^/api/reports/claude\\-esleme(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/reports/claude\\-esleme(?:/)?$"
+    },
+    {
+      "page": "/api/reports/drafts",
+      "regex": "^/api/reports/drafts(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/api/reports/drafts(?:/)?$"
     },
     {
       "page": "/demo/office",
@@ -115,6 +199,12 @@
       "regex": "^/popout(?:/)?$",
       "routeKeys": {},
       "namedRegex": "^/popout(?:/)?$"
+    },
+    {
+      "page": "/rapor-onizleme",
+      "regex": "^/rapor\\-onizleme(?:/)?$",
+      "routeKeys": {},
+      "namedRegex": "^/rapor\\-onizleme(?:/)?$"
     },
     {
       "page": "/reports",

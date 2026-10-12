@@ -1,6 +1,6 @@
 {
-  "catalogVersion": "0.6.0",
-  "generatedAt": "2026-09-15",
+  "catalogVersion": "0.7.0",
+  "generatedAt": "2026-10-02",
   "skills": [
     {
       "name": "adversarial-ux-test",
@@ -98,7 +98,7 @@
       "license": "MIT",
       "source": {
         "kind": "self",
-        "url": "https://github.com/crewpane/crewpane",
+        "url": "https://github.com/muratify/agentdesk",
         "upstreamCommit": "9862685",
         "fetchedAt": "2026-09-07"
       },
@@ -135,6 +135,7 @@
       "sha256": "c3be37370a7aa7e57d3eb10af19eff5e1a1787af00cbc3f77fd02277fc95fbed",
       "sizeBytes": 10087,
       "defaultEnabled": false,
+      "recommended": true,
       "suggestedRoles": [
         "backend",
         "frontend",
@@ -158,7 +159,7 @@
       },
       "sha256": "223c444dc9a5a2daa5553ba0646791c63e27e638019696c4b1a2d1cec643d9f8",
       "sizeBytes": 5539,
-      "defaultEnabled": false,
+      "defaultEnabled": true,
       "suggestedRoles": [
         "code-review",
         "qa"
@@ -259,10 +260,10 @@
     {
       "name": "video-arastir",
       "description": "YouTube videosunu DUSUK-TOKEN arastir — urun CLI tek Gemini cagrisi yapar, ajana yalniz ozet + zaman damgalari + maliyet satiri doner (~300 token). Kullan — \"su videoyu arastir\", \"rakip videosunu ozetle\", \"YouTube videosundan ne ogrenebiliriz\", \"bu egitim videosunda hangi API/kod kullanilmis\". KULLANMA — YouTube disi kaynak (Vimeo/Loom/mp4 dosyasi) v1 kapsami disinda; videoyu ELLE indirme, kare cikarma, transcript yapistirma.",
-      "license": "LicenseRef-CrewPane-Proprietary",
+      "license": "LicenseRef-Muratify-Proprietary",
       "source": {
         "kind": "self",
-        "url": "https://github.com/crewpane/crewpane",
+        "url": "https://github.com/muratify/agentdesk",
         "upstreamCommit": "7e69c1ac",
         "fetchedAt": "2026-08-18"
       },
@@ -272,6 +273,51 @@
         "gemini-key"
       ],
       "riskNotes": ""
+    },
+    {
+      "name": "agentspace-rapor",
+      "description": "Sonuc raporunu AgentSpace'in kendi rapor sistemine yaz — rapor_yaz araci (yoksa agentspace report yaz, o da yoksa dosya), zorunlu hukum, blok sozlugu, gorselli rapor = HTML rapor (bicim html + sayfa), karar kutusu. Kullan — \"raporu yaz\", \"sonuc raporu\", \"gorselli rapor\", \"maket goster\", \"karar sor\", \"tasarimi raporla\", \"Claude sayfasi yerine\". KULLANMA — sohbette tek satirlik cevap icin (agentspace-sohbet); Claude Artifact'e ya da baska bir yere yayinlamak icin (YASAK).",
+      "license": "LicenseRef-Muratify-Proprietary",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/muratify/agentdesk",
+        "upstreamCommit": "3e26cb40",
+        "fetchedAt": "2026-09-25"
+      },
+      "sha256": "5ccd41e9442294167817131989efe08f9428c5abf56cb6744b2399685364b10e",
+      "sizeBytes": 22915,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "agentspace-sohbet",
+      "description": "Takim sohbetine ZENGIN mesaj yaz — kod blogu, tablo, kopyala-yapistir notu, gorsel/dosya, rapor ve gorev baglantisi. Kullan — \"kopyala yapistir seklinde paylas\", \"kodu sohbete at\", \"ekran goruntusunu gonder\", \"tabloyu sohbette goster\", \"raporu sohbete bagla\". KULLANMA — tek cumlelik cevap icin ([ODA] satiri yeter); uzun cikti icin (rapora yaz, sohbette bagla).",
+      "license": "LicenseRef-Muratify-Proprietary",
+      "source": {
+        "kind": "self",
+        "url": "https://github.com/muratify/agentdesk",
+        "upstreamCommit": "af8fcf3e",
+        "fetchedAt": "2026-09-24"
+      },
+      "sha256": "0a133e82b0a1a9e7652ba3d509c52104663f208d2c397d9c6c7745ccaf718f78",
+      "sizeBytes": 3618,
+      "requires": [],
+      "riskNotes": ""
+    },
+    {
+      "name": "frontend-design",
+      "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one. Helps with aesthetic direction, typography, and making choices that don't read as templated defaults.",
+      "license": "Apache-2.0",
+      "source": {
+        "kind": "anthropic",
+        "url": "https://github.com/anthropics/skills",
+        "upstreamCommit": "41bbe19",
+        "fetchedAt": "2026-10-02"
+      },
+      "sha256": "6df3ac61fddaff7f8404930c9968aaace68ce9ed8814be7a781e153eedfcede0",
+      "sizeBytes": 10234,
+      "requires": [],
+      "riskNotes": "Anthropic'in açık kaynak tasarım rehberi (Apache-2.0). Metni değiştirilmedi; lisans metni uygulamayla birlikte gelir."
     },
     {
       "name": "motion-studio",

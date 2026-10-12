@@ -8,13 +8,95 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
-// src/preload/bridges/platform.js
-var require_platform = __commonJS({
-  "src/preload/bridges/platform.js"() {
-    "use strict";
-    var { contextBridge } = require("electron");
-    var platformStr = String(process.platform || "");
-    contextBridge.exposeInMainWorld("crewpanePlatform", platformStr);
+// src/preload/basePreload.js
+var require_basePreload = __commonJS({
+  "src/preload/basePreload.js"() {
+    var { contextBridge: electronContextBridge, ipcRenderer, webUtils } = require("electron");
+    var BRIDGES_FLAG = "--agentspace-bridges=";
+    var CREWPANE_BRIDGES_FLAG = "--crewpane-bridges=";
+    var bridgesHit = (process.argv || []).find((a) => typeof a === "string" && (a.startsWith(BRIDGES_FLAG) || a.startsWith(CREWPANE_BRIDGES_FLAG)));
+    var flagUsed = bridgesHit && bridgesHit.startsWith(CREWPANE_BRIDGES_FLAG) ? CREWPANE_BRIDGES_FLAG : BRIDGES_FLAG;
+    var bridgesRaw = bridgesHit ? bridgesHit.slice(flagUsed.length) : "";
+    var bridgesAll = !bridgesHit || bridgesRaw === "*";
+    var bridgesAllowed = /* @__PURE__ */ new Set();
+    var bridgeKeysAllowed = /* @__PURE__ */ new Map();
+    for (const item of bridgesRaw && !bridgesAll ? bridgesRaw.split(",") : []) {
+      const dot = item.indexOf(".");
+      if (dot === -1) {
+        if (item) bridgesAllowed.add(item);
+        continue;
+      }
+      const ns = item.slice(0, dot);
+      if (!bridgeKeysAllowed.has(ns)) bridgeKeysAllowed.set(ns, []);
+      bridgeKeysAllowed.get(ns).push(item.slice(dot + 1));
+    }
+    var contextBridge = {
+      exposeInMainWorld(name, api) {
+        if (bridgesAll || bridgesAllowed.has(name)) {
+          electronContextBridge.exposeInMainWorld(name, api);
+          return;
+        }
+        const keys = bridgeKeysAllowed.get(name);
+        if (!keys || !api || typeof api !== "object") return;
+        const subset = {};
+        for (const k of keys) if (Object.prototype.hasOwnProperty.call(api, k)) subset[k] = api[k];
+        electronContextBridge.exposeInMainWorld(name, subset);
+      }
+    };
+    var SUPABASE_DB_FLAG = "--agentspace-db=";
+    var CREWPANE_DB_FLAG = "--crewpane-db=";
+    function decodeSupabaseDbTarget(argv) {
+      const hit = (argv || []).find((a) => typeof a === "string" && (a.startsWith(SUPABASE_DB_FLAG) || a.startsWith(CREWPANE_DB_FLAG)));
+      if (!hit) {
+        return {
+          url: "http://127.0.0.1:54321",
+          anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0",
+          schema: "public",
+          channel: "dev",
+          isE2E: false
+        };
+      }
+      const flag = hit.startsWith(SUPABASE_DB_FLAG) ? SUPABASE_DB_FLAG : CREWPANE_DB_FLAG;
+      try {
+        const bin = atob(hit.slice(flag.length));
+        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        const t = JSON.parse(new TextDecoder("utf-8").decode(bytes));
+        return t && t.url ? t : null;
+      } catch {
+        return {
+          url: "http://127.0.0.1:54321",
+          anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0",
+          schema: "public",
+          channel: "dev",
+          isE2E: false
+        };
+      }
+    }
+    contextBridge.exposeInMainWorld("agentspacePlatform", String(process.platform || ""));
+    var TITLEBAR_FLAG = "--agentspace-titlebar=";
+    var CREWPANE_TITLEBAR_FLAG = "--crewpane-titlebar=";
+    var titleBarHit = (process.argv || []).find((a) => typeof a === "string" && (a.startsWith(TITLEBAR_FLAG) || a.startsWith(CREWPANE_TITLEBAR_FLAG)));
+    var titleBarMode = titleBarHit ? titleBarHit.slice(titleBarHit.indexOf("=") + 1) : process.platform === "darwin" ? "mac" : "overlay";
+    var fullScreen = false;
+    var fsListeners = /* @__PURE__ */ new Set();
+    ipcRenderer.on("titlebar:fullscreen", (_e, on) => {
+      fullScreen = !!on;
+      for (const cb of fsListeners) cb(fullScreen);
+    });
+    var titleBarApi = {
+      mode: titleBarMode,
+      /** mac: tam ekrana girince/çıkınca (trafik ışıkları gizlenir/geri gelir). */
+      onFullScreen(cb) {
+        fsListeners.add(cb);
+        cb(fullScreen);
+        return () => fsListeners.delete(cb);
+      },
+      /** overlay (Windows): sistem düğmelerinin zemin + simge rengi (#rrggbb). */
+      setOverlayColors(colors) {
+        ipcRenderer.send("titlebar:overlay-colors", colors);
+      }
+    };
+    contextBridge.exposeInMainWorld("agentspaceTitleBar", titleBarApi);
     var perfNum = (name, fallback) => {
       const raw = String(process.env[name] ?? "").trim();
       if (!raw) return fallback;
@@ -26,18 +108,146 @@ var require_platform = __commonJS({
       if (!raw) return fallback;
       return raw !== "0" && raw.toLowerCase() !== "false";
     };
-    var perfSettings = {
-      termFlushHz: perfNum("CREWPANE_TERM_FLUSH_HZ", 30),
-      termHiddenFlushHz: perfNum("CREWPANE_TERM_HIDDEN_FLUSH_HZ", 4),
-      termWriteRecovery: perfFlag("CREWPANE_TERM_WRITE_RECOVERY", true),
-      termBlankRecovery: perfFlag("CREWPANE_TERM_BLANK_RECOVERY", true)
-    };
-    contextBridge.exposeInMainWorld("crewpanePerf", perfSettings);
-    var LOCALE_FLAG = "--crewpane-locale=";
+    contextBridge.exposeInMainWorld("agentspacePerf", {
+      termFlushHz: perfNum("AGENTSPACE_TERM_FLUSH_HZ", 30),
+      termHiddenFlushHz: perfNum("AGENTSPACE_TERM_HIDDEN_FLUSH_HZ", 4),
+      termWriteRecovery: perfFlag("AGENTSPACE_TERM_WRITE_RECOVERY", true),
+      // TERM-BLANK-01 — boş/kopuk pane'in yerinde kurtarılması (kontrol kolu).
+      termBlankRecovery: perfFlag("AGENTSPACE_TERM_BLANK_RECOVERY", true),
+      // PERF-PTY-RESIZE-01 — aynı boyutu pty'ye her fit'te yeniden basan eski yol (kontrol kolu: =1).
+      ptyResizeAlways: perfFlag("AGENTSPACE_PTY_RESIZE_ALWAYS", false),
+      // PERF-OFFICE-SWITCH-01 — takım geçişinde ofisin eski "her şeyi baştan kur" yolu (kontrol kolu).
+      officeSwitchLegacy: perfFlag("AGENTSPACE_OFFICE_SWITCH_LEGACY", false),
+      // PERF-OFFICE-GATE-01 — gizli açılan ofisin eski uyutma sırası (kontrol kolu).
+      officeGateLegacy: perfFlag("AGENTSPACE_OFFICE_GATE_LEGACY", false),
+      // PERF-MEM-01 — görünür ama 10 sn dokunulmayan ofisin kare hızı (kontrol kolu: =30 ya da =0 → boşta da 30).
+      officeIdleFps: perfNum("AGENTSPACE_OFFICE_IDLE_FPS", 10),
+      // PERF-OFFICE-IDLE-01 — çizime giren durum değişmediyse ofis karesi çizilmez (kontrol kolu: =0 → her kare çizilir).
+      officeRenderSkip: perfFlag("AGENTSPACE_OFFICE_RENDER_SKIP", true),
+      // OFFICE-GPU-01 — ofis Graphics dolguları Quad batch'inden (kontrol kolu: =0 → eski TriFlat yolu).
+      officeQuadFill: perfFlag("AGENTSPACE_OFFICE_QUAD_FILL", true),
+      // OFFICE-HIDE-DEEP-01 — gizli ofis N dk sonra sökülür (oyun + dokular + WebGL bağlamı bırakılır);
+      // gizliyken takım geçişi ofise ulaşmaz (kontrol kolu: =0 → sökme yok / donma yok).
+      officeDeepHideMin: perfNum("AGENTSPACE_OFFICE_DEEP_HIDE_MIN", 2),
+      officeHideFreeze: perfFlag("AGENTSPACE_OFFICE_HIDE_FREEZE", true),
+      // PERF-MEM-01 — iç tarayıcıda N dk dokunulmayan arka plan sekmesi uyur (kontrol kolu: =0 → uyutma yok).
+      browserTabSleepMin: perfNum("AGENTSPACE_BROWSER_TAB_SLEEP_MIN", 15),
+      // PERF-COVERS-01 — görev kapaklarının eski "her takım geçişinde hepsini yeniden çek" yolu (kontrol kolu).
+      coversLegacy: perfFlag("AGENTSPACE_COVERS_LEGACY", false),
+      // PERF-SHARED-HOOKS-01 — motor/kimlik/karar kancalarının eski "her örnek kendi işini açar" yolu (kontrol kolu).
+      sharedHooksLegacy: perfFlag("AGENTSPACE_SHARED_HOOKS_LEGACY", false),
+      // PERF-TASKS-LEAN-01 — pano görevlerini eski "select=*" (detay metni dahil) yoluyla çek (kontrol kolu).
+      tasksFullSelect: perfFlag("AGENTSPACE_TASKS_FULL_SELECT", false),
+      // PERF-DOCK-FREEZE-01 — arkadaki Görevler/Raporlar/Kararlar/Hafıza/Skiller bekler (kontrol kolu: =0).
+      dockFreeze: perfFlag("AGENTSPACE_DOCK_FREEZE", true),
+      // PERF-TASK-EVENT-01 — tek görev güncellemesi: yalnız değişen pano kartı çizilir, görev kodu araması
+      // dizinli, sıralama anahtarı değişmeyen satır yeniden sıralanmaz (kontrol kolu: =0 → üçü de eski yol).
+      taskEventFast: perfFlag("AGENTSPACE_TASK_EVENT_FAST", true),
+      // PERF-SWITCH-STAGE-01 — takım geçişinde pane'ler kare kare etkinleşir (odaklı önce) ve gizliyken
+      // düzeni değişen pane boşta önceden boyutlanır (kontrol kolu: =0 → ikisi de eski yol).
+      switchStage: perfFlag("AGENTSPACE_SWITCH_STAGE", true),
+      // UI-CHAT-TAB-01 — takım sohbeti kendi dock sekmesi (varsayılan: solda sohbet, ortada Ofis) +
+      // Yardımcı paneli kendiliğinden daralır (kontrol kolu: =0 → sohbet ofisin içinde, eski varsayılan düzen).
+      uiChatTab: perfFlag("AGENTSPACE_UI_CHAT_TAB", true),
+      // BOARD-PERF-01 — Görevler panosu: kapsam tıkları (sprint, Pano/Liste, daha göster) geçiş olarak
+      // dilimlenir ve konum değişmiyorsa kaydırma yazılmaz (kontrol kolu: =0 → ikisi de eski yol).
+      boardPerf: perfFlag("AGENTSPACE_BOARD_PERF", true),
+      // PERF-SWITCH-STAGE-02 — gizlenen takımın terminalleri WebGL bağlamını tutar (bütçe dolunca önce
+      // gizliler gider), bırakılan bağlam hemen serbest kalır (kontrol kolu: =0 → her geçişte yeniden kurulur).
+      switchStage2: perfFlag("AGENTSPACE_SWITCH_STAGE2", true),
+      // PANE-RESIZE-PERF-01 — pane aç/kapat/büyüt/ayraç: terminal yeniden boyutu tek gözlemci + kare bütçeli
+      // kuyrukta (odak önce, sığmayan sonraki kareye, büyüt geçişi bitince bir kez) (kontrol kolu: =0 → eski yol).
+      paneResizePerf: perfFlag("AGENTSPACE_PANE_RESIZE_PERF", true),
+      // PERF-IDLE-POLISH-01 — ofis araç çubuğu yalnız eylem takılınca/sökülünce ölçer (boyut değişimini
+      // ResizeObserver getirir), ipucu kartı yalnız bekleyen ipucu varken yoklar (kontrol kolu: =0 → ikisi de eski yol).
+      idlePolish: perfFlag("AGENTSPACE_IDLE_POLISH", true)
+    });
+    if (perfFlag("AGENTSPACE_RENDERER_STALL_TRACE", true)) {
+      const PERIOD_MS = 250;
+      const RIC_TIMEOUT_MS = 100;
+      const CANDIDATE_GAP_MS = 500;
+      const LOAF_KEEP_MS = 200;
+      const DETAIL_DELAY_MS = 150;
+      const loafs = [];
+      let observer = null;
+      const keep = (entries) => {
+        for (const e of entries) {
+          if (e.duration < LOAF_KEEP_MS) continue;
+          loafs.push(e);
+          if (loafs.length > 16) loafs.shift();
+        }
+      };
+      try {
+        observer = new PerformanceObserver((list) => keep(list.getEntries()));
+        observer.observe({ type: "long-animation-frame", buffered: false });
+      } catch {
+        observer = null;
+      }
+      const fileOf = (url) => String(url || "").split(/[?#]/)[0].split(/[\\/]/).pop();
+      const summarize = (from, to) => {
+        if (observer) {
+          try {
+            keep(observer.takeRecords());
+          } catch {
+          }
+        }
+        let loafMs = 0;
+        let scriptMs = 0;
+        let renderMs = 0;
+        const byScript = /* @__PURE__ */ new Map();
+        for (const e of loafs) {
+          const end = e.startTime + e.duration;
+          if (end <= from || e.startTime >= to) continue;
+          loafMs += e.duration;
+          if (e.renderStart > 0) renderMs += end - e.renderStart;
+          for (const s of e.scripts || []) {
+            scriptMs += s.duration;
+            const label = `${s.sourceFunctionName || s.invoker || "?"}@${fileOf(s.sourceURL)}:${s.sourceCharPosition}`;
+            byScript.set(label, (byScript.get(label) || 0) + s.duration);
+          }
+        }
+        const top = [...byScript.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+        return { to, loafMs, scriptMs, renderMs, top };
+      };
+      let lastT = null;
+      const beat = () => {
+        const t = performance.now();
+        try {
+          ipcRenderer.send("perf:heartbeat", { t });
+        } catch {
+        }
+        if (lastT !== null && t - lastT >= CANDIDATE_GAP_MS) {
+          const from = lastT;
+          setTimeout(() => {
+            try {
+              ipcRenderer.send("perf:stall-detail", summarize(from, t));
+            } catch {
+            }
+          }, DETAIL_DELAY_MS);
+        }
+        lastT = t;
+        setTimeout(() => {
+          if (typeof requestIdleCallback === "function") requestIdleCallback(beat, { timeout: RIC_TIMEOUT_MS });
+          else beat();
+        }, PERIOD_MS);
+      };
+      beat();
+      contextBridge.exposeInMainWorld("agentspaceStallTrace", {
+        noteTeam: (team) => {
+          try {
+            ipcRenderer.send("perf:team", String(team ?? "").slice(0, 64));
+          } catch {
+          }
+        }
+      });
+    }
+    var LOCALE_FLAG = "--agentspace-locale=";
+    var CREWPANE_LOCALE_FLAG = "--crewpane-locale=";
     function decodeLocale(argv) {
-      const hit = (argv || []).find((a) => typeof a === "string" && a.startsWith(LOCALE_FLAG));
+      const hit = (argv || []).find((a) => typeof a === "string" && (a.startsWith(LOCALE_FLAG) || a.startsWith(CREWPANE_LOCALE_FLAG)));
       if (!hit) return null;
-      const parts = hit.slice(LOCALE_FLAG.length).split(":");
+      const flag = hit.startsWith(LOCALE_FLAG) ? LOCALE_FLAG : CREWPANE_LOCALE_FLAG;
+      const parts = hit.slice(flag.length).split(":");
       const locale = parts[0];
       const preference = parts[1];
       if (locale !== "tr" && locale !== "en") return null;
@@ -46,45 +256,33 @@ var require_platform = __commonJS({
         preference: preference === "tr" || preference === "en" || preference === "system" ? preference : "system"
       };
     }
-    var localeState = decodeLocale(process.argv);
-    if (localeState) {
-      contextBridge.exposeInMainWorld("crewpaneLocale", localeState);
-    }
-  }
-});
-
-// src/preload/bridges/database.js
-var require_database = __commonJS({
-  "src/preload/bridges/database.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    var SUPABASE_DB_FLAG = "--crewpane-db=";
-    function decodeSupabaseDbTarget(argv) {
-      const hit = (argv || []).find((a) => typeof a === "string" && a.startsWith(SUPABASE_DB_FLAG));
-      if (!hit) return null;
+    function liveLocale() {
       try {
-        const bin = atob(hit.slice(SUPABASE_DB_FLAG.length));
-        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        const t = JSON.parse(new TextDecoder("utf-8").decode(bytes));
-        return t && t.url ? t : null;
+        const s = ipcRenderer.sendSync("locale:get");
+        if (!s || typeof s !== "object") return null;
+        return decodeLocale([`${LOCALE_FLAG}${s.locale}:${s.preference}`]);
       } catch {
         return null;
       }
     }
+    var localeState = liveLocale() || decodeLocale(process.argv) || { locale: "tr", preference: "system" };
+    if (localeState) {
+      contextBridge.exposeInMainWorld("agentspaceLocale", localeState);
+    }
     var supabaseDbTarget = decodeSupabaseDbTarget(process.argv);
     if (supabaseDbTarget) {
-      const dbBridgeObject = {
+      const dbApi = {
         url: supabaseDbTarget.url,
         anonKey: supabaseDbTarget.anonKey,
-        // ADP-621 — hangi SCHEMA: bulut crewpane-id'de uygulama tabloları `app` altında
+        // ADP-621 — hangi SCHEMA: bulut muratify-id'de uygulama tabloları `app` altında
         // (`public` = üyelik/fatura), yerel + e2e stack'lerde `public`te. Bu alan kabloda
         // düşerse renderer bulutta yanlış schema'yı sorgular ve HER sorgu 404 döner.
         schema: supabaseDbTarget.schema || void 0,
-        // ADP-622 — KİMLİK: 'crewpane-id' ise app DB, jetonu imzalayan projeyle AYNI
+        // ADP-622 — KİMLİK: 'muratify-id' ise app DB, jetonu imzalayan projeyle AYNI
         // projedir (ADP-621 kararı) → istemci her isteğe kullanıcının access token'ını
         // takar ve `auth.uid()` app schema'sında çözülür. Alan yoksa/başka değerse
         // istemci bugünkü gibi ANON key ile kurulur (yerel 54321, e2e 55321).
-        auth: supabaseDbTarget.auth === "crewpane-id" ? "crewpane-id" : void 0,
+        auth: supabaseDbTarget.auth === "muratify-id" ? "muratify-id" : void 0,
         // Jetonu main ÜRETİR (safeStorage'daki oturumdan, süresi dolmuşsa SESSİZ
         // yenileyerek). Renderer jetonu saklamaz — her ihtiyaçta buradan ister; bu
         // yüzden `auth` kanalı bir DEĞER değil bir FONKSİYONDUR (bayat jeton olmasın).
@@ -94,18 +292,7 @@ var require_database = __commonJS({
         // ekranda görünsün. Alan yoksa (eski shell) rozet sessizce gizlenir.
         channel: typeof supabaseDbTarget.channel === "string" ? supabaseDbTarget.channel : void 0,
         customerBuild: supabaseDbTarget.customerBuild === true ? true : void 0,
-        // ENV-01 Faz 3 — KARIŞIM KARARI (yalnız `warn` seviyesinde gelir). Rozet bunu
-        // ÜRETMEZ, okur. ⛔ BU BEYAZ LİSTE BİR KAPIDIR: main tarafında alanı eklemek
-        // YETMEZ, buraya yazılmayan alan renderer'a HİÇ ULAŞMAZ ve rozet sessizce
-        // görünmez kalır (ENV-02 Faz 3'te ölçüldü: main `env`i geçiriyordu, preload
-        // düşürüyordu, `window.crewpaneDb.env` undefined'dı).
-        // ⛔ `message` BİLEREK GEÇMİYOR: o metin ana sürecin TÜRKÇE log cümlesidir ve
-        // arayüzde kullanılırsa İngilizce oturumda Türkçe bir uyarı çıkar. Rozet METNİ
-        // sözlükten (`env.badge.mixed*`) üretir; kabloda yalnız MAKİNE JETONU gider.
         mixed: supabaseDbTarget.mixed && typeof supabaseDbTarget.mixed === "object" ? { reason: supabaseDbTarget.mixed.reason } : void 0,
-        // ENV-02 — DÖRT KATMAN (profil · şema · app DB · kimlik · giriş · posta).
-        // Alanlar TEK TEK kopyalanır (ham nesne geçirilmez): kabloya ileride bir sır
-        // eklenirse rozet onu kendiliğinden ekrana taşımasın. Anon anahtar burada YOK.
         env: supabaseDbTarget.env && typeof supabaseDbTarget.env === "object" ? {
           profile: supabaseDbTarget.env.profile || void 0,
           scheme: supabaseDbTarget.env.scheme || void 0,
@@ -116,102 +303,14 @@ var require_database = __commonJS({
           mailUrl: supabaseDbTarget.env.mailUrl || void 0
         } : void 0
       };
-      contextBridge.exposeInMainWorld("crewpaneDb", dbBridgeObject);
+      contextBridge.exposeInMainWorld("agentspaceDb", dbApi);
     }
-    var doctorBridgeObj = {
-      /** → { generatedAt, overall:'ok'|'warn'|'fail', checks:[{id,label,status,detail,…}] } */
-      run: () => ipcRenderer.invoke("doctor:run"),
-      /**
-       * ADP-907 — yabancı kancanın yazılı olduğu AYAR DOSYASINI kullanıcının editöründe aç.
-       * Yalnız AÇAR: uygulama o dosyaya ASLA yazmaz. Gönderilen yol main'de doktorun kendi
-       * aday listesiyle doğrulanır (listede yoksa açılmaz) → rastgele dosya açtırılamaz.
-       * → { ok:true, via:'editor'|'folder' } | { ok:false, reason }
-       */
-      openHookSettings: (filePath) => ipcRenderer.invoke("doctor:openHookSettings", filePath)
-    };
-    contextBridge.exposeInMainWorld("crewpaneDoctor", doctorBridgeObj);
-  }
-});
-
-// src/preload/bridges/core.js
-var require_core = __commonJS({
-  "src/preload/bridges/core.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("demoSiteApi", {
-      /** Örnek sitenin adresi. → { ok:true, url } | { ok:false } (dosya pakette yoksa). */
-      url: (lang) => ipcRenderer.invoke("demo:siteUrl", { lang })
+    contextBridge.exposeInMainWorld("jarvisInputSim", {
+      run: (action) => ipcRenderer.invoke("jarvis:input-event", action)
     });
-    contextBridge.exposeInMainWorld("workerNotifyApi", {
-      emit: (evt) => ipcRenderer.invoke("notify:workerEvent", evt)
+    contextBridge.exposeInMainWorld("jarvisScreenCapture", {
+      run: (req) => ipcRenderer.invoke("jarvis:screen-capture", req)
     });
-    contextBridge.exposeInMainWorld("windowApi", {
-      /** Switch the tmux session's active window to the team that owns `department`. */
-      selectForDepartment: (department) => ipcRenderer.invoke("tmux:selectWindow", department)
-    });
-    contextBridge.exposeInMainWorld("appApi", {
-      /** → { mode:'dev'|'prod'|'spike', packaged, rebuildSupported }. */
-      info: () => ipcRenderer.invoke("app:info"),
-      /** One-click rebuild (electron:build:prep) + relaunch. → { ok, started } | { ok:false, reason }. */
-      rebuildRelaunch: () => ipcRenderer.invoke("app:rebuildRelaunch"),
-      /** ADP-232 — plain relaunch (NO rebuild) to apply restart-gated settings (workspaceRoot). → { ok }. */
-      relaunch: () => ipcRenderer.invoke("app:relaunch"),
-      /** Subscribe to rebuild progress. cb gets { phase:'start'|'log'|'done'|'error', line }. Returns unsubscribe. */
-      onRebuildProgress: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("app:rebuild:progress", l);
-        return () => ipcRenderer.removeListener("app:rebuild:progress", l);
-      },
-      /** ADP-284 — pencere görünürlüğü (minimize/hide → false). Canvas render kapıları için; returns unsubscribe. */
-      onWindowVisible: (cb) => {
-        const l = (_e, visible) => cb(!!visible);
-        ipcRenderer.on("app:window-visible", l);
-        return () => ipcRenderer.removeListener("app:window-visible", l);
-      },
-      /**
-       * ADP-901 — RENDERER MODÜL HATASI → uygulama günlüğü + bildirim merkezi.
-       * ADP-335 sınırı yalnız MAIN'deki modülleri kapsıyordu; ofis tuvali öldüğünde
-       * (GL bağlam kaybı) uygulamanın gününde TEK BİR İZ kalmıyordu — teşhis, olayın
-       * kendisinden değil ekran görüntüsünden başlamak zorunda kaldı. Artık renderer
-       * de aynı deftere yazar. `{ label, message, location?, stopped? }`.
-       */
-      reportFault: (fault) => ipcRenderer.invoke("module:reportRenderer", fault),
-      /**
-       * OBS-01 — ÜRÜN ANALİTİĞİ: "hangi panel/sekme kullanılıyor".
-       * Gövde `{ event:'panel_view', panel:'<dock sekme kimliği>' }` ile SINIRLI —
-       * main tarafı olay adını ve panel kimliğini kapalı kümeye indirir, ortak damgayı
-       * (sürüm/platform/katman) kendisi ekler. Serbest metin taşıyan bir alan YOK.
-       */
-      track: (payload) => ipcRenderer.invoke("analytics:track", payload),
-      // HATA-06 — kurtarma merdiveninin KABUK basamakları (sayfa-içi yol yetmediğinde).
-      // Renderer PARAMETRE GEÇİREMEZ: yalnız kapalı bir eylem adı gönderir; hangi
-      // pencerenin yenileneceğine/yaratılacağına main karar verir (capability modeli).
-      officeRecover: (action) => ipcRenderer.invoke("office:recover", { action })
-    });
-    contextBridge.exposeInMainWorld("onboardingApi", {
-      /** → { ok, local: kayıt|null, portable: kayıt|null } */
-      load: () => ipcRenderer.invoke("onboarding:load"),
-      /** → { ok, local, portable, error } */
-      save: (progress) => ipcRenderer.invoke("onboarding:save", progress),
-      // TOUR-02-C — bağlamsal ipuçları AYNI köprüde, AYRI kayıt: "hangi ipucu
-      // gösterildi" ile "hangi görev bitti" iki farklı şemadır ve tek dosyada
-      // birleştirilseydi biri diğerinin bilinmeyen alanını düşürürdü.
-      /** → { ok, local: kayıt|null, portable: kayıt|null } */
-      loadTips: () => ipcRenderer.invoke("onboarding:tips:load"),
-      /** → { ok, local, portable, error } */
-      saveTips: (tips) => ipcRenderer.invoke("onboarding:tips:save", tips)
-    });
-    contextBridge.exposeInMainWorld("presetAdvisorApi", {
-      recommend: (payload) => ipcRenderer.invoke("presets:recommend", payload)
-    });
-  }
-});
-
-// src/preload/bridges/terminal.js
-var require_terminal = __commonJS({
-  "src/preload/bridges/terminal.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
     contextBridge.exposeInMainWorld("ptyApi", {
       /**
        * Ask main to spawn a pty. ADP-013: opts may carry an agent-aware shape
@@ -240,6 +339,12 @@ var require_terminal = __commonJS({
        * (yanlış 'undelivered' üretme). Pane→sessionId/cwd çözümü main'de.
        */
       transcriptContains: (paneId, needle) => ipcRenderer.invoke("pty:transcriptContains", paneId, needle),
+      /**
+       * WIN-CODEX-1061-01 Faz B — codex pane'inin tur durumu motorun DEFTERİNDEN (rollout
+       * `task_complete`) → { promptAt, completeAt, idle } · null = bilinmiyor. Hazır kapısı
+       * ekrandan tur-sonu okunamadığında (Windows ConPTY) bunu "hazır" sinyali sayar.
+       */
+      engineTurn: (paneId) => ipcRenderer.invoke("pty:engineTurn", paneId),
       /**
        * ADP-306 — pane'in claude transcript'indeki SON asistan mesajı
        * → { checked, text, file, engine }. checked=false = transcript yok/bakılamadı
@@ -274,6 +379,9 @@ var require_terminal = __commonJS({
       dispatchRefresh: (payload) => ipcRenderer.invoke("pty:dispatchRefresh", payload),
       /** İş pane'e YAZILDI — bir sonraki ilişki ölçümünün kıyas tabanı (fire-and-forget). */
       dispatchRecord: (paneId, text) => ipcRenderer.send("pty:dispatchRecord", { paneId, text }),
+      /** DLG-CLEAR-ARGS-01 — iş metni yazılmadan önce: istemde Enter'ı yutulmuş `/clear` kaldı mı?
+          Kaldıysa main Enter'ı doğrulayarak tekrarlar; komut istemde KALIRSA hüküm 'stuck' (yazma). */
+      resetSettle: (paneId, opts) => ipcRenderer.invoke("pty:resetSettle", { paneId, ...opts || {} }),
       /* DELEG-DELIVER-01 — HAZIR-KAPI KARARI MAIN LOG'A. Bu yolun (taze pane'e prompt
          yazımı) üretimde TEK BİR log satırı yoktu: `engineReadyRunner` `console.info`
          basıyor, o da main log'a düşmüyor ([renderer console] köprüsü yalnız AUTOTEST'te
@@ -331,7 +439,8 @@ var require_terminal = __commonJS({
       /** xterm fit → pty resize (routed by paneId). */
       resize: (paneId, size) => ipcRenderer.send("pty:resize", { paneId, cols: size.cols, rows: size.rows }),
       /** Kill a single pty by paneId (terminal closed in the UI). */
-      kill: (paneId) => ipcRenderer.send("pty:kill", paneId),
+      // DLG-TRUTH-01 — yalnız `closedBy:'user'` geçer (kullanıcının kendi kapatması); main yine doğrular.
+      kill: (paneId, opts) => ipcRenderer.send("pty:kill", paneId, opts && opts.closedBy === "user" ? { closedBy: "user" } : void 0),
       /** Subscribe to pty output for ALL panes. cb gets { paneId, data }. Returns unsubscribe. */
       onData: (cb) => {
         const listener = (_event, payload) => cb(payload);
@@ -346,7 +455,7 @@ var require_terminal = __commonJS({
       },
       /**
        * ADP-303 — main asked for a pane to be brought to the front (the leader's
-       * `crewpane_pane focus` → bridge → main). cb gets { paneId }. Returns unsubscribe.
+       * `agentspace_pane focus` → bridge → main). cb gets { paneId }. Returns unsubscribe.
        */
       onFocusRequest: (cb) => {
         const listener = (_event, payload) => cb(payload);
@@ -403,6 +512,30 @@ var require_terminal = __commonJS({
         return () => ipcRenderer.removeListener("resume:event", listener);
       },
       /**
+       * LR03-SIG-01 — motor limit sinyali (main hub'ı). `limitSignal(paneId)` →
+       * {limited, resetAt, source, observedAt, engine, window, via} | null;
+       * `limitSignalSnapshot()` → {paneId: signal}; `onLimitSignal(cb)` sinyal değişince
+       * {paneId, signal} ile çağrılır. Returns unsubscribe.
+       */
+      limitSignal: (paneId) => ipcRenderer.invoke("limitSignal:get", paneId),
+      limitSignalSnapshot: () => ipcRenderer.invoke("limitSignal:snapshot"),
+      onLimitSignal: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("limitSignal:changed", listener);
+        return () => ipcRenderer.removeListener("limitSignal:changed", listener);
+      },
+      /**
+       * LR03-PARK-01 — limit parkı (main gözetmeni). `limitParkSnapshot()` → {mode, parks};
+       * `onLimitPark(cb)` park durumu değişince {mode, park} ile çağrılır. `on` kipinde
+       * renderer delegasyonu ve sprint limit devamını YAZMAZ, durumu buradan yansıtır.
+       */
+      limitParkSnapshot: () => ipcRenderer.invoke("limitPark:snapshot"),
+      onLimitPark: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("limitPark:changed", listener);
+        return () => ipcRenderer.removeListener("limitPark:changed", listener);
+      },
+      /**
        * TOK-C (D-02 v2) — BÜTÇE OLAYLARI (main → renderer).
        * cb gets { kind:'blocked', source, paneId, agentId, budget }.
        *
@@ -415,38 +548,212 @@ var require_terminal = __commonJS({
         const listener = (_event, payload) => cb(payload);
         ipcRenderer.on("pty:budget-event", listener);
         return () => ipcRenderer.removeListener("pty:budget-event", listener);
+      },
+      /**
+       * DLG-16 — lider otomatik tazeleme olayları (main `pty:dispatch-event`): kullanıcı
+       * "Lider hafızasını tazeledi" satırını ANINDA görür. Returns unsubscribe.
+       */
+      onDispatchEvent: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("pty:dispatch-event", listener);
+        return () => ipcRenderer.removeListener("pty:dispatch-event", listener);
       }
     });
-  }
-});
-
-// src/preload/bridges/agents.js
-var require_agents = __commonJS({
-  "src/preload/bridges/agents.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
+    contextBridge.exposeInMainWorld("popoutApi", {
+      /** Pane'i ayrı pencereye çıkar. `{ paneId, title?, agentId? }` → { ok, paneId } | { ok:false, error }. */
+      open: (payload) => ipcRenderer.invoke("popout:open", payload),
+      /** Pop-out penceresini kapat = pane eski hücresine döner. → { ok } | { ok:false, error }. */
+      close: (paneId) => ipcRenderer.invoke("popout:close", paneId),
+      /** Şu an dışarıda olan paneId'ler (reload sonrası durum hidrasyonu). → string[]. */
+      list: () => ipcRenderer.invoke("popout:list"),
+      /** Pop-out penceresi kapandı (kullanıcı ⌘W/kırmızı düğme/"Geri koy"). cb gets { paneId }. Returns unsubscribe. */
+      onClosed: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("popout:closed", listener);
+        return () => ipcRenderer.removeListener("popout:closed", listener);
+      },
+      /** ADP-712 — pencereyi büyüt/eski boyutuna getir (ızgaradaki "zoom"un karşılığı). */
+      toggleMaximize: (paneId) => ipcRenderer.invoke("popout:toggleMaximize", paneId),
+      /** ADP-712 — pencerenin şu anki durumu → { paneId, maximized } | null. */
+      state: (paneId) => ipcRenderer.invoke("popout:state", paneId),
+      /** ADP-712 — pencere native düğmeyle büyütüldü/küçültüldü. cb gets { paneId, maximized }. */
+      onState: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("popout:state", listener);
+        return () => ipcRenderer.removeListener("popout:state", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("demoSiteApi", {
+      /** Örnek sitenin adresi. → { ok:true, url } | { ok:false } (dosya pakette yoksa).
+       *  ONB-F2 — `goal` senaryonun sayfasını seçer; main kapalı kümeye daraltır. */
+      url: (lang, goal) => ipcRenderer.invoke("demo:siteUrl", { lang, goal })
+    });
+    contextBridge.exposeInMainWorld("designApi", {
+      /**
+       * Tasarım turunu ayrı pencerede aç (zaten açıksa öne getirir). → { ok, reused? } | { ok:false, error }.
+       * RPT5-05 — `target = { task, version?, region? }` → o görevin o sürümü seçili açılır (şekli main
+       * doğrular). Parametresiz çağrı eskisi gibi.
+       */
+      openWindow: (target) => ipcRenderer.invoke("design:openWindow", target),
+      /** RPT5-05 — bekleyen hedef (pencere açılırken çekilir). → { task, version, region, seq } | null. */
+      currentTarget: () => ipcRenderer.invoke("design:currentTarget"),
+      /** RPT5-05 — açık pencereye yeni hedef geldi. cb gets { task, version, region, seq }. Returns unsubscribe. */
+      onTarget: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("design:target", listener);
+        return () => ipcRenderer.removeListener("design:target", listener);
+      },
+      /** RPT5-05 — tasarım turu yazdı (ölçüm, onay, yeni sürüm). cb gets { task }. Returns unsubscribe. */
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("design:changed", listener);
+        return () => ipcRenderer.removeListener("design:changed", listener);
+      },
+      /** Tasarım penceresini kapat. → { ok } | { ok:false, error }. */
+      closeWindow: () => ipcRenderer.invoke("design:closeWindow"),
+      /** Pencere şu an açık mı → { open }. */
+      isWindowOpen: () => ipcRenderer.invoke("design:isWindowOpen"),
+      /** Pencere açıldı/kapandı (giriş düğmesi gerçeği yansıtsın). cb gets { open }. Returns unsubscribe. */
+      onOpenState: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("design:openState", listener);
+        return () => ipcRenderer.removeListener("design:openState", listener);
+      },
+      /**
+       * AUID-M4A (ARIZA-1) — TÜM pencerelerdeki ajan-bağlı pane'ler. `ptyApi.list`
+       * SAHİP PENCEREYE göre süzer ve tasarım penceresi hiçbir pty'nin sahibi
+       * olmadığı için ona hep BOŞ dönüyordu. → { ok, panes }.
+       */
+      listAgents: () => ipcRenderer.invoke("design:listAgents"),
+      /**
+       * AUID-M4A — bir tasarım görevi klasörü aç (`docs/design/<görev>`). `fileApi`
+       * mkdir yapamaz; demo tohumu ve üretim modu buna muhtaç. → { ok, created }.
+       */
+      ensureTaskDir: (rel) => ipcRenderer.invoke("design:ensureTaskDir", rel)
+    });
+    contextBridge.exposeInMainWorld("paneViewApi", {
+      /** → { readable } (bilinmeyen pane için varsayılan). */
+      get: (paneId) => ipcRenderer.invoke("paneView:get", paneId),
+      /** Durumu yaz + yayınla. `patch = { readable }` → { ok, paneId, readable, changed }. */
+      set: (paneId, patch) => ipcRenderer.invoke("paneView:set", { paneId, ...patch || {} }),
+      /** Başka bir pencere durumu değiştirdi. cb gets { paneId, readable }. Returns unsubscribe. */
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("paneView:changed", listener);
+        return () => ipcRenderer.removeListener("paneView:changed", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("paneDraftApi", {
+      /** → taslak metin (bilinmeyen pane için ''). */
+      get: (paneId) => ipcRenderer.invoke("paneDraft:get", paneId),
+      /** Taslağı yaz + (gerçekten değiştiyse) yayınla → { ok, paneId, text, changed }. */
+      set: (paneId, text) => ipcRenderer.invoke("paneDraft:set", { paneId, text }),
+      /** Aynı pane'i gösteren başka yüzey taslağı değiştirdi. cb: { paneId, text }. */
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("paneDraft:changed", listener);
+        return () => ipcRenderer.removeListener("paneDraft:changed", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("paneAskApi", {
+      /** → açık sorular (PaneAsk[]). */
+      list: () => ipcRenderer.invoke("paneAsk:list"),
+      /** Seçenek (choiceId) ya da serbest metin (text) → { ok, delivered?, reason?, ask? }. */
+      answer: (payload) => ipcRenderer.invoke("paneAsk:answer", payload || {}),
+      /** Kartı cevapsız kapat → { ok, reason? }. */
+      dismiss: (askId) => ipcRenderer.invoke("paneAsk:dismiss", askId),
+      /** Defter değişti (açıldı / hatırlatma / kapandı). cb: { type, ask }. Returns unsubscribe. */
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("paneAsk:changed", listener);
+        return () => ipcRenderer.removeListener("paneAsk:changed", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("officeRoomApi", {
+      /**
+       * CHAT-FIX-04 — odayı ADIYLA iste: `{ team, archive?, aliases? }` → `{ team, messages, accepted,
+       * archiveCount }` (eskiden yeniye). Oda adı yoksa boş oda; tüm defter renderer'a hiç gelmez.
+       */
+      get: (req) => ipcRenderer.invoke("officeRoom:get", req || {}),
+      /**
+       * Patron odaya yazdı. `{ text, source?, bossLabel?, ctx:{aliases,departments,activeDepartment}, attachPaths? }`
+       * → { ok, message, intent, results } | { ok:false, kind:'no-text'|'unknown-address'|'no-target'|'no-image-target' }.
+       * OCV3-05 — `text` boş olabilir, yeter ki görsel olsun (yalnız görsel gönderimi).
+       * `ctx.aliases` agentx:deliver ile AYNI şekildir (ikinci roster sözlüğü yok).
+       */
+      say: (req) => ipcRenderer.invoke("officeRoom:say", req || {}),
+      /**
+       * OCV3-01 — "Kime:" önizlemesi: `{ text, aliases }` → `{ to, unknown, ambiguous, broadcast }`.
+       * Teslimin kullandığı ayrıştırıcının KENDİSİ (ikinci kopya yok). Yan etkisiz.
+       */
+      preview: (req) => ipcRenderer.invoke("officeRoom:preview", req || {}),
+      /**
+       * CHAT-RICH-02 — sohbet eki: `{ id, ext, variant:'thumb'|'full' }` →
+       * `{ ok, dataUrl?, present? } | { ok:false, reason:'missing'|'bad-key'|… }`. Yol taşımaz.
+       */
+      attachment: (req) => ipcRenderer.invoke("officeRoom:attachment", req || {}),
+      /** CHAT-RICH-02 — dosya kartı: `{ id, ext, reveal? }` → sistem uygulamasında aç / klasörde göster. */
+      openAttachment: (req) => ipcRenderer.invoke("officeRoom:attachmentOpen", req || {}),
+      /** OFC-02 — teslimi kabul et: `{ deliveryId }` → `{ ok, at? } | { ok:false, reason }`. */
+      accept: (req) => ipcRenderer.invoke("officeRoom:accept", req || {}),
+      /** OFC-16 — ajan satırına tepki: `{ id, emoji, on? }` → `{ ok, reactions? } | { ok:false, reason }`. Ajana GİTMEZ. */
+      react: (req) => ipcRenderer.invoke("officeRoom:react", req || {}),
+      /** OFC-03 — lidere ulaşılamayan aktarımı yeniden dene: `{ id, ctx:{aliases}, bossLabel?, imageCapable? }` → `{ ok, reason? }`. */
+      retryHandoff: (req) => ipcRenderer.invoke("officeRoom:retryHandoff", req || {}),
+      // CHAT-FIX-02 — odanın sorusu: "terminali açayım mı?" / "kartta çalışana araya yazayım mı?".
+      answerAsk: (req) => ipcRenderer.invoke("officeRoom:answerAsk", req || {}),
+      /**
+       * CHAT-Q-01 — karar kartını cevapla (docs/design/SOHBET-KARAR-KARTI-V1.md §4):
+       * `{ id?, secim?, metin?, rootId?, ctx:{aliases}, bossLabel?, imageCapable? }` →
+       * `{ ok, state?, decision? } | { ok:false, reason }`.
+       */
+      answerDecision: (req) => ipcRenderer.invoke("officeRoom:answerDecision", req || {}),
+      /**
+       * INT-OAUTH-SEND-01 — e-posta onay kartı: `{ id, action:'send'|'cancel', edit?:{to,subject,body} }` →
+       * `{ ok, state, line?, task?, error? } | { ok:false, reason }`. Gönderimin TEK yolu (köprüde yok).
+       */
+      mailDecide: (req) => ipcRenderer.invoke("officeRoom:mailDecide", req || {}),
+      /** INT-OAUTH-SEND-01 — "Düzenle" için tam taslak: `{ id }` → `{ ok, to, subject, body }`. */
+      mailDraft: (req) => ipcRenderer.invoke("officeRoom:mailDraft", req || {}),
+      /** PERM-MENU-METRICS-01 — "İzin soruları (7 gün)": yalnız sayılar + en sık eylem (kişisel veri yok). */
+      permMenuWeek: () => ipcRenderer.invoke("officeRoom:permMenuWeek"),
+      /**
+       * Oda değişti. CHAT-FIX-04 — cb: `{ team? }` (satır YOK): hangi oda değişti (null arşiv, yok =
+       * herhangi biri); pencere kendi odasını `get` ile yeniden ister. Returns unsubscribe.
+       */
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("officeRoom:changed", listener);
+        return () => ipcRenderer.removeListener("officeRoom:changed", listener);
+      }
+    });
     contextBridge.exposeInMainWorld("agentxDraftApi", {
       /** → DraftSnapshot { state, text, units, target, revision, pending, notice, … } */
       get: () => ipcRenderer.invoke("agentxDraft:get"),
-      /** RouteDecision (cls:'prompt') → taslağı aç / gövdeyi ekle. */
-      open: (route, at) => ipcRenderer.invoke("agentxDraft:open", { route, at }),
+      /** RouteDecision (cls:'prompt') → taslağı aç / gövdeyi ekle. AXD-04 `opts.review`: açılış geri okuma olarak söylenecek. */
+      open: (route, at, opts) => ipcRenderer.invoke("agentxDraft:open", { route, at, review: !!(opts && opts.review) }),
       /** Sonlandırılmış cümle. `startedAt` = KAYDIN başladığı an (spokenAt kapısı buna bakar). */
       hear: (text, opts) => ipcRenderer.invoke("agentxDraft:hear", { text, ...opts || {} }),
       /** Klavye: metnin tamamı (ses ve klavye AYNI defter). */
       edit: (text) => ipcRenderer.invoke("agentxDraft:edit", { text }),
       setTarget: (target) => ipcRenderer.invoke("agentxDraft:setTarget", { target }),
-      /** Sessizlik: taslak DURAKSAR — asla göndermez. */
+      /** "dur/bekle": taslak DURAKSAR. Sessizlik (noSpeech) en fazla geri okuma + soru açar — asla göndermez. */
       pause: (at) => ipcRenderer.invoke("agentxDraft:pause", { at }),
       noSpeech: (at) => ipcRenderer.invoke("agentxDraft:noSpeech", { at }),
       /** Gönder düğmesi / kapanış sözü → hedef sorusu ya da teyit. */
       finish: (at) => ipcRenderer.invoke("agentxDraft:finish", { at }),
-      /** TTS özeti BİTTİ: bundan önce başlayan kayıt cevap sayılmaz. */
-      spoken: (id, at) => ipcRenderer.invoke("agentxDraft:spoken", { id, at }),
+      /**
+       * TTS soruyu BİTİRDİ: bundan önce başlayan kayıt cevap sayılmaz. AXD-04 `said` = GERÇEKTEN
+       * söylenen cümle — kutup ve geri okuma kapsamı ondan ölçülür; düşerse sesle gönderim kapanır.
+       */
+      spoken: (id, at, said) => ipcRenderer.invoke("agentxDraft:spoken", { id, at, said: typeof said === "string" ? said : null }),
       /** Düğme: 'send' | 'edit' | 'cancel'. */
       resolve: (id, choice, at) => ipcRenderer.invoke("agentxDraft:resolve", { id, choice, at }),
       cancel: (at) => ipcRenderer.invoke("agentxDraft:cancel", { at }),
       undo: (at) => ipcRenderer.invoke("agentxDraft:undo", { at }),
       tick: (at) => ipcRenderer.invoke("agentxDraft:tick", { at }),
+      // OFC-06 — yeniden açılışta geri gelen taslağı bu oturuma al ("Devam et"; gönderim yok).
+      ackResume: () => ipcRenderer.invoke("agentxDraft:ackResume", {}),
       /** Fotoğraf değişti (her yüzey). cb: DraftSnapshot */
       onChanged: (cb) => {
         const listener = (_event, payload) => cb(payload);
@@ -458,6 +765,226 @@ var require_agents = __commonJS({
         const listener = (_event, payload) => cb(payload);
         ipcRenderer.on("agentxDraft:confirmed", listener);
         return () => ipcRenderer.removeListener("agentxDraft:confirmed", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("agentxBundleApi", {
+      get: () => ipcRenderer.invoke("agentxBundle:get"),
+      /** RouteDecision (cls:'plan') → demeti aç. `context` = classify bağlamı (takım/ajan etiketleri). */
+      open: (route, at, context) => ipcRenderer.invoke("agentxBundle:open", { route, at, context }),
+      /** Sonlandırılmış cümle. `startedAt` = KAYDIN başladığı an (spokenAt kapısı). */
+      hear: (text, opts) => ipcRenderer.invoke("agentxBundle:hear", { text, ...opts || {} }),
+      /** TTS soruyu BİTİRDİ. `said` = GERÇEKTEN söylenen cümle — kalem kapsamı ve kutup ondan ölçülür. */
+      spoken: (id, at, said) => ipcRenderer.invoke("agentxBundle:spoken", { id, at, said: typeof said === "string" ? said : null }),
+      /** HEDEF SORUSU cevabı çözüldü → n. kalemin hedefi. */
+      setTarget: (n, target, at) => ipcRenderer.invoke("agentxBundle:setTarget", { n, target, at }),
+      editItem: (n, text, at) => ipcRenderer.invoke("agentxBundle:editItem", { n, text, at }),
+      removeItem: (n, at) => ipcRenderer.invoke("agentxBundle:removeItem", { n, at }),
+      finish: (at) => ipcRenderer.invoke("agentxBundle:finish", { at }),
+      noSpeech: (at) => ipcRenderer.invoke("agentxBundle:noSpeech", { at }),
+      tick: (at) => ipcRenderer.invoke("agentxBundle:tick", { at }),
+      /** Düğme: 'send' | 'edit' | 'cancel'. */
+      resolve: (id, choice, at) => ipcRenderer.invoke("agentxBundle:resolve", { id, choice, at }),
+      cancel: (at) => ipcRenderer.invoke("agentxBundle:cancel", { at }),
+      undo: (at) => ipcRenderer.invoke("agentxBundle:undo", { at }),
+      ackResume: () => ipcRenderer.invoke("agentxBundle:ackResume", {}),
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("agentxBundle:changed", listener);
+        return () => ipcRenderer.removeListener("agentxBundle:changed", listener);
+      },
+      /** TEK onay → { items:[…], statusesAfter:[…] } — AXMT-05 ışık turu + teslim tüketir. */
+      onConfirmed: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("agentxBundle:confirmed", listener);
+        return () => ipcRenderer.removeListener("agentxBundle:confirmed", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("imageApi", {
+      saveTemp: (payload) => ipcRenderer.invoke("image:saveTemp", payload),
+      /** → { ok, missing:[], foreign:[], present:[] } */
+      verify: (paths) => ipcRenderer.invoke("image:verify", paths)
+    });
+    contextBridge.exposeInMainWorld("attachmentApi", {
+      /**
+       * Bir görseli depoya al. `path` (native drop / MCP) YA DA `data` (⌘V, dosya
+       * seçici) verilir. → { ok, sha256, mime, bytes, width, height, localRelPath,
+       * thumbDataUrl, originDevice, title, kind, source } | { ok:false, reason }
+       */
+      ingest: (payload) => ipcRenderer.invoke("attachment:ingest", payload),
+      /** local_rel_path → { ok, dataUrl, mime, bytes } | { ok:false, reason:'missing' } */
+      read: (relPath) => ipcRenderer.invoke("attachment:read", relPath),
+      /** → { ok, present } — tam çözünürlük BU cihazda var mı? */
+      hasBytes: (relPath) => ipcRenderer.invoke("attachment:hasBytes", relPath),
+      /** ATTACH-COVER-FULLRES — tam boy HAM bayt → { ok, bytes: Uint8Array, mime } | { ok:false, reason:'missing' } */
+      readBytes: (relPath) => ipcRenderer.invoke("attachment:readBytes", relPath),
+      /** Önbellekteki önizleme → { ok, dataUrl } | { ok:false, reason:'miss'|'missing' } */
+      preview: (relPath, width) => ipcRenderer.invoke("attachment:preview", relPath, width),
+      /** Renderer'ın ürettiği WebP önizlemeyi önbelleğe yaz. */
+      savePreview: (relPath, width, data) => ipcRenderer.invoke("attachment:savePreview", relPath, width, data),
+      /** Baytları diskten sil (satırın tombstone'u ÇAĞIRANIN işi). */
+      removeBytes: (relPath) => ipcRenderer.invoke("attachment:removeBytes", relPath),
+      // ATTACH-CLOUD-01 — buluta yükleme döngüsünün renderer ucu (WebP kodlama burada).
+      /** → { ok, items:[{relPath, companyId, sha256, mime, bytes}] } | { ok:false, reason } */
+      cloudPending: (opts) => ipcRenderer.invoke("attachment:cloudPending", opts || {}),
+      /** { relPath, companyId, sha256, data } → { ok, storagePath, existed } | { ok:false, reason } */
+      cloudUpload: (req) => ipcRenderer.invoke("attachment:cloudUpload", req || {}),
+      /** Yeni ek alındı → döngü turu. Dinleyiciyi söken fonksiyon döner. */
+      onCloudKick: (cb) => {
+        const h = () => {
+          try {
+            cb();
+          } catch {
+          }
+        };
+        ipcRenderer.on("attachment:cloudKick", h);
+        return () => ipcRenderer.removeListener("attachment:cloudKick", h);
+      }
+    });
+    contextBridge.exposeInMainWorld("feedbackApi", {
+      /** → { ok, text, lines } | { ok:false, reason:'no-log'|'unreadable' } */
+      logExcerpt: (opts) => ipcRenderer.invoke("feedback:logExcerpt", opts || {}),
+      /** → { ok, shots:[{name, at, bytes, thumbDataUrl}] } | { ok:false, reason:'no-dir' } */
+      recentShots: (opts) => ipcRenderer.invoke("feedback:recentShots", opts || {}),
+      /** → { ok, name, dataUrl, sha256, width, height } | { ok:false, reason } */
+      shotPreview: (opts) => ipcRenderer.invoke("feedback:shotPreview", opts || {})
+    });
+    contextBridge.exposeInMainWorld("localSpriteApi", {
+      /** → { ok, dir, sprites:[{key,url48,url16,bytes}] } */
+      list: () => ipcRenderer.invoke("sprites:listLocal"),
+      /**
+       * AVATAR-PACK-01 — Yüklü PAKETLER (manifest + lisans + karakterler + eksikler).
+       * `list` ile aynı diski okur ama başka soruyu yanıtlar: `list` "hangi sprite
+       * anahtarları çizilebilir", bu ise "hangi paket kurulu ve neyi vaat ediyor".
+       * → { ok, dir, packages:[{key,manifest,characters,missing}], skipped }
+       */
+      listPackages: () => ipcRenderer.invoke("sprites:listPackages"),
+      /** ADP-737 — Paket yükle (zip dosyası). → { ok, key?, manifest?, warnings?, error? } */
+      installPackage: (zipPath) => ipcRenderer.invoke("sprites:installPackage", zipPath),
+      /** ADP-737 — Paketi kaldır (key). → { ok, error? } */
+      removePackage: (key) => ipcRenderer.invoke("sprites:removePackage", key),
+      /** ADP-737 — Paketi dışa aktar (karakterleri zip'le). → { ok, path?, error? } */
+      exportPackage: (keys) => ipcRenderer.invoke("sprites:exportPackage", keys)
+    });
+    contextBridge.exposeInMainWorld("officePackApi", {
+      /** → { ok, path, bytes, sha256 } | { ok:false, error } */
+      exportPack: (pack, skills) => ipcRenderer.invoke("office:exportPack", { pack, skills }),
+      /** → { ok, pack, skills:[{name,text,sha256,bytes}], warnings } | { ok:false, error } */
+      readPack: (zipPath) => ipcRenderer.invoke("office:readPack", zipPath)
+    });
+    contextBridge.exposeInMainWorld("teamDeleteApi", {
+      /** {agentIds, roster} → { ok, memoryAgents, memoryFiles, reports, workspace } */
+      localPlan: (req) => ipcRenderer.invoke("team-delete:local-plan", req),
+      /** {agentIds, roster, team, tasks, include:{memory,reports}} → { ok, path, bytes, counts } */
+      backup: (req) => ipcRenderer.invoke("team-delete:backup", req),
+      /** {agentIds, roster, memory, reports:'keep'|'archive'|'delete', teamSlug} → { ok, memory, reports, errors } */
+      localApply: (req) => ipcRenderer.invoke("team-delete:local-apply", req),
+      /** Yedek zip'ini Finder/Gezgin'de göster (yalnız yedek klasörünün içi). */
+      showBackup: (file) => ipcRenderer.invoke("team-delete:show-backup", file)
+    });
+    contextBridge.exposeInMainWorld("fileDropApi", {
+      /** Resolve a dropped File's absolute on-disk path (replaces removed File.path). */
+      getPathForFile: (file) => {
+        try {
+          return webUtils && typeof webUtils.getPathForFile === "function" ? webUtils.getPathForFile(file) : "";
+        } catch {
+          return "";
+        }
+      }
+    });
+    contextBridge.exposeInMainWorld("fileApi", {
+      /** Read a workspace file as UTF-8 → { ok, content, encoding, path } | { ok:false, reason }. */
+      read: (p) => ipcRenderer.invoke("file:read", p),
+      /** PERF-STALLPROBE-01 — size+mtime without reading content → { ok, exists, size?, mtimeMs? } | { ok:false, reason }. */
+      stat: (p) => ipcRenderer.invoke("file:stat", p),
+      /** Write UTF-8 content to a workspace file → { ok, bytes, path } | { ok:false, reason }. */
+      write: (p, content) => ipcRenderer.invoke("file:write", { path: p, content }),
+      /** List a workspace directory → { ok, dir, entries:[{name,path,type}] } | { ok:false, reason }. */
+      list: (dir) => ipcRenderer.invoke("file:list", dir),
+      /**
+       * ADP-103 — open the OS directory picker; the chosen dir becomes a new active root
+       * (the only way to browse outside the workspace) → { ok, root, name } | { ok:false, reason }.
+       */
+      openDialog: () => ipcRenderer.invoke("file:openDialog"),
+      /**
+       * ADP-108 — live-watch: grant the editor read access to a WATCHED pane's cwd and
+       * learn that cwd (+ home + workspace root) so the renderer can rebase the relative
+       * path the agent prints to the absolute file it wrote → { ok, cwd, home,
+       * workspaceRoot } | { ok:false, reason }. Keyed to a main-spawned paneId (no path
+       * is supplied by the renderer), so the ADP-103 sandbox model is preserved.
+       */
+      allowPaneRoot: (paneId) => ipcRenderer.invoke("file:allowPaneRoot", paneId),
+      /**
+       * ADP-109 — editor start-experience persistence (last-session + recent). SYNC get
+       * (so the renderer reads it during mount without an async flash) + async set. Stored
+       * in userData main-side because the embedded server's RANDOM per-launch port makes
+       * the renderer origin (and thus localStorage) change on every restart.
+       */
+      getEditorState: () => ipcRenderer.sendSync("file:editorState:get"),
+      setEditorState: (state) => ipcRenderer.invoke("file:editorState:set", state)
+    });
+    contextBridge.exposeInMainWorld("formatApi", {
+      /** Bu dosyanın projesinde Prettier var mı → { ok, available, version? } | { ok:false, reason }. */
+      status: (p) => ipcRenderer.invoke("format:status", p),
+      /** İçeriği biçimlendir (diske YAZMAZ) → { ok, text, changed } | { ok:false, reason, detail? }. */
+      format: (p, content) => ipcRenderer.invoke("format:document", { path: p, content })
+    });
+    contextBridge.exposeInMainWorld("workerNotifyApi", {
+      emit: (evt) => ipcRenderer.invoke("notify:workerEvent", evt)
+    });
+    contextBridge.exposeInMainWorld("agentspaceDoctor", {
+      /** → { generatedAt, overall:'ok'|'warn'|'fail', checks:[{id,label,status,detail,…}] } */
+      run: () => ipcRenderer.invoke("doctor:run"),
+      /**
+       * ADP-907 — yabancı kancanın yazılı olduğu AYAR DOSYASINI kullanıcının editöründe aç.
+       * Yalnız AÇAR: uygulama o dosyaya ASLA yazmaz. Gönderilen yol main'de doktorun kendi
+       * aday listesiyle doğrulanır (listede yoksa açılmaz) → rastgele dosya açtırılamaz.
+       * → { ok:true, via:'editor'|'folder' } | { ok:false, reason }
+       */
+      openHookSettings: (filePath) => ipcRenderer.invoke("doctor:openHookSettings", filePath)
+    });
+    contextBridge.exposeInMainWorld("clipboardApi", {
+      /** Düz metni panoya yaz → { ok } (main tarafında boy sınırlı). */
+      write: (text) => ipcRenderer.invoke("clipboard:write", text),
+      /**
+       * ADP-894 — ODAKLI yüzeye YAPIŞTIR → { ok, kind }. Windows'ta Ctrl+V'yi xterm
+       * `\x16` olarak yutuyor (ölçüldü) → yapıştırma hiç çalışmıyordu; macOS'ta
+       * aynı işi Electron'un varsayılan Edit menüsü `webContents.paste()` ile
+       * yapıyor. Bu uç o menü öğesinin ta kendisidir.
+       *
+       * ADP-925 — panoda GÖRÜNTÜ varsa (ve metin yoksa) main bir TESLİMAT DİREKTİFİ
+       * döner; `paneId` verilirse motoruna göre karar verir:
+       *   • `{ kind:'engine-keys', keys }` → çağıran bu baytı pane'e YAZAR; motor
+       *     panoyu kendisi okur (ölçüldü: claude `\x16` → `[Image #1]`).
+       *   • `{ kind:'image', path }`       → main görüntüyü temp PNG'ye yazdı;
+       *     çağıran YOLU pane'e yapıştırır (kabuk pane'leri).
+       *   • `{ kind:'text' }`              → metin yolu main'de zaten koştu.
+       *
+       * GÜVENLİK: pano İÇERİĞİ renderer'a GEÇMEZ — metinde main yalnız yerel
+       * "yapıştır" komutunu çalıştırır; görüntüde geçen şey ya sabit bir kontrol
+       * baytı ya da temp dosya YOLUdur. "Okuma ucu yok" duruşu (yukarıda) korunur.
+       */
+      pasteFocused: (opts) => ipcRenderer.invoke("clipboard:pasteFocused", opts)
+    });
+    contextBridge.exposeInMainWorld("clipApi", {
+      /** → { ok, items:[{id,kind,at,preview,chars,width,height,bytes,thumb}] } (en yeni başta). */
+      list: () => ipcRenderer.invoke("clip:list"),
+      /**
+       * Öğeyi panoya geri koy + pane'e nasıl ineceğini söyle → aynı sözleşme
+       * `clipboard:pasteFocused` ile (ADP-925):
+       *   • `{ kind:'text', text }`        → çağıran metni pane'e YAPIŞTIRIR (Enter YOK)
+       *   • `{ kind:'engine-keys', keys }` → çağıran kontrol baytını yazar, motor panoyu okur
+       *   • `{ kind:'image', path }`       → çağıran temp PNG YOLUnu yapıştırır (kabuk pane'i)
+       */
+      deliver: (itemId, paneId) => ipcRenderer.invoke("clip:deliver", { itemId, paneId }),
+      /** Tek öğeyi geçmişten sil → { ok }. */
+      remove: (itemId) => ipcRenderer.invoke("clip:remove", itemId),
+      /** Geçmişin tamamını sil → { ok, removed }. */
+      clear: () => ipcRenderer.invoke("clip:clear"),
+      /** Geçmiş değişti (yeni kopya / silme). Aboneliği bırakan fonksiyon döner. */
+      onChanged: (cb) => {
+        const listener = () => cb();
+        ipcRenderer.on("clip:changed", listener);
+        return () => ipcRenderer.removeListener("clip:changed", listener);
       }
     });
     contextBridge.exposeInMainWorld("engineApi", {
@@ -498,11 +1025,6 @@ var require_agents = __commonJS({
       cancelLogin: () => ipcRenderer.invoke("engineAuth:cancel"),
       /** Oturumu kapatır; sonuç motorun kendi durum komutuyla DOĞRULANIR → { ok, status }. */
       logout: (engine, profileId) => ipcRenderer.invoke("engineAuth:logout", { engine, profileId }),
-      // ── JEV AI — AKILLI MODEL YÖNLENDİRİCİ (Faz 3) ──────────────────────────────
-      /** Görev zorluğuna ve bağlı motorlara göre optimal model önerisi alır. */
-      routeTask: (params) => ipcRenderer.invoke("jev:route-task", params),
-      /** Jev karar geçmişini listeler. */
-      decisionLog: (params) => ipcRenderer.invoke("jev:decision-log", params),
       // ── ENG-08 — API ANAHTARI YEDEĞİ (abonelik birinci sınıf, bu YEDEK yol) ────
       // Anahtar TEK YÖN akar: renderer → main → vault. Geri dönen yüzeyde sır YOKTUR
       // (yalnız `{ ok, error, status }`); `status.apiKeySaved` bir BAYRAKtır, değer değil.
@@ -541,6 +1063,12 @@ var require_agents = __commonJS({
       accountRemove: (engine, profileId) => ipcRenderer.invoke("engineProfiles:remove", { engine, profileId }),
       /** "Limitte otomatik geç" tercihi → { ok, autoSwitchOnLimit }. */
       setAutoSwitch: (enabled) => ipcRenderer.invoke("engineProfiles:setAutoSwitch", { enabled }),
+      /** ACCT-SWITCH-02 — motor başına "limit dolunca": 'sor' | 'otomatik-gec' | 'kapali' → { ok, policy }. */
+      setLimitPolicy: (engine, policy) => ipcRenderer.invoke("engineProfiles:setLimitPolicy", { engine, policy }),
+      /** ACCT-SWITCH-02 — teklif kartında "Geç": pane'i hedef hesaba ŞİMDİ taşır → { ok, newPaneId, toName }. */
+      confirmLimitSwitch: (paneId, profileId) => ipcRenderer.invoke("engineProfiles:confirmLimitSwitch", { paneId, profileId }),
+      /** ACCT-SWITCH-02 — hafif hesap durumu (CLI çağrısı yok) → { ok, engines:{[engine]:{policy,active,accounts,panes}} }. */
+      accountsState: () => ipcRenderer.invoke("engineProfiles:state"),
       // ── HATA-12 — AJANLARIN GÜNCEL MOTOR AYNASI ────────────────────────────────
       // Renderer `employees.engine`'i canlı okur; harita DEĞİŞTİĞİNDE main'e iter. Main
       // onu geri-yükleme defterinin yanına yazar ve bir sonraki açılışta pane'i ESKİ
@@ -553,6 +1081,96 @@ var require_agents = __commonJS({
         ipcRenderer.on("engineProfiles:changed", handler);
         return () => ipcRenderer.removeListener("engineProfiles:changed", handler);
       }
+    });
+    contextBridge.exposeInMainWorld("officeStateApi", {
+      get: () => ipcRenderer.sendSync("office:state:get"),
+      set: (state) => ipcRenderer.invoke("office:state:set", state),
+      /** ACCT-OFFICE-01 — 'account' (kayıt bu hesabın) | 'shared' (girişsiz/ortak kök). SYNC. */
+      scope: () => ipcRenderer.sendSync("office:state:scope"),
+      // OFC-MIG-01 — geçiş yedeği (hesap köküne atomik) + sonuç satırı main logu için.
+      // BEYAZ LİSTE KAPIDIR ([[ref_preload_whitelist_is_a_gate]]): officeMigrationRunner bu üç adı arar.
+      backupWrite: (json, fromVersion) => ipcRenderer.invoke("office:backup:write", { json, fromVersion }),
+      backupRead: (file) => ipcRenderer.invoke("office:backup:read", { file }),
+      migrationReport: (report) => ipcRenderer.send("office:migration:report", report)
+    });
+    contextBridge.exposeInMainWorld("feedbackSeenApi", {
+      get: () => ipcRenderer.sendSync("feedback:seen:get"),
+      set: (state) => ipcRenderer.invoke("feedback:seen:set", state)
+    });
+    if (!perfFlag("AGENTSPACE_DECISION_DRAFTS_LEGACY", false)) {
+      contextBridge.exposeInMainWorld("decisionDraftsApi", {
+        get: () => ipcRenderer.sendSync("decision:drafts:get"),
+        set: (state) => ipcRenderer.invoke("decision:drafts:set", state)
+      });
+    }
+    if (!perfFlag("AGENTSPACE_RENDERER_STATE_LEGACY", false)) {
+      contextBridge.exposeInMainWorld("rendererStateApi", {
+        get: (name) => ipcRenderer.sendSync("renderer-state:get", name),
+        set: (name, value) => ipcRenderer.invoke("renderer-state:set", name, value),
+        onChanged: (cb) => {
+          const handler = (_e, payload) => {
+            try {
+              cb(payload);
+            } catch {
+            }
+          };
+          ipcRenderer.on("renderer-state:changed", handler);
+          return () => ipcRenderer.removeListener("renderer-state:changed", handler);
+        }
+      });
+    }
+    contextBridge.exposeInMainWorld("agentFilesApi", {
+      list: () => ipcRenderer.invoke("agentFiles:list"),
+      onChanged: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("agentFiles:changed", listener);
+        return () => ipcRenderer.removeListener("agentFiles:changed", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("codeIntelApi", {
+      /** Diff one file vs HEAD → { ok, tracked, relPath, committedText, added, modified, removed, summary }. */
+      diff: (filePath) => ipcRenderer.invoke("git:diff", filePath),
+      /** Files in the active workspace (scoped to its git repo) → { ok, files:[path…] }.
+       *  `root` (TASK-MQTIVZSDYPNRH) = the editor's active file/folder; main scopes to it. */
+      listFiles: (root) => ipcRenderer.invoke("workspace:listFiles", root),
+      /** Literal case-insensitive content search in the active workspace → { ok, hits:[{file,
+       *  line, text}], truncated }. `root` scopes the search (active file/folder). */
+      grep: (query, root) => ipcRenderer.invoke("workspace:grep", { query, root }),
+      /** ADP-402 — pane header git-branch rozeti: cwd → saran repo'nun branch'i
+       *  ({ ok, branch: string|null }; git değilse/root dışıysa branch yok). */
+      // B-02 — `opts.force` TTL cache'ini atlar: görev değişimi / attach / merge
+      // sonrası rozet 5 saniye bayat kalmasın (poll YOK, yalnız olay).
+      branch: (cwd, opts) => ipcRenderer.invoke("git:branch", cwd, opts),
+      /** EDITOR-HIFI-F1b — ağacın git renkleri: kök → { ok, repo, files:{ 'kök-göreli/yol': 'M'|'U'|'D'|'A' },
+       *  total, truncated }. `opts.watch` = kökü izle; değişince onStatusChanged ≤2 sn içinde haber verir. */
+      status: (root, opts) => ipcRenderer.invoke("git:status", root, opts),
+      /** EDITOR-HIFI-F1b — bu pencerenin kök izleyicisini kapat (ağaç kapandı / editör söküldü). */
+      unwatchStatus: () => ipcRenderer.invoke("git:status:unwatch"),
+      /** EDITOR-HIFI-F1b — izlenen kökte git durumu değişmiş olabilir → cb({ root }). Dönüş: abonelikten çık. */
+      onStatusChanged: (cb) => {
+        const l = (_e, p) => {
+          try {
+            cb(p);
+          } catch {
+          }
+        };
+        ipcRenderer.on("git:status:changed", l);
+        return () => ipcRenderer.removeListener("git:status:changed", l);
+      },
+      /** EDITOR-HIFI-F2b — proje araması: { query, caseSensitive, wholeWord, regex, root } →
+       *  { ok, searchId, engine, hits:[{ file, line, text, matches:[{col,len}], clipped }], truncated, partial, ms, reason? } */
+      search: (opts) => ipcRenderer.invoke("workspace:search", opts),
+      /** EDITOR-HIFI-F2b — son aramanın "sonra" metinleri: { searchId, replacement } → { ok, reps:[[metin…]…] } */
+      replacePreview: (searchId, replacement) => ipcRenderer.invoke("workspace:replacePreview", { searchId, replacement }),
+      /** EDITOR-HIFI-F2b — onay öncesi: { ok, files:[{ file, ageMs, changed, writable }] } */
+      replaceCheck: (searchId) => ipcRenderer.invoke("workspace:replaceCheck", { searchId }),
+      /** EDITOR-HIFI-F2b — yalnız gösterilen satırlarda değiştir (ana süreç yazar, yedekler):
+       *  → { ok, opId, replaced, files:[{file,count}], skipped:[{file,reason}] } */
+      replaceApply: (searchId, replacement, files) => ipcRenderer.invoke("workspace:replaceApply", { searchId, replacement, files }),
+      /** EDITOR-HIFI-F2b — tek adımda geri al → { ok, restored:[file…], skipped:[{file,reason}] } */
+      replaceUndo: (opId) => ipcRenderer.invoke("workspace:replaceUndo", { opId }),
+      /** EDITOR-HIFI-F2b — Değişiklikler paneli: { ok, repo, top, branch, files:[{ file, code, add, del, dir }], total, truncated } */
+      changes: (root) => ipcRenderer.invoke("git:changes", root)
     });
     contextBridge.exposeInMainWorld("delegationBridge", {
       /** Subscribe to delegate requests from main. cb gets { requestId, objective, leaderId, department, workers? }. */
@@ -571,7 +1189,7 @@ var require_agents = __commonJS({
       },
       /** Reply to a status request: { requestId, ok, snapshot }. */
       statusResult: (res) => ipcRenderer.send("delegation:status:result", res),
-      // ADP-242 — sprint kanalları (MCP crewpane_sprint → bridge → renderer orkestratörü).
+      // ADP-242 — sprint kanalları (MCP agentdesk_sprint → bridge → renderer orkestratörü).
       /** Subscribe to sprint-start requests. cb gets { requestId, objective, leaderId, department, tasks, maxConcurrent? }. */
       onSprintStart: (cb) => {
         const l = (_e, p) => cb(p);
@@ -588,7 +1206,16 @@ var require_agents = __commonJS({
       },
       /** Reply: { requestId, ok, status }. */
       sprintStatusResult: (res) => ipcRenderer.send("sprint:status:result", res),
-      // DF-03 — sprint durdurma kanalı (crewpane_sprint action:"stop").
+      // TEAM-COMPOSE-ROLE-01 — kapsam kapısından ÖNCE takım adı → kanonik slug (renderer'ın takım tablosu).
+      /** Subscribe to team-name resolve requests. cb gets { requestId, department }. */
+      onTeamsResolve: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("teams:resolve", l);
+        return () => ipcRenderer.removeListener("teams:resolve", l);
+      },
+      /** Reply: { requestId, ok, scope? } | { requestId, ok:false, reason, message? }. */
+      teamsResolveResult: (res) => ipcRenderer.send("teams:resolve:result", res),
+      // DF-03 — sprint durdurma kanalı (agentspace_sprint action:"stop").
       /** Subscribe to sprint-stop requests. cb gets { requestId, id?, reason? }. */
       onSprintStop: (cb) => {
         const l = (_e, p) => cb(p);
@@ -598,11 +1225,566 @@ var require_agents = __commonJS({
       /** Reply: { requestId, ok, sprintId?, summary?, wasLive?, error? }. */
       sprintStopResult: (res) => ipcRenderer.send("sprint:stop:result", res)
     });
+    contextBridge.exposeInMainWorld("composeBridge", {
+      // — main → renderer TURLARI (köprü: MCP aracı → main → burası) —
+      /** Satır kurma isteği. cb: { requestId, objective, roles, mode, teamName, department, leaderId, maxEmployees, rejectedRoles }. */
+      onPropose: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("team-compose:propose", l);
+        return () => ipcRenderer.removeListener("team-compose:propose", l);
+      },
+      /** Cevap: { requestId, ok, teamName?, rows?, targetTeamId?, catalogSlugs?, error? }. */
+      proposeResult: (res) => ipcRenderer.send("team-compose:propose:result", res),
+      /** Kurulum isteği. cb: { requestId, proposalId, mode, teamName, rows, targetTeamId }. */
+      onApply: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("team-compose:apply", l);
+        return () => ipcRenderer.removeListener("team-compose:apply", l);
+      },
+      /** Cevap: { requestId, ok, teamId?, createdTeam?, employeeIds?, names?, … }. */
+      applyResult: (res) => ipcRenderer.send("team-compose:apply:result", res),
+      /** Geri alma isteği. cb: { requestId, teamId, createdTeam, employeeIds }. */
+      onUndo: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("team-compose:undo", l);
+        return () => ipcRenderer.removeListener("team-compose:undo", l);
+      },
+      /** Cevap: { requestId, ok, removedEmployees, removedTeam, error? }. */
+      undoResult: (res) => ipcRenderer.send("team-compose:undo:result", res),
+      // — KART YÜZEYİ (TC-02 bunları kullanır) —
+      /** Onay kartı olayı. cb: { proposalId, mode, teamName, rows, expiresAt, planNote, source, autonomy }. */
+      onProposal: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("team-compose:proposal", l);
+        return () => ipcRenderer.removeListener("team-compose:proposal", l);
+      },
+      /** Kurulum sonrası şerit olayı. cb: { proposalId, teamName, names, wingSlug, undoExpiresAt }. */
+      onApplied: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("team-compose:applied", l);
+        return () => ipcRenderer.removeListener("team-compose:applied", l);
+      },
+      /**
+       * Kullanıcının kararı → main. { proposalId, decision:'approve'|'reject', teamName?, rows?, mode?, catalogSlugs? }
+       * Dönen `approvalToken` MAIN'de doğar; kart onu üretemez.
+       */
+      decide: (req) => ipcRenderer.invoke("team-compose:decision", req),
+      /** Ayar kademesi (§9.7): { ok, autonomy:'ask'|'small-auto'|'auto' }. */
+      autonomy: () => ipcRenderer.invoke("team-compose:autonomy"),
+      /**
+       * TC-02 — KULLANICININ şeritten geri alması. §3.6 bunu yalnız main→renderer
+       * yönünde tanımlıyordu; şeridin düğmesi ters yönü ister. → { ok, error? }
+       */
+      undoRequest: (proposalId) => ipcRenderer.invoke("team-compose:undo-request", { proposalId }),
+      /**
+       * ENGINE-BULK-01 — patronun "Motoru değiştir"i (ofis kanadı başlığı). Main TC-07
+       * önerisini açar; onay kartı `team-compose:proposal` olayıyla gelir.
+       * { department, engine, leaderId?, leaderIds? } → { ok, proposalId?, rows?, code?, reason? }
+       * ENGINE-BULK-ALL-01 — department '*' = "Tüm ofisler" (leaderIds: yerinde kalan liderler).
+       */
+      engineSwitch: (req) => ipcRenderer.invoke("team-compose:engine-switch", req)
+    });
+    contextBridge.exposeInMainWorld("windowApi", {
+      /** Switch the tmux session's active window to the team that owns `department`. */
+      selectForDepartment: (department) => ipcRenderer.invoke("tmux:selectWindow", department)
+    });
+    contextBridge.exposeInMainWorld("appApi", {
+      /** → { mode:'dev'|'prod'|'spike', packaged, rebuildSupported }. */
+      info: () => ipcRenderer.invoke("app:info"),
+      /** One-click rebuild (electron:build:prep) + relaunch. → { ok, started } | { ok:false, reason }. */
+      rebuildRelaunch: () => ipcRenderer.invoke("app:rebuildRelaunch"),
+      /** ADP-232 — plain relaunch (NO rebuild) to apply restart-gated settings (workspaceRoot). → { ok }. */
+      relaunch: () => ipcRenderer.invoke("app:relaunch"),
+      /** Subscribe to rebuild progress. cb gets { phase:'start'|'log'|'done'|'error', line }. Returns unsubscribe. */
+      onRebuildProgress: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("app:rebuild:progress", l);
+        return () => ipcRenderer.removeListener("app:rebuild:progress", l);
+      },
+      /** ADP-284 — pencere görünürlüğü (minimize/hide → false). Canvas render kapıları için; returns unsubscribe. */
+      onWindowVisible: (cb) => {
+        const l = (_e, visible) => cb(!!visible);
+        ipcRenderer.on("app:window-visible", l);
+        return () => ipcRenderer.removeListener("app:window-visible", l);
+      },
+      /**
+       * ADP-901 — RENDERER MODÜL HATASI → uygulama günlüğü + bildirim merkezi.
+       * ADP-335 sınırı yalnız MAIN'deki modülleri kapsıyordu; ofis tuvali öldüğünde
+       * (GL bağlam kaybı) uygulamanın gününde TEK BİR İZ kalmıyordu — teşhis, olayın
+       * kendisinden değil ekran görüntüsünden başlamak zorunda kaldı. Artık renderer
+       * de aynı deftere yazar. `{ label, message, location?, stopped? }`.
+       */
+      reportFault: (fault) => ipcRenderer.invoke("module:reportRenderer", fault),
+      /**
+       * OBS-01 — ÜRÜN ANALİTİĞİ: "hangi panel/sekme kullanılıyor".
+       * Gövde `{ event:'panel_view', panel:'<dock sekme kimliği>' }` ile SINIRLI —
+       * main tarafı olay adını ve panel kimliğini kapalı kümeye indirir, ortak damgayı
+       * (sürüm/platform/katman) kendisi ekler. Serbest metin taşıyan bir alan YOK.
+       */
+      track: (payload) => ipcRenderer.invoke("analytics:track", payload),
+      // HATA-06 — kurtarma merdiveninin KABUK basamakları (sayfa-içi yol yetmediğinde).
+      // Renderer PARAMETRE GEÇİREMEZ: yalnız kapalı bir eylem adı gönderir; hangi
+      // pencerenin yenileneceğine/yaratılacağına main karar verir (capability modeli).
+      officeRecover: (action) => ipcRenderer.invoke("office:recover", { action })
+    });
+    contextBridge.exposeInMainWorld("onboardingApi", {
+      /** → { ok, local: kayıt|null, portable: kayıt|null } */
+      load: () => ipcRenderer.invoke("onboarding:load"),
+      /** → { ok, local, portable, error } */
+      save: (progress) => ipcRenderer.invoke("onboarding:save", progress),
+      // TOUR-02-C — bağlamsal ipuçları AYNI köprüde, AYRI kayıt: "hangi ipucu
+      // gösterildi" ile "hangi görev bitti" iki farklı şemadır ve tek dosyada
+      // birleştirilseydi biri diğerinin bilinmeyen alanını düşürürdü.
+      /** → { ok, local: kayıt|null, portable: kayıt|null } */
+      loadTips: () => ipcRenderer.invoke("onboarding:tips:load"),
+      /** → { ok, local, portable, error } */
+      saveTips: (tips) => ipcRenderer.invoke("onboarding:tips:save", tips),
+      /** ONB-EDGE-01 — mikrofon izni (yalnız okuma, istem açmaz) → { ok, status, platform }. */
+      micStatus: () => ipcRenderer.invoke("onboarding:micStatus")
+    });
+    contextBridge.exposeInMainWorld("worktreeApi", {
+      /** → { ok, worktrees:[{taskId, project, code, branch, path, baseCommit, owner, state, livePaneId}] } */
+      list: () => ipcRenderer.invoke("worktree:list"),
+      /**
+       * İnceleme kartının verisi — HİÇBİR ŞEYİ DEĞİŞTİRMEZ.
+       * → { ok, branch, target, commitCount, commits, files, diffStat, conflict, conflictFiles,
+       *     secretScan:{ok,findings}, approval:{approver,auto,blocked,why}, preconditions }
+       * `secretScan.findings` yalnız DOSYA + TÜR taşır; sırrın DEĞERİ asla dönmez (G-4).
+       */
+      review: (input) => ipcRenderer.invoke("worktree:review", input),
+      /** Merge et. Kapılar burada TEKRAR koşar; `approvedBy:true` patron onayıdır. */
+      merge: (input) => ipcRenderer.invoke("worktree:merge", input),
+      /** Merge sonrası ağacı kaldır. Kirli ağaç yalnız `force:true` ile (patron onayı, G-9). */
+      release: (input) => ipcRenderer.invoke("worktree:release", input),
+      /** Temizlik taraması: kayıp/bayat kayıtlar + defter DIŞI yönetilen ağaçlar. */
+      reap: () => ipcRenderer.invoke("worktree:reap")
+    });
+    contextBridge.exposeInMainWorld("reviewApi", {
+      /** { taskId, code?, project?, description?, target? } → summary (state: ready|empty|wrong-target|no-branch|no-target|no-repo) */
+      summary: (input) => ipcRenderer.invoke("review:summary", input),
+      /** { taskId, path } → { ok, path, status, original, modified, binary?, tooLarge? } */
+      file: (input) => ipcRenderer.invoke("review:file", input),
+      /** { taskId } → { ok, at, checks:[{id, state, value, record:{at, lines}}] } */
+      checks: (input) => ipcRenderer.invoke("review:checks", input),
+      // PR-INCELEME-F1a — panonun inceleme listesi; kontrol sonucu buradan GİRİLMEZ (ana süreç ölçer).
+      /** { items:[{taskId, code?, status?, project?, description?}] } → { ok, at, ms, items:[{taskId, state, branch, head, target, ahead, files, plus, minus, checks}] } */
+      list: (input) => ipcRenderer.invoke("review:list", input),
+      // PR-INCELEME-F1c — kontrol/çakışma/sır sonucu buradan GİRİLMEZ; ana süreç her çağrıda yeniden ölçer.
+      /** { taskId, agentId? } → { ok, live, agentId } — ajanın canlı pane'i var mı */
+      agentPane: (input) => ipcRenderer.invoke("review:agentPane", input),
+      /** { taskId, agentId?, code?, round, body, comments:[{path,line,kind,body}], mergeState } → { ok, delivery, text, head, base, nextRound, mergeState } */
+      requestChanges: (input) => ipcRenderer.invoke("review:requestChanges", input),
+      /** { taskId, prevHead, prevBase? } → { ok, samePatch, base:{from,to,moved,commits}, files:[{path,state}], newCommits } */
+      rounds: (input) => ipcRenderer.invoke("review:rounds", input),
+      /** { taskId, expectedHead?, setting? } → { ok, head, blocked, blockers, approval, checks, targetIsMain, ... } */
+      mergePlan: (input) => ipcRenderer.invoke("review:mergePlan", input),
+      /** { taskId, expectedHead, cleanup?, actor?, code?, title?, mergeState? } → { ok, mergedCommit, verified, cleanup, mergeState } | { ok:false, code, why } */
+      merge: (input) => ipcRenderer.invoke("review:merge", input)
+    });
+    contextBridge.exposeInMainWorld("projectConfigApi", {
+      /** → { ok, workspaceRoot, projects:[{slug, isolation, defaultBranch, repoPath, repoSource}] } */
+      get: (slugs) => ipcRenderer.invoke("project:config:get", { slugs }),
+      /** { slug, isolation:'worktree'|'off', defaultBranch? } → { ok, persisted, branchSaved, repoPath, why } */
+      set: (input) => ipcRenderer.invoke("project:config:set", input),
+      // PROJ-REGISTRY-01 — proje = klasör kaydı. Renderer YOL GÖNDEREMEZ: klasörü işletim
+      // sisteminin penceresinde kullanıcı seçer, main seçimi tek kullanımlık bilete bağlar.
+      /** { name } → { ok, slug } — kısa ad TEK yerde (main) üretilir. */
+      slugFor: (name) => ipcRenderer.invoke("project:slug", { name }),
+      /** → { ok, folders:[{slug, path, state:'ok'|'missing'|'not-dir', git, branch}] } */
+      // PROJECT-B1a — `{ department }` verilirse cevapta `teamProject` (Yeni pane menüsünün varsayılanı) + `root`.
+      folders: (input) => ipcRenderer.invoke("project:folder:list", input && typeof input === "object" ? { department: input.department } : void 0),
+      /** Klasör penceresini aç → { ok, pickId, path (yalnız gösterim), name, suggestedSlug, git, branch } */
+      pickFolder: () => ipcRenderer.invoke("project:folder:pick"),
+      /** { slug, pickId } → { ok, slug, path, git, branch, changed, why } */
+      assignFolder: (input) => ipcRenderer.invoke("project:folder:assign", input),
+      // PROJECT-B1 — takımın varsayılan projesi (bu cihazdaki ayna). Yalnız takım anahtarı + kısa ad.
+      /** { department, slug|null } → { ok, changed, why } */
+      setTeamDefault: (input) => ipcRenderer.invoke("project:team-default:set", {
+        department: input && input.department,
+        slug: input && (input.slug === null || typeof input.slug === "string") ? input.slug : null,
+        names: input && input.names && typeof input.names === "object" ? input.names : void 0
+      }),
+      // PROJECT-POLISH-01 (FB-MEM-05) — proje / çalışma alanı değişince eski projede kalan pane'ler.
+      // Olay: { id, kind:'workspace'|'team', count, team, from:{slug,label}, to:{slug,label} }.
+      // Yeniden açma yalnız olayın KİMLİĞİNİ taşır: hangi pane'in nereye açılacağını main kendi
+      // kaydından bilir; renderer pane listesi ya da yol dayatamaz.
+      onPaneDrift: (cb) => {
+        const l = (_e, payload) => {
+          try {
+            cb(payload);
+          } catch {
+          }
+        };
+        ipcRenderer.on("panes:project-drift", l);
+        return () => ipcRenderer.removeListener("panes:project-drift", l);
+      },
+      /** { id } → { ok, results:[{paneId, ok, skipped?:'busy'|'gone', newPaneId?}] } */
+      reopenDriftPanes: (id) => ipcRenderer.invoke("panes:project-drift:reopen", { id: typeof id === "string" ? id : "" }),
+      /** { id } → { ok } — "Böyle kalsın": kayıt düşer, pane'lere dokunulmaz. */
+      dismissDrift: (id) => ipcRenderer.invoke("panes:project-drift:dismiss", { id: typeof id === "string" ? id : "" })
+    });
+    contextBridge.exposeInMainWorld("codeIndexApi", {
+      /**
+       * → { ok, installed, binPath, binName, installUrl,
+       *     projects:[{slug, repoPath, enabled, indexedSha, lastIndexedAt,
+       *                state:'not-indexed'|'fresh'|'stale'|'unknown', staleFiles, indexing}] }
+       * `state:'unknown'` "ölçemedim" demektir ve "taze" diye YUVARLANMAZ (CIDX-0 §4b).
+       */
+      list: (slugs) => ipcRenderer.invoke("codeIndex:list", { slugs }),
+      /** { slug, enabled } → { ok, enabled, persisted, restartHint }. */
+      set: (slug, enabled) => ipcRenderer.invoke("codeIndex:set", { slug, enabled }),
+      /** Arka planda indeksle → { ok, started, repoPath } | { ok:false, why }. */
+      index: (slug) => ipcRenderer.invoke("codeIndex:index", { slug }),
+      /** İlerleme/bitiş: { slug, running, ok?, exitCode?, tail? }. */
+      onProgress: (cb) => {
+        const handler = (_e, payload) => cb(payload);
+        ipcRenderer.on("codeIndex:progress", handler);
+        return () => ipcRenderer.removeListener("codeIndex:progress", handler);
+      }
+    });
+    contextBridge.exposeInMainWorld("settingsApi", {
+      /** → { ok, workspaceRoot, resolvedWorkspaceRoot, repoRoot, firstRunRequired, defaultWorkspaceDir, pushToTalkKey, pushToTalkKeys, wakeModelPath, hasOpenAiKey, mcpServers, theme }. */
+      get: () => ipcRenderer.invoke("settings:get"),
+      /** Merge-patch + persist. patch = { workspaceRoot?, apiKeys?:{openai?,…}, pushToTalkKey?, wakeModelPath?, mcpServers?, theme?, notifications?, engines?:{<id>:{vendorHosted:'allow'|'block'}} }. */
+      set: (patch) => ipcRenderer.invoke("settings:set", patch),
+      /**
+       * WN-01 — açılış anlık görüntüsü (karşılama sırası). → { ok, previousVersion,
+       * currentVersion, signals: { productTourDone, onboardingGuideDone, officeKeys[],
+       * onboardingFile } | null }. Süreç başına sabit (main memo).
+       */
+      launchInfo: () => ipcRenderer.invoke("app:launchInfo"),
+      /**
+       * SKL-B3 — ürünün KENDİ API anahtarını (bugün: gemini) GERÇEKTEN sağlayıcıya sorar.
+       * Renderer yalnız SERVİS ADINI verir; anahtar bu köprüden hiçbir yönde geçmez.
+       * → { ok:true, source, status, count } | { ok:false, reason:'no-key'|'rejected'|
+       *    'unreachable'|'unsupported', … }
+       */
+      verifyAppKey: (service) => ipcRenderer.invoke("appkey:verify", service),
+      /**
+       * ADP-232-C — ilk-açılış "çalışma alanı seç": { mode:'create'|'pick' }.
+       * 'create' önerilen ~/AgentSpace'i oluşturur; 'pick' OS klasör dialog'u açar
+       * (yol renderer'dan asla gelmez). → { ok, root, restartRequired } | { ok:false, reason }.
+       */
+      provisionWorkspace: (req) => ipcRenderer.invoke("workspace:provision", req),
+      /**
+       * ADP-232-B — CANLI çalışma alanı geçişi (yeniden başlatmadan). req:
+       *   { mode:'pick' }    → OS klasör dialog'u (yol renderer'dan gelmez),
+       *   { mode:'current' } → Ayarlar'ın settings.workspaceRoot'a yazdığı kökü canlı uygula,
+       *   { root:'…' }       → doğrudan yol (Ayarlar input'u; settings:set ile aynı güven sınırı).
+       * → { ok, root, previous, changed, grandfathered[] } | { ok:false, reason }.
+       * Açık pane'ler/çalışan işler ESKİ kökte kalır; yeni işler yeni kökte açılır.
+       */
+      switchWorkspace: (req) => ipcRenderer.invoke("workspace:switch", req),
+      /**
+       * ADP-737 — TAKIM KAPSAMI KAPISI (renderer ucu). Delegasyon yolunda her worker'ın
+       * KENDİ takımı için sorulur: hedef takım liderin takımı değilse main sahibe onay
+       * kartı çıkarır ve cevabı bekler. Karar renderer'da ASLA verilmez — burada yalnız
+       * sorulur (`{action:'delegate'|'manage', leaderId, targetScope}` → `{ok, code?, reason?}`).
+       */
+      authorizeTeamScope: (req) => ipcRenderer.invoke("teamScope:authorize", req),
+      // TEAM-PERM-HINT-01 — şablon kurulumu: tek liderin lidersiz takımlara izni ({leaderId, scopes}).
+      grantPresetLeaderScope: (req) => ipcRenderer.invoke("teamScope:grantPresetLeader", req),
+      // TEAM-PERM-EXISTING-01 — mevcut ofis: açılışta bir kez sorulan izin kartı. Karar main'de;
+      // renderer adayı bildirir ({companyId, leaderId, leaderLabel, ownScope, targets}) ve cevabı
+      // iletir ({leaderId, yes}). İzin verilecek takımlar teklif anındaki kayıttan gelir.
+      offerExistingTeamScope: (req) => ipcRenderer.invoke("teamScope:offerExisting", req),
+      answerTeamScopeOffer: (req) => ipcRenderer.invoke("teamScope:answerOffer", req),
+      /**
+       * ADP-888 — ARAYÜZ DİLİ canlı değişince main push eder: cb({ locale, preference }).
+       * Route değişmez, ağaç yeniden render olur → açık pane/terminal durumu KORUNUR.
+       * Returns unsubscribe.
+       */
+      onLocaleChanged: (cb) => {
+        const l = (_e, payload) => cb(payload || {});
+        ipcRenderer.on("app:locale-changed", l);
+        return () => ipcRenderer.removeListener("app:locale-changed", l);
+      },
+      /** ADP-232-B — kök CANLI değişince main push eder: cb({ root, previous, grandfathered[], at }). Returns unsubscribe. */
+      onWorkspaceChanged: (cb) => {
+        const l = (_e, payload) => cb(payload || {});
+        ipcRenderer.on("workspace:changed", l);
+        return () => ipcRenderer.removeListener("workspace:changed", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("updateApi", {
+      /** → { checked, updateAvailable, latestVersion, currentVersion, lastCheckedAt, autoCheck, dismissed, downloadUrl, mode, phase, progressPercent }. */
+      get: () => ipcRenderer.invoke("update:get"),
+      /** Manuel kontrol (Ayarlar "Şimdi kontrol et"; toggle'dan bağımsız koşar). → aynı durum nesnesi. */
+      checkNow: () => ipcRenderer.invoke("update:checkNow"),
+      /** updater modu: uygulama içinde indir (progress push'ları gelir); notify modu: tarayıcıda SABİT DMG URL'i. */
+      download: () => ipcRenderer.invoke("update:download"),
+      /** ADP-553 — İNDİRİLMİŞ güncellemeyi kullanıcı onayıyla kur (yeniden başlatır). phase!=='downloaded' → no-op. */
+      install: () => ipcRenderer.invoke("update:install"),
+      /** "Bu sürüm için sonra" — sürüm-bazlı kalıcı dismiss (settings.json). → durum. */
+      dismiss: () => ipcRenderer.invoke("update:dismiss"),
+      /** Main durum push'u (kontrol sonucu/dismiss) → rozet CANLI güncellenir. Returns unsubscribe. */
+      onState: (cb) => {
+        const l = (_e, s) => cb(s);
+        ipcRenderer.on("update:state", l);
+        return () => ipcRenderer.removeListener("update:state", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("announceApi", {
+      /** → { checked, fromCache, lastCheckedAt, currentVersion, items:[{id,level,title,body,action,read,hidden,…}] }. */
+      get: () => ipcRenderer.invoke("announce:get"),
+      /** Feed'i şimdi çek (Ayarlar/geliştirici tetiği). → aynı durum nesnesi. */
+      checkNow: () => ipcRenderer.invoke("announce:checkNow"),
+      /** "Okudum" — KALICI (settings.json); bir daha şerit çıkmaz. → durum. */
+      markRead: (id) => ipcRenderer.invoke("announce:markRead", id),
+      /** Şeridin ✕'i — OTURUMLUK gizleme (diske yazılmaz, yeniden açılışta geri gelir). */
+      hide: (id) => ipcRenderer.invoke("announce:hide", id),
+      /** Aksiyon düğmesi: adresi MAIN çözer + https doğrular + shell.openExternal. */
+      openAction: (id) => ipcRenderer.invoke("announce:openAction", id),
+      /** Gövde içi link: main adresin O duyurunun gövdesinde GERÇEKTEN geçtiğini doğrular. */
+      openLink: (id, url) => ipcRenderer.invoke("announce:openLink", id, url),
+      /** Main durum push'u (yeni feed / okundu) → UI CANLI güncellenir. Returns unsubscribe. */
+      onState: (cb) => {
+        const l = (_e, s) => cb(s);
+        ipcRenderer.on("announce:state", l);
+        return () => ipcRenderer.removeListener("announce:state", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("changelogApi", {
+      /** → { checked, fromCache, lastCheckedAt, recentCount, recentWindowDays, items:[{date,category,version,product,url,tr,en}] }. */
+      get: () => ipcRenderer.invoke("changelog:get"),
+      /** Feed'i şimdi çek (geliştirici tetiği). → aynı durum nesnesi. */
+      checkNow: () => ipcRenderer.invoke("changelog:checkNow"),
+      /** Sürüm notu linki: main renderer'ın gönderdiği adresi KENDİ kayıt listesiyle doğrular. */
+      openUrl: (url) => ipcRenderer.invoke("changelog:openUrl", url),
+      /** Main durum push'u (periyodik tazeleme) → UI CANLI güncellenir. Returns unsubscribe. */
+      onState: (cb) => {
+        const l = (_e, s) => cb(s);
+        ipcRenderer.on("changelog:state", l);
+        return () => ipcRenderer.removeListener("changelog:state", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("muratifyApi", {
+      /** → { ok, signedIn, email, licenseStatus:'none'|'fresh'|'grace'|'expired'|'invalid', seat, products[], requireSeat }. */
+      get: () => ipcRenderer.invoke("muratify:get"),
+      /** Sistem tarayıcısında PKCE girişini başlat → { ok, url }. */
+      signIn: () => ipcRenderer.invoke("muratify:signIn"),
+      /**
+       * Hesaptan çık (sunucuda revoke + yerel oturum & lisans jetonu silinir).
+       *
+       * ADP-863 — SEÇENEKLER ARTIK KABLODA TAŞINIR (eskiden hiç iletilmiyordu, bu yüzden
+       * `force` yolu arayüzden ERİŞİLEMEZDİ → çalışan pane varken çıkış SESSİZCE reddedilirdi):
+       *   `{ probe:true }` → çıkmadan "ne kapanacak" sayıları + onay metni
+       *   `{ force:true }` → kullanıcı onay diyaloğunu onayladı, çalışan pane'lere rağmen çık
+       */
+      signOut: (opts) => ipcRenderer.invoke("muratify:signOut", opts),
+      /** Lisans jetonunu yeniden çek (ağ hatasında cached jeton KORUNUR — offline ≠ kilit). */
+      refresh: () => ipcRenderer.invoke("muratify:refresh"),
+      /**
+       * SEC-01 — hesaba bağlı cihazlar → { ok, devices:[…], currentDeviceId }.
+       * `currentDeviceId` listede "bu cihaz"ı işaretlemek için: kullanıcı oturduğu
+       * makineyi yanlışlıkla çıkarmasın.
+       */
+      devices: () => ipcRenderer.invoke("muratify:devices"),
+      /**
+       * SEC-01 — cihazı hesaptan çıkar → { ok, device } | { ok:false, reason }.
+       * Cihazdaki hiçbir veri silinmez; yalnız o kurulum yeni lisans jetonu alamaz.
+       * Başarıda main lisansı kendiliğinden tazeler (ret çözüldüyse hemen düşsün).
+       */
+      revokeDevice: (deviceId) => ipcRenderer.invoke("muratify:deviceRevoke", deviceId),
+      /**
+       * SEC-02 — DİĞER CİHAZLARI BIRAK → { ok, released } | { ok:false, reason }.
+       * `revokeDevice`ten AYRI: koltuğu boşaltır, cihazı hesapta BIRAKIR. Uyuyan ya
+       * da çöken bir makine kirasını bırakamadığında kullanıcının kaçış kapısıdır.
+       * Başarıda main lisansı kendiliğinden tazeler (ret çözüldüyse hemen düşsün).
+       */
+      releaseOtherDevices: () => ipcRenderer.invoke("muratify:deviceReleaseOthers"),
+      /** ADP-646 — "Paket al": faturalandırma sayfasını SİSTEM TARAYICISINDA aç → { ok, url }. */
+      openBilling: () => ipcRenderer.invoke("muratify:openBilling"),
+      /**
+       * ADP-719 — giriş dönüşü (agentspace://) DOĞRU uygulamaya mı geliyor?
+       * → { ok, severity:'blocking'|'warn'|null, ownsDefault, conflicts:[{path,bundleId,name}], reason }
+       * `{ repair:true }` şema sahipliğini bu uygulamaya geri alır (kullanıcı tıkı).
+       */
+      schemeHealth: (opts) => ipcRenderer.invoke("muratify:schemeHealth", opts),
+      /**
+       * LX-SAFESTORAGE-01 — bu makinede oturum SAKLANABİLİR Mİ?
+       * → { ok, measured, available, backend, plaintext, canStore, reasonKey }
+       * `canStore:false` ise giriş duvarı kullanıcıya SEBEBİNİ söyler (her açılışta
+       * yeniden giriş isteneceğini). SIR TAŞIMAZ: yalnız arka ucun adı + hüküm.
+       * `canStore:null` = ölçülemedi ("kapalı" DEĞİL — ADP-721).
+       */
+      secretBackend: () => ipcRenderer.invoke("muratify:secretBackend"),
+      /**
+       * ADP-719 — İKİNCİ GİRİŞ YOLU: deep-link dönmediyse tarayıcının adres
+       * çubuğundaki dönüş bağlantısı elle verilir; deep-link ile AYNI yoldan işlenir.
+       */
+      pasteCallback: (url) => ipcRenderer.invoke("muratify:pasteCallback", url),
+      /** Main durum değişince push eder (giriş/çıkış/jeton) → Ayarlar CANLI güncellenir. */
+      onState: (cb) => {
+        const l = (_e, s) => cb(s);
+        ipcRenderer.on("muratify:state", l);
+        return () => ipcRenderer.removeListener("muratify:state", l);
+      },
+      // ── RESET-03 — KURULUMU SIFIRLA ───────────────────────────────────────────
+      //
+      // 🔴 BEYAZ LİSTE KAPIDIR ([[ref_preload_whitelist_is_a_gate]]) — ve KAPININ
+      // İKİ KATI VAR. İlk yazımda bu iki metot AYRI bir `window.resetApi` globaline
+      // konmuştu: kanal adları doğruydu, main handler'ı vardı, kanal kapısı YEŞİLDİ
+      // — ama RESET-02 köprüyü `window.muratifyApi` ÜZERİNDE arıyor
+      // (`resetFlow.resetApiFrom(muratifyApi())`) ve bulamayınca "Gelişmiş" bölümünü
+      // HİÇ ÇİZMİYOR. Yani özellik sessizce ölüyordu. Kanalın VAR olması yetmez;
+      // KARŞI TARAFIN BAKTIĞI YERDE olması gerekir.
+      //
+      // KARAR BURADA VERİLMEZ. Onay sözcüğünü MAIN karşılaştırır (dil main'de
+      // bilinir, renderer'a güvenilmez); bu köprü yalnız kullanıcının yazdığı metni
+      // taşır. Yol/hedef alanları main'de DÜŞER (resetGate.sanitizeRequest).
+      /**
+       * KURU KOŞUM — hiçbir şey silinmez. `{ level }`
+       * → { ok, level, bytesTotal:number|null, targets:[{kind,bytes,entries}],
+       *     keeps:[{label}], warnings:[string], confirmWord, panes, terminals, agents }
+       * `bytesTotal:null` = "hesaplanamadı" (0 DEĞİL).
+       */
+      resetPlan: (opts) => ipcRenderer.invoke("reset:plan", opts),
+      /**
+       * SIFIRLAMA İSTEĞİ — { level:'session'|'full', confirmText, keepLogs }.
+       * → { ok:true, restarting:true } | { ok:false, reason:'bad_confirm'|'bad_level'|… }
+       * Çalışan süreçte hiçbir kullanıcı dosyası silinmez: main işaretçi yazar ve
+       * uygulama yeniden başlar; silme yeni sürecin EN BAŞINDA olur (Windows kilidi).
+       */
+      resetRequest: (req) => ipcRenderer.invoke("reset:request", req)
+    });
+    contextBridge.exposeInMainWorld("planApi", {
+      /** → { ok, enforced, tier, tierLabel, fallback, features{agents,integrations,autopilot}, billingUrl }. */
+      get: () => ipcRenderer.invoke("plan:get"),
+      /**
+       * BL-03 — "yükselttim, hâlâ kilitli mi?" → jetonu TAZELE + reddin KENDİ ölçüsünü
+       * yeniden karara sok. → { ok, refreshed, allowed, tier, tierLabel, requiredTierLabel }.
+       * Karar yine main'dedir (planLimits.decide); burası yalnız reddin (feature,current)
+       * çiftini geri taşır — renderer ikinci bir tavan mantığı KURMAZ.
+       */
+      recheck: (feature, current) => ipcRenderer.invoke("plan:recheck", { feature, current }),
+      /** Main bir eylemi plan limiti yüzünden reddettiğinde push eder (kapatılabilir nudge). */
+      onLimit: (cb) => {
+        const l = (_e, d) => cb(d);
+        ipcRenderer.on("plan:limit", l);
+        return () => ipcRenderer.removeListener("plan:limit", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("resourceApi", {
+      /** → { ok, state } — state: { level, freePct, reasons, waiting[], settings, … }. */
+      state: () => ipcRenderer.invoke("resource:state"),
+      /** "Yine de aç": kullanıcı HER ZAMAN açabilir. Onay süre-kutulu (ms; boş → varsayılan). */
+      allowAnyway: (ms) => ipcRenderer.invoke("resource:allowAnyway", ms),
+      /** Ayarlar: { enabled?, warnFreePct?, criticalFreePct? } → { ok, state }. Diske yazılır. */
+      configure: (patch) => ipcRenderer.invoke("resource:configure", patch),
+      /** Bitmiş (terminal + >15 dk sessiz) pane'ler. `department` verilirse yalnız o takım. */
+      finishedPanes: (opts) => ipcRenderer.invoke("resource:finishedPanes", opts || {}),
+      /** ONAYLI kapatma — main her paneId'yi yeniden ölçer (canlanan pane öldürülmez). */
+      closeFinished: (paneIds) => ipcRenderer.invoke("resource:closeFinished", { paneIds }),
+      /** STRAY-PROC-01 — sahipsiz kalmış test/derleme koşucuları (yalnız liste). */
+      strayProcesses: () => ipcRenderer.invoke("resource:strayProcesses"),
+      /** STRAY-PROC-01 — ONAYLI tek kapatma; main pid'i yeniden ölçer (yeniden kullanılmış pid'e dokunmaz). */
+      closeStray: (pid, startedAt) => ipcRenderer.invoke("resource:closeStray", { pid, startedAt }),
+      /** Baskı seviyesi ya da bekleme kuyruğu değişince push. Dönen fonksiyon aboneliği bırakır. */
+      onPressure: (cb) => {
+        const l = (_e, state) => cb(state);
+        ipcRenderer.on("resource:pressure", l);
+        return () => ipcRenderer.removeListener("resource:pressure", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("reportsApi", {
+      /** cb: ({ at }) => void — abonelikten çıkmak için dönen fonksiyonu çağır. */
+      onChanged: (cb) => {
+        const l = (_e, payload) => cb(payload || { at: Date.now() });
+        ipcRenderer.on("reports:changed", l);
+        return () => ipcRenderer.removeListener("reports:changed", l);
+      },
+      /**
+       * RPT5-01 — "rapor yazıldı": hangi rapor, hangi ajan, hüküm, okur, sürüm, tür
+       * (new|version|writing). Yük sözleşmesi: electron/reportWrittenEvent.d.cts.
+       * cb: (payload) => void — abonelikten çıkmak için dönen fonksiyonu çağır.
+       */
+      onWritten: (cb) => {
+        const l = (_e, payload) => {
+          if (payload && typeof payload === "object") cb(payload);
+        };
+        ipcRenderer.on("report:written", l);
+        return () => ipcRenderer.removeListener("report:written", l);
+      },
+      /**
+       * RPT5-04 — `agentspace://rapor/<proje>/<kimlik>`. Main bekleyen bağlantıyı tutar; renderer
+       * mount'ta ve `onOpenLink` dürtüsünde `takeOpenLink()` ile ÇEKER →
+       * { project, id, filename, found } | null (tek tüketim).
+       */
+      takeOpenLink: () => ipcRenderer.invoke("reports:takeOpenLink"),
+      onOpenLink: (cb) => {
+        const l = () => cb();
+        ipcRenderer.on("report:open-link", l);
+        return () => ipcRenderer.removeListener("report:open-link", l);
+      },
+      /** Terminalde tıklanan bağlantı → main'in aynı ayrıştırıcısı → { ok }. */
+      openLink: (url) => ipcRenderer.invoke("reports:openLink", url),
+      /** "Bağlantıyı kopyala": bu kopyanın şemasıyla bağlantı → string | null. */
+      linkFor: (project, filename) => ipcRenderer.invoke("reports:linkFor", { project, filename }),
+      /**
+       * REPORT-READ-WIDE-01 — "Tarayıcıda aç": { html, name } → main geçici dizine yazar (dış ağı kapalı
+       * belge şartı, electron/reportBrowserCopy.cjs) ve varsayılan tarayıcıda açar → { ok, reason? }.
+       */
+      openCopy: (html, name) => ipcRenderer.invoke("reports:openCopy", { html, name }),
+      /**
+       * RPT-OPEN-INAPP-01 — "Tarayıcıda aç" yeni tarif: { filename, project?, target:'inapp'|'external',
+       * html? } → main raporu kendi dizinlerinde çözer; iç tarayıcıda `agentspace-sayfa://` sekmesi açar
+       * ya da kaynak dosyayı / kalıcı dışa aktarımı dış tarayıcıda açar → { ok, reason?, url? }.
+       * `html` yalnız metin raporunda (okuyucunun çizdiği, dış ağı kapalı kopya).
+       */
+      openPage: (req) => ipcRenderer.invoke("reports:openPage", req),
+      /** RPT-OPEN-INAPP-01 — "Bağlantıyı kopyala ▸": { rapor, sayfa, dosya } (olmayan biçim null). */
+      pageLinks: (project, filename) => ipcRenderer.invoke("reports:pageLinks", { project, filename }),
+      /**
+       * REPORT-READER-01 — "PDF olarak kaydet": { filename, project?, html? } → main kaydetme penceresini
+       * açar, raporu ağa kapalı gizli pencerede basar → { ok, path?, reason? } ('vazgecildi' = kullanıcı vazgeçti).
+       */
+      savePdf: (req) => ipcRenderer.invoke("reports:savePdf", req),
+      /** REPORT-READER-01 — "Klasörde göster": { filename, project? } → raporun dosyası dosya yöneticisinde seçili. */
+      showInFolder: (req) => ipcRenderer.invoke("reports:showInFolder", req),
+      /**
+       * RPT4-08 — rapor yorumunu ajana TEK satır ilet (KRR-04 haber yolu, main `decisionRelay.enqueue`).
+       * n: { hedef, kimlik, metin, gorevleMetin?, parca:{status, taskCode, evidencePath} } →
+       * { ok, key, yeni, sonuc, erteleme }.
+       */
+      forwardComment: (n) => ipcRenderer.invoke("report-comment:forward", n),
+      /** RPT4-08 — iletilen yorum satırlarının son durumu: { [key]: { sonuc, erteleme } | null }. */
+      commentStatus: (keys) => ipcRenderer.invoke("report-comment:status", keys),
+      /**
+       * RPT-SYNC-LIVE-01 — sayfa → Raporlar eşitleyicisi (main kendiliğinden koşturur): durum
+       * { durum, sonKosum, yeni, yerel, hata } · "Şimdi eşitle" (bitince durum) · durum değişimi olayı.
+       */
+      pageSyncStatus: () => ipcRenderer.invoke("reports:pageSyncStatus"),
+      pageSyncRun: () => ipcRenderer.invoke("reports:pageSyncRun"),
+      onPageSyncStatus: (cb) => {
+        const l = (_e, payload) => {
+          if (payload && typeof payload === "object") cb(payload);
+        };
+        ipcRenderer.on("reports:pageSyncStatus", l);
+        return () => ipcRenderer.removeListener("reports:pageSyncStatus", l);
+      }
+    });
     contextBridge.exposeInMainWorld("delegationQueueApi", {
       /** { queued:[], paused:[] } → { ok, file?, error? }. */
       save: (state) => ipcRenderer.invoke("dlgqueue:save", state),
       /** → { ok, state: { queued:[], paused:[] } }. */
       load: () => ipcRenderer.invoke("dlgqueue:load")
+    });
+    contextBridge.exposeInMainWorld("machineBudgetApi", {
+      /** ({health?: boolean, ownPaneIds?: string[]}) → { ok, config, health|null, foreign[] }. */
+      check: (opts) => ipcRenderer.sendSync("machinebudget:check", opts || {}),
+      /** RG-MODE-01 — ({mode?:'off'|'auto'|'strict', heavySlots?:number|null, cap?:number|null, otherMachine?:boolean}) → { ok, config }. Ayarlar → Kaynak koruması. */
+      configure: (patch) => ipcRenderer.invoke("machinebudget:configure", patch || {}),
+      /** QUEUE-NEVER-STUCK-01 — ayar dosyası/ayar değişti → kuyruk hemen yeniden denensin. */
+      onChanged: (cb) => {
+        const l = (_e, payload) => cb(payload);
+        ipcRenderer.on("machinebudget:changed", l);
+        return () => ipcRenderer.removeListener("machinebudget:changed", l);
+      }
+    });
+    contextBridge.exposeInMainWorld("queueBoardApi", {
+      /** → { ok, board: {waiting, inflight, done, warnings, counts}, sources }. */
+      get: () => ipcRenderer.invoke("queueboard:get")
     });
     contextBridge.exposeInMainWorld("delegationSupervisorApi", {
       /** Dispatch anında: alt-görevi main defterine yaz (kanıt yolu + prompt imzası dahil). */
@@ -611,6 +1793,18 @@ var require_agents = __commonJS({
       settle: (p) => ipcRenderer.invoke("dlgsup:settle", p),
       /** Lider durumu okudu → bekleyen uyandırmalar kapanır. */
       ack: (leaderId) => ipcRenderer.invoke("dlgsup:ack", leaderId),
+      /**
+       * OFC-04 — sohbetten iş yönetimi: ({delegationId, subtaskId, action:'stop'|'pause'|'resume'|'cancel',
+       * confirmed?}) → {ok, reason?, state?, result?}. İptal `confirmed:true` olmadan reddedilir.
+       */
+      control: (p) => ipcRenderer.invoke("dlgsup:control", p || {}),
+      /**
+       * DLG-13b — iş kilidi (SENKRON tek atım; dispatch boğazı senkron). Köprü dışı yollar:
+       * ({jobId, objective, leaderId, origin}) → {ok, verdict, jobId, claimId, sentence, …} | null.
+       */
+      claimSync: (input) => ipcRenderer.sendSync("dlgsup:claim", input || {}),
+      /** DLG-13b — dağıtım hiç başlamadıysa talebi bırak (SENKRON). */
+      releaseSync: (claimId, why) => ipcRenderer.sendSync("dlgsup:release", { claimId, why }),
       /** e2e/teşhis: defteri oku, tick'i elle sür. */
       debug: (action) => ipcRenderer.invoke("dlgsup:debug", action),
       /**
@@ -626,21 +1820,157 @@ var require_agents = __commonJS({
         return () => ipcRenderer.removeListener("dlgsup:advance", handler);
       }
     });
-  }
-});
-
-// src/preload/bridges/skills.js
-var require_skills = __commonJS({
-  "src/preload/bridges/skills.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
+    contextBridge.exposeInMainWorld("mobileBridge", {
+      /** main'in veri sorularını dinle. cb: ({ requestId, kind }) => void */
+      onQuery: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("mobile:query", l);
+        return () => ipcRenderer.removeListener("mobile:query", l);
+      },
+      /** Cevap: { requestId, data }. */
+      queryResult: (res) => ipcRenderer.send("mobile:query:result", res),
+      /** Canlı olay (MobileEvent) → SSE. */
+      event: (event) => ipcRenderer.send("mobile:event", event),
+      /**
+       * ADP-296 — YAZMA komutları (prompt/delegate/tasks/jarvis/approve/stop). Renderer
+       * MEVCUT motorları çağırır; gateway yalnız taşır. cb: ({ requestId, kind, payload }).
+       */
+      onCommand: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("mobile:command", l);
+        return () => ipcRenderer.removeListener("mobile:command", l);
+      },
+      /** Cevap: { requestId, result }. */
+      commandResult: (res) => ipcRenderer.send("mobile:command:result", res)
+    });
+    contextBridge.exposeInMainWorld("mobileAdmin", {
+      status: () => ipcRenderer.invoke("mobile:status"),
+      enable: () => ipcRenderer.invoke("mobile:enable"),
+      disable: () => ipcRenderer.invoke("mobile:disable"),
+      createPairing: () => ipcRenderer.invoke("mobile:pair"),
+      // MOB-UX-M1 (M1-b) — sihirbazın ölçümü: { tailnet:{state,address?,dnsName?},
+      // gateway:{running,…}, peers:{available,phones?} }. Gateway KAPALIYKEN de çalışır.
+      probe: () => ipcRenderer.invoke("mobile:probe"),
+      revoke: (deviceId) => ipcRenderer.invoke("mobile:revoke", deviceId),
+      // ADP-308 — cihaz yetkisi read ⇄ command (yalnız masaüstünden; telefonun kendini
+      // yükseltebileceği bir rota YOK — ADP-293 §4 kapsam kuralı).
+      setScope: (deviceId, scope) => ipcRenderer.invoke("mobile:scope", deviceId, scope)
+    });
+    contextBridge.exposeInMainWorld("jiraImportApi", {
+      /** { source? } → { ok, connected, site } */
+      status: (input) => ipcRenderer.invoke("jira:status", input),
+      /** { source? } → { ok, site, projects:[{key,name,mappedTo}] } | { ok:false, cause } */
+      projects: (input) => ipcRenderer.invoke("jira:projects", input),
+      /** { projectKey } → { ok, mappedTo, issues:[{key,summary,status,type,url,importedTaskId}] } */
+      issues: (input) => ipcRenderer.invoke("jira:issues", input),
+      /** { projectKey, keys, project } → { ok, items:[{taskId,key,summary,url,branch,branchCreated}], missing, skipped } */
+      prepare: (input) => ipcRenderer.invoke("jira:prepare", input),
+      /** { imported:[taskId], failed:[taskId] } → { ok, imported, reverted } */
+      finish: (input) => ipcRenderer.invoke("jira:finish", input),
+      /** { taskId } → { ok, local, key, url, branch, body } */
+      ticket: (input) => ipcRenderer.invoke("jira:ticket", input)
+    });
+    contextBridge.exposeInMainWorld("githubPrApi", {
+      /** { taskId, slug? } → { ok, connected, slug, slugSource, branch, target, canPush } */
+      status: (input) => ipcRenderer.invoke("github:status", input),
+      /** { taskId, slug, title, body, draft, push } → { ok, number, url, state, existed, pushed } | { ok:false, code, why, permission? } */
+      open: (input) => ipcRenderer.invoke("github:open", input),
+      /** { slug, number } → { ok, state, url, notModified } (ETag'li koşullu yoklama) */
+      sync: (input) => ipcRenderer.invoke("github:sync", input),
+      /** { slug, number } → { ok, state } (taslak → incelemeye hazır) */
+      ready: (input) => ipcRenderer.invoke("github:ready", input)
+    });
+    contextBridge.exposeInMainWorld("integrationsApi", {
+      /** → { ok, available, records:[{id,service,scope,env,authKind,envVar,meta}], catalog:[…] }. */
+      list: () => ipcRenderer.invoke("integ:list"),
+      /**
+       * Yeni bağlantı: { service, secret, scope?, env?, keyLabel?, scopeHint?, userFields? }
+       * → { ok, record } (record MASKELİ) | { ok:false, reason, error }.
+       */
+      add: (input) => ipcRenderer.invoke("integ:add", input),
+      /** Bağlantıyı kes: cred_… → { ok, removed, restartHint } (açık pane'ler yeniden başlatılmalı). */
+      remove: (id) => ipcRenderer.invoke("integ:remove", id),
+      // ── MCP-COST-01 — MALIYET GORUNURLUGU + OTOMATIK ACILMA ISARETI ───────────
+      // Ikisi de SIR TASIMAZ. `mcpStats` yalniz sayar (surec/RSS), `autostart`
+      // yalniz bir sonraki pane acilisini etkiler — baglantiyi KOPARMAZ.
+      /**
+       * Su anki MCP maliyeti →
+       * { ok, measured, paneCount, totalMb, services:{ <servis>:{panes,procs,wrappers,rssMb,orphans} } }
+       * `measured:false` = `ps` okunamadi (UI sifir yazmamali, "olculemedi" demeli).
+       */
+      mcpStats: () => ipcRenderer.invoke("integ:mcpStats"),
+      /**
+       * Otomatik acilma isareti.
+       *   ()                                        → { ok, map }
+       *   ({ op:'set', service, enabled:false })     → { ok, map, restartHint }
+       * Yazili olmayan servis ACIKTIR (varsayilan degismedi).
+       */
+      autostart: (payload) => ipcRenderer.invoke("integ:autostart", payload),
+      /**
+       * Gerçek MCP handshake ile dene: { service, env?, scope?, secret?, userFields? }
+       * → { ok, tools, serverName, durationMs, reason?, error? }. `secret` verilirse
+       * KAYDETMEDEN test edilir. `npx` paketi indirebileceği için uzun sürebilir.
+       */
+      test: (input) => ipcRenderer.invoke("integ:test", input),
+      // ── ADR-INT-OAUTH — HESABINLA GİRİŞ (Gmail) ──────────────────────────────
+      // 🔴 Jeton bu köprüden HİÇ geçmez (ne içeri ne dışarı): bağlanma tarayıcıda olur,
+      // izin main'de kasaya girer. Renderer yalnız durum + hesap e-postası görür.
+      /** → { ok, dry, services:[{ service, label, clientReady, connected, needsReauth, connecting, account, connectedAt }] } */
+      oauthStatus: () => ipcRenderer.invoke("integ:oauthStatus"),
+      /** Tarayıcıda Google onayını açar, dönüşü bekler → { ok, account } | { ok:false, reason } */
+      oauthConnect: (service) => ipcRenderer.invoke("integ:oauthConnect", service),
+      /** Açık bağlanma akışını bırak → { ok } */
+      oauthCancel: (service) => ipcRenderer.invoke("integ:oauthCancel", service),
+      /** Tek yerden kes: kasadan sil + sağlayıcıda iptal → { ok, removed, revokedAtProvider } */
+      oauthDisconnect: (service) => ipcRenderer.invoke("integ:oauthDisconnect", service),
+      // ── INT-OBS-01 — TELEMETRİ OTOMATİK KURULUMU ──────────────────────────────
+      // 🔴 Bu üç çağrının HİÇBİRİ jeton TAŞIMAZ — ne içeri ne dışarı. Jeton zaten
+      // kasadadır; main onu kendi çözer. Renderer yalnız "hangi servis" der ve
+      // maskeli bir SONUÇ alır. `add`ten farkı budur (o, sırrı bir kez içeri yollar).
+      /**
+       * Kurulumu çalıştır: { service:'sentry'|'posthog', orgSlug?, teamSlug? }
+       * → { ok, org, channels, notes } | { ok:false, code:'choose-org', orgs:[…] }
+       *   | { ok:false, code, message }  (message KULLANICI CÜMLESİDİR, hata kodu değil)
+       */
+      provision: (input) => ipcRenderer.invoke("telemetry:provision", input),
+      /**
+       * Doğrulama olayı gönder + panoda göründüğünü OKU:
+       * → { ok, channel, sent, confirmed, method, message }.
+       * `confirmed:false` "gönderildi ama göremedim" demektir — sahte yeşil YOK.
+       */
+      verifyTelemetry: (input) => ipcRenderer.invoke("telemetry:verify", input),
+      /** Durum yüzeyi → { ok, channel, services:[{service, connected, org, channels:[{channel,project,masked}], lastVerify}] }. */
+      provisionStatus: () => ipcRenderer.invoke("telemetry:provisionStatus")
+    });
+    contextBridge.exposeInMainWorld("sprintApi", {
+      /** run objesini kalıcıla → { ok, file? , error? }. */
+      save: (run) => ipcRenderer.invoke("sprint:save", run),
+      /** id → { ok, run|null }. */
+      load: (id) => ipcRenderer.invoke("sprint:load", id),
+      /** → { ok, runs: [{id, settled, updatedAt, objective, taskCount}] }. */
+      list: () => ipcRenderer.invoke("sprint:list"),
+      /**
+       * DF-03 — ÇOK-ADAYLI kanıt sondası (supervisor'ın ADP-735 çözümünün aynısı).
+       * { department?, items:[{taskId, evidencePath, agentId?, since?}] }
+       *   → { ok, items:[{taskId, found, path?, mtimeMs?, stale?}] }
+       * Renderer'ın tek-köklü `fileApi` sondası kurulu makinede YANLIŞ köke bakıyordu.
+       */
+      probeEvidence: (req) => ipcRenderer.invoke("sprint:evidence", req),
+      /**
+       * RES-IDX-01 — SONUÇ KÖKÜ görevin projesinden (main `resultRoot.cjs`; renderer tahmin
+       * etmez). { project?, codes?:[…] } → { ok, root, source, fallback, existing:[…], hasIndexScript }.
+       * Worker'a rapor yolu bu kökle MUTLAK + TEK yazılır; supervisor aynı kökü birincil
+       * aday yapar (BUG-R3 #8: raporlar üç yere düşüyordu).
+       */
+      resultRoot: (req) => ipcRenderer.invoke("sprint:resultRoot", req)
+    });
     contextBridge.exposeInMainWorld("skillsApi", {
       /**
        * → { ok, enabled, workspaceRoot, roots:{published,drafts}, engines:[{engine,dir}],
        *     counts:{published,draft,invalid},
        *     skills:[{ name, description, source:'user'|'ai', status, scope:'published'|'draft',
        *               path, file, ok, errors, warnings, origin, author, version, task,
-       *               sourceMemory, reviewedBy, reviewedAt, license, updatedAt,
+       *               sourceMemory, reviewer:'catalog'|'self'|'person'|null, reviewedAt, license, updatedAt,
        *               engines:[{ engine, dir, state }] }] }
        * `state`: linked | copy | absent | dangling | conflict | exposed | disabled
        * (DEPO değil DİSK ölçülür: "yayında" ile "motor görüyor" ayrışabilir.)
@@ -700,7 +2030,14 @@ var require_skills = __commonJS({
        */
       export: (name, scope) => ipcRenderer.invoke("skills:export", name, scope),
       /**
-       * SK-08 — İÇE AKTAR: `{ text }` ya da `{ filePath }` (+ `name`, `overwriteDraft`).
+       * SEC-IPC-02 — DOSYA SEÇ: yerel diyaloğu ANA süreç açar, yol renderer'a hiç gelmez.
+       * → { ok:true, token, fileName, bytes } | { ok:false, canceled? , errors }
+       * `token` tek kullanımlık, 5 dk ömürlü; `import({ token })` ile harcanır.
+       */
+      pickFile: () => ipcRenderer.invoke("skills:pickFile"),
+      /**
+       * SK-08 — İÇE AKTAR: `{ text }` ya da `{ token }` (pickFile'dan; + `name`, `overwriteDraft`).
+       * Ham `{ filePath }` REDDEDİLİR (`raw-path-rejected`, SEC-IPC-02).
        * → { ok, name, scope:'draft', pendingApproval:true, errors }
        * 🔴 SONUÇ HER ZAMAN TASLAKTIR — bu ucun yayına giden bir yolu YOKTUR. Yabancı onay
        * damgaları ve "published" iddiası DÜŞÜRÜLÜR; provenans (`imported`) yazılır.
@@ -741,146 +2078,304 @@ var require_skills = __commonJS({
        */
       builtinUninstall: (name) => ipcRenderer.invoke("skills:builtinUninstall", name)
     });
-  }
-});
-
-// src/preload/bridges/tasks.js
-var require_tasks = __commonJS({
-  "src/preload/bridges/tasks.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("paneViewApi", {
-      /** → { readable } (bilinmeyen pane için varsayılan). */
-      get: (paneId) => ipcRenderer.invoke("paneView:get", paneId),
-      /** Durumu yaz + yayınla. `patch = { readable }` → { ok, paneId, readable, changed }. */
-      set: (paneId, patch) => ipcRenderer.invoke("paneView:set", { paneId, ...patch || {} }),
-      /** Başka bir pencere durumu değiştirdi. cb gets { paneId, readable }. Returns unsubscribe. */
+    contextBridge.exposeInMainWorld("syncApi", {
+      /** Rozet + kuruluş görüntüsü. → { ok, enabled, state, queued, conflictsOpen, realtimeProven, plan, setup } */
+      status: () => ipcRenderer.invoke("sync:status"),
+      /** "Şimdi eşitle" — gerçek tur (jeton tazelenir, yedek tur yeniden planlanır). */
+      now: (opts) => ipcRenderer.invoke("sync:now", opts || {}),
+      /** Açık çakışmalar (GÖVDESİZ). → { ok, rows:[{id,relPath,class,kind,winnerSha,loserSha,recoverable,…}], count } */
+      conflicts: (opts) => ipcRenderer.invoke("sync:conflicts", opts || {}),
+      /** "Kaybedeni yanına yaz" — üzerine YAZMAZ, `<ad>.conflict-<8hex>.<uzantı>` açar. → { ok, path } */
+      restoreLoser: (id) => ipcRenderer.invoke("sync:restoreLoser", { id }),
+      /** Kullanıcı kararını deftere yaz: 'kept-winner' | 'restored-loser' | 'merged-manual'. */
+      resolveConflict: (id, resolution) => ipcRenderer.invoke("sync:resolveConflict", { id, resolution }),
+      /** §5.4 sır kapısı: "bu dosyada sır yok, yükle" (sha256 ile). */
+      approveSecret: (sha256) => ipcRenderer.invoke("sync:approveSecret", { sha256 }),
+      /** Yeniden girişten sonra DURMUŞ kuyruğu sürdür. */
+      resumeQueue: () => ipcRenderer.invoke("sync:resumeQueue"),
+      /** Tercih kaydedildikten sonra motoru yeniden çöz (kapatma ANINDA söker). */
+      refresh: (opts) => ipcRenderer.invoke("sync:refresh", opts || {})
+    });
+    contextBridge.exposeInMainWorld("prefsApi", {
+      /** Bu cihazın localStorage tercihlerini projeksiyona bildir. → { ok, changed, dropped } */
+      publish: (values) => ipcRenderer.invoke("prefs:publish", { values }),
+      /** Projeksiyondaki renderer tercihleri + beyaz liste. → { ok, values, keys, status } */
+      pull: () => ipcRenderer.invoke("prefs:pull"),
+      /** Ayarlar → Senkron satırının gerçeği. → { ok, exists, keyCount, lastApplied, file } */
+      status: () => ipcRenderer.invoke("prefs:status"),
+      /**
+       * Uzak tercihler UYGULANDI. `applied` = settings.json'a yazılan anahtarlar;
+       * renderer ekseni için `pull()` çağrılır (gövde sinyalle taşınmaz — ADP-712).
+       */
       onChanged: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("paneView:changed", listener);
-        return () => ipcRenderer.removeListener("paneView:changed", listener);
+        const h = (_e, payload) => {
+          try {
+            cb(payload);
+          } catch {
+          }
+        };
+        ipcRenderer.on("prefs:changed", h);
+        return () => ipcRenderer.removeListener("prefs:changed", h);
       }
     });
-    contextBridge.exposeInMainWorld("paneDraftApi", {
-      /** → taslak metin (bilinmeyen pane için ''). */
-      get: (paneId) => ipcRenderer.invoke("paneDraft:get", paneId),
-      /** Taslağı yaz + (gerçekten değiştiyse) yayınla → { ok, paneId, text, changed }. */
-      set: (paneId, text) => ipcRenderer.invoke("paneDraft:set", { paneId, text }),
-      /** Aynı pane'i gösteren başka yüzey taslağı değiştirdi. cb: { paneId, text }. */
-      onChanged: (cb) => {
+    contextBridge.exposeInMainWorld("searchApi", {
+      /**
+       * → { ok:true, groups:{ [type]: { total, hits:[{type,key,title,path,line,snippet,meta,mtime,score}] } },
+       *     total, ms, fts } | { ok:false, reason:'index_not_built'|'fts_unavailable'|… }
+       * `ok:false` "sonuç yok" DEĞİLDİR — indeks kurulmadıysa arayüz bunu söylemeli.
+       */
+      query: (payload) => ipcRenderer.invoke("searchIndex:query", payload),
+      /** → { running, phase, sessionsEnabled, dbFile, dbBytes, stats, lastResult }. */
+      status: () => ipcRenderer.invoke("searchIndex:status"),
+      /** Arka plan kurulumunu başlat → { ok, dbFile } | { ok:false, reason }. */
+      reindex: () => ipcRenderer.invoke("searchIndex:reindex"),
+      /** Board anlık görüntüsü (işçi Supabase'e bağlanmaz) → { ok, rows }. */
+      syncTasks: (rows) => ipcRenderer.invoke("searchIndex:syncTasks", rows),
+      /** OPT-OUT: false → oturum belgeleri indeksten SİLİNİR (gizlenmez). */
+      setSessionsEnabled: (enabled) => ipcRenderer.invoke("searchIndex:setSessionsEnabled", enabled),
+      /** İlerleme akışı: { phase:'start'|'progress'|'done'|'error'|'exit', source?, … }. */
+      onEvent: (cb) => {
         const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("paneDraft:changed", listener);
-        return () => ipcRenderer.removeListener("paneDraft:changed", listener);
+        ipcRenderer.on("searchIndex:event", listener);
+        return () => ipcRenderer.removeListener("searchIndex:event", listener);
       }
     });
-    contextBridge.exposeInMainWorld("paneAskApi", {
-      /** → açık sorular (PaneAsk[]). */
-      list: () => ipcRenderer.invoke("paneAsk:list"),
-      /** Seçenek (choiceId) ya da serbest metin (text) → { ok, delivered?, reason?, ask? }. */
-      answer: (payload) => ipcRenderer.invoke("paneAsk:answer", payload || {}),
-      /** Kartı cevapsız kapat → { ok, reason? }. */
-      dismiss: (askId) => ipcRenderer.invoke("paneAsk:dismiss", askId),
-      /** Defter değişti (açıldı / hatırlatma / kapandı). cb: { type, ask }. Returns unsubscribe. */
-      onChanged: (cb) => {
+    contextBridge.exposeInMainWorld("memoryApi", {
+      /** → { nodes:[{slug,name,type,scope,desc}], edges:[{from,to}], counts, scopes }. */
+      graph: () => ipcRenderer.invoke("memory:graph"),
+      /** ADP-277 — one fact's full body: (scope, slug) → { slug, scope, name, description, type, body } | null. */
+      fact: (scope, slug) => ipcRenderer.invoke("memory:fact", scope, slug),
+      // MEM-CORRECT-04 — kullanıcı kaydı panelden geçersiz sayar ya da düzeltir (kayıt silinmez).
+      /** (scope, slug, { undo?, note? }) → { ok:true, slug, superseded } | { ok:false, reason }. */
+      markWrong: (scope, slug, opts) => ipcRenderer.invoke("memory:markWrong", scope, slug, opts),
+      /** (scope, slug, { description?, body? }) → { ok:true, slug, description } | { ok:false, reason }. */
+      editFact: (scope, slug, patch) => ipcRenderer.invoke("memory:editFact", scope, slug, patch),
+      // FB-MEM-03 — "Hakkımda": kullanıcı hakkındaki kalıcı bilgiler (listele / sil; düzeltme editFact('global', …)).
+      /** → { ok:true, items:[{ slug, description }] } | { ok:false, reason }. */
+      profile: () => ipcRenderer.invoke("memory:profile"),
+      /** (slug) → { ok:true, slug } | { ok:false, reason }. */
+      profileDelete: (slug) => ipcRenderer.invoke("memory:profileDelete", slug),
+      // ADP-870 (Faz 2) — hafıza RAG indeksi. İndeksleme AYRI SÜREÇTE koşar; buradaki
+      // çağrılar yalnız onu başlatır/durdurur ve ilerlemesini dinler (UI donmaz).
+      /** → { running, phase, startedAt, lastEvent, lastResult, reason, dbFile }. */
+      indexStatus: () => ipcRenderer.invoke("memoryIndex:status"),
+      /** Arka plan indekslemeyi başlat → { ok, dbFile } | { ok:false, reason }. */
+      indexStart: () => ipcRenderer.invoke("memoryIndex:start"),
+      /** Nazik durdur (dosya sınırında) → { ok } | { ok:false, reason:'not_running' }. */
+      indexStop: () => ipcRenderer.invoke("memoryIndex:stop"),
+      /**
+       * İlerleme akışı. cb gets { phase, done?, total?, chunks?, file?, rssMb?, reason? }.
+       * phase: scanned|planned|indexing|done|exit|stopped|unavailable|error. Returns unsubscribe.
+       */
+      onIndexEvent: (cb) => {
         const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("paneAsk:changed", listener);
-        return () => ipcRenderer.removeListener("paneAsk:changed", listener);
-      }
+        ipcRenderer.on("memoryIndex:event", listener);
+        return () => ipcRenderer.removeListener("memoryIndex:event", listener);
+      },
+      // ADP-871 (Faz 3) — hibrit arama (kelime + anlam). ADP-854'ün dosya-adı eşleşmesi
+      // yerinde DURUYOR; bu onun yanına gelen ikinci bir yüzey.
+      /**
+       * → { ok:true, results:[{ name, docPath, headingPath, lineStart, lineEnd, excerpt,
+       *     matchedBy:['anlam'|'kelime'], score }], text, degraded, sources }
+       *   | { ok:false, reason:'index_not_built'|'empty_query'|… }
+       * `degraded:true` = anlam katmanı bu sorguya katılamadı (model ısınıyor ya da kurulu
+       * değil) → sonuçlar yalnız kelime katmanından. `text` doğrudan gösterilebilir; sonuç
+       * yoksa "Hafızada bunu bulamadım." der (uydurma yok).
+       */
+      search: (query, k) => ipcRenderer.invoke("memoryIndex:search", query, k),
+      /** → { embedderReady, embedderRunning, unavailable, semanticEnabled, openIndexes }. */
+      searchStatus: () => ipcRenderer.invoke("memoryIndex:searchStatus"),
+      // ── ADP-900 — ANLAM KATMANI: ONAYLI İNDİRME ───────────────────────────────
+      // Kural: onay verilmeden TEK BAYT inmez ve kapı MAIN tarafındadır (renderer'a
+      // güvenilmez). `embedPlan` yalnız BOYUT sorar (HEAD; gövde inmez, disk yazılmaz).
+      /** → { ok, prefs:{semanticEnabled,autoIndex,consent}, available, reason, model, ramMb, diskBytes, install, search }. */
+      embedState: () => ipcRenderer.invoke("memoryEmbed:state"),
+      /** Sunucudan ÖLÇÜLEN plan → { ok, model:{files,totalBytes,…}, runtime, totalBytes, remainingBytes, ramMb, ready, consentKey }. */
+      embedPlan: () => ipcRenderer.invoke("memoryEmbed:plan"),
+      /** Kullanıcının kararını damgala (granted=false → kapalı kalır, hiçbir şey inmez). */
+      embedConsent: (granted, key) => ipcRenderer.invoke("memoryEmbed:consent", granted, key),
+      /** İndirmeyi başlat (damga plana uymuyorsa `consent_required` döner). */
+      embedInstall: () => ipcRenderer.invoke("memoryEmbed:install"),
+      /** İptal — yarım dosya KALIR, sonraki deneme kaldığı yerden sürer. */
+      embedCancel: () => ipcRenderer.invoke("memoryEmbed:cancel"),
+      /** Model + çalışma zamanını sil → { ok, freedBytes }. */
+      embedRemove: () => ipcRenderer.invoke("memoryEmbed:remove"),
+      /** { semanticEnabled?, autoIndex? } → { ok, prefs }. */
+      embedSetPrefs: (patch) => ipcRenderer.invoke("memoryEmbed:setPrefs", patch),
+      /** Kurulum ilerlemesi: { phase, file, receivedBytes, totalBytes, reason, message }. Aboneliği bırakır. */
+      onEmbedEvent: (cb) => {
+        const listener = (_event, payload) => cb(payload);
+        ipcRenderer.on("memoryEmbed:event", listener);
+        return () => ipcRenderer.removeListener("memoryEmbed:event", listener);
+      },
+      // ADP-862 (st1) — ÜRÜN UCU. `search`in ham çıktısının üstünde üç GARANTİ verir:
+      // her sonuçta kaynak (dosya+satır) + alıntı · sonuç yoksa "Hafızada bunu
+      // bulamadım." (uydurma yok) · gösterilen metin sır maskesinden geçmiş.
+      /**
+       * → { ok, found, query, results:[{ source, name, scope, heading, lineStart,
+       *     lineEnd, excerpt, matchedBy, score }], text, degraded, masked, reason? }
+       */
+      recall: (query, k) => ipcRenderer.invoke("memory:recall", query, k)
     });
-    contextBridge.exposeInMainWorld("composeBridge", {
-      // — main → renderer TURLARI (köprü: MCP aracı → main → burası) —
-      /** Satır kurma isteği. cb: { requestId, objective, roles, mode, teamName, department, leaderId, maxEmployees, rejectedRoles }. */
-      onPropose: (cb) => {
+    contextBridge.exposeInMainWorld("browserControlBridge", {
+      /** Subscribe to approval requests. cb gets { requestId, action, selector?, text?, agentId? }. */
+      onApproval: (cb) => {
         const l = (_e, p) => cb(p);
-        ipcRenderer.on("team-compose:propose", l);
-        return () => ipcRenderer.removeListener("team-compose:propose", l);
-      },
-      /** Cevap: { requestId, ok, teamName?, rows?, targetTeamId?, catalogSlugs?, error? }. */
-      proposeResult: (res) => ipcRenderer.send("team-compose:propose:result", res),
-      /** Kurulum isteği. cb: { requestId, proposalId, mode, teamName, rows, targetTeamId }. */
-      onApply: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("team-compose:apply", l);
-        return () => ipcRenderer.removeListener("team-compose:apply", l);
-      },
-      /** Cevap: { requestId, ok, teamId?, createdTeam?, employeeIds?, names?, … }. */
-      applyResult: (res) => ipcRenderer.send("team-compose:apply:result", res),
-      /** Geri alma isteği. cb: { requestId, teamId, createdTeam, employeeIds }. */
-      onUndo: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("team-compose:undo", l);
-        return () => ipcRenderer.removeListener("team-compose:undo", l);
-      },
-      /** Cevap: { requestId, ok, removedEmployees, removedTeam, error? }. */
-      undoResult: (res) => ipcRenderer.send("team-compose:undo:result", res),
-      // — KART YÜZEYİ (TC-02 bunları kullanır) —
-      /** Onay kartı olayı. cb: { proposalId, mode, teamName, rows, expiresAt, planNote, source, autonomy }. */
-      onProposal: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("team-compose:proposal", l);
-        return () => ipcRenderer.removeListener("team-compose:proposal", l);
-      },
-      /** Kurulum sonrası şerit olayı. cb: { proposalId, teamName, names, wingSlug, undoExpiresAt }. */
-      onApplied: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("team-compose:applied", l);
-        return () => ipcRenderer.removeListener("team-compose:applied", l);
+        ipcRenderer.on("browser:approval", l);
+        return () => ipcRenderer.removeListener("browser:approval", l);
       },
       /**
-       * Kullanıcının kararı → main. { proposalId, decision:'approve'|'reject', teamName?, rows?, mode?, catalogSlugs? }
-       * Dönen `approvalToken` MAIN'de doğar; kart onu üretemez.
+       * Reply to an approval request: { requestId, approved, scope? }.
+       * ADP-341 — `scope:'session'` = "bu görev boyunca izin ver" (yalnız kapı `scope:'session'`
+       * teklif ettiyse geçerlidir; TTL 30dk + eylem tavanı, diske YAZILMAZ). Yoksa tek eylemlik.
        */
-      decide: (req) => ipcRenderer.invoke("team-compose:decision", req),
-      /** Ayar kademesi (§9.7): { ok, autonomy:'ask'|'small-auto'|'auto' }. */
-      autonomy: () => ipcRenderer.invoke("team-compose:autonomy"),
+      approvalResult: (res) => ipcRenderer.send("browser:approval:result", res),
       /**
-       * TC-02 — KULLANICININ şeritten geri alması. §3.6 bunu yalnız main→renderer
-       * yönünde tanımlıyordu; şeridin düğmesi ters yönü ister. → { ok, error? }
+       * ADP-341 (ADR-026 §3.3) — DURDUR: tüm görev-başı izinleri iptal eder ve bekleyen onay
+       * varsa onu da geçersiz kılar. → { revoked, epoch }
        */
-      undoRequest: (proposalId) => ipcRenderer.invoke("team-compose:undo-request", { proposalId })
-    });
-    contextBridge.exposeInMainWorld("taskApi", {
-      /** Seçili takımın done olan görevlerini sil → { ok, project, deletedCount } */
-      cleanTeamDone: (opts) => ipcRenderer.invoke("task:cleanTeamDone", opts),
-      /** Tüm takımların bütün görevlerini kalıcı sil → { ok, deletedCount } */
-      cleanAll: () => ipcRenderer.invoke("task:cleanAll"),
-      /** Görev durum özeti → { ok, total, byProject, tasks } */
-      listSummary: () => ipcRenderer.invoke("task:listSummary")
-    });
-    contextBridge.exposeInMainWorld("planApi", {
-      /** → { ok, enforced, tier, tierLabel, fallback, features{agents,integrations,autopilot}, billingUrl }. */
-      get: () => ipcRenderer.invoke("plan:get"),
+      stop: () => ipcRenderer.invoke("browser:stop"),
       /**
-       * BL-03 — "yükselttim, hâlâ kilitli mi?" → jetonu TAZELE + reddin KENDİ ölçüsünü
-       * yeniden karara sok. → { ok, refreshed, allowed, tier, tierLabel, requiredTierLabel }.
-       * Karar yine main'dedir (planLimits.decide); burası yalnız reddin (feature,current)
-       * çiftini geri taşır — renderer ikinci bir tavan mantığı KURMAZ.
+       * ADP-343 (ADR-026 §2.5) — OTOMASYON MODU: süre sınırlı "bu oturumda sorma" (Ayarlar → Güven).
+       * `minutes` null/0 → kapat. Oturumluk: diske yazılmaz, DURDUR kapatır, hassas hedef ve yasak
+       * origin bundan ETKİLENMEZ. → { active, until, remainingMs, minutes:[…] }
        */
-      recheck: (feature, current) => ipcRenderer.invoke("plan:recheck", { feature, current }),
-      /** Main bir eylemi plan limiti yüzünden reddettiğinde push eder (kapatılabilir nudge). */
-      onLimit: (cb) => {
-        const l = (_e, d) => cb(d);
-        ipcRenderer.on("plan:limit", l);
-        return () => ipcRenderer.removeListener("plan:limit", l);
+      setAutomation: (minutes) => ipcRenderer.invoke("browser:trust:automation", { minutes }),
+      /** ADP-343 — otomasyon modunun canlı durumu (geri sayım). */
+      automationStatus: () => ipcRenderer.invoke("browser:trust:status"),
+      /** Subscribe to the agent's browser activity feed. cb gets { action, selector?, agentId?, at }. */
+      onActivity: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:activity", l);
+        return () => ipcRenderer.removeListener("browser:activity", l);
+      },
+      /**
+       * BROWSER-HIFI-F3 — ajan şeridi: { agentId, op: 'pause'|'resume'|'takeover'|'stop'|'tab-closed'|'cert' }.
+       * Bekletilen ajanın sonraki tarayıcı eylemi nedenini taşıyan cevapla döner. → { ok, holds }
+       */
+      agentControl: (p) => ipcRenderer.invoke("browser:agent-control", p),
+      /** BROWSER-HIFI-F3 — bekletme defterinin anlık görüntüsü. → { holds:[{agentId,kind,since}] } */
+      agentHolds: () => ipcRenderer.invoke("browser:agent-holds"),
+      /** BROWSER-HIFI-F3 — main → renderer: bekletme değişti (dokunma main'de yakalanır). */
+      onAgentHold: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:agent-hold", l);
+        return () => ipcRenderer.removeListener("browser:agent-hold", l);
+      },
+      /** BROWSER-HIFI-F3 — ajanın tıkladığı nokta: { guestId, agentId, x, y, at } ("sayfada imleç"). */
+      onAgentPointer: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:agent-pointer", l);
+        return () => ipcRenderer.removeListener("browser:agent-pointer", l);
+      },
+      /** BROWSER-HIFI-F3 — kilide tık: { url } → { level, permissions:{media,geolocation,notifications} }. */
+      siteInfo: (p) => ipcRenderer.invoke("browser:site-info", p),
+      /** BROWSER-HIFI-F3 (G5) — "Ajana düzelttir" özeti sır tarayıcısından geçer → maskeli özet + açıklama. */
+      fixPrepare: (raw) => ipcRenderer.invoke("browser:fix-prepare", raw),
+      /** BROWSER-HIFI-F3 — adresi sistem tarayıcısında aç (yalnız http/https). → { ok } */
+      openExternal: (url) => ipcRenderer.invoke("browser:open-external", { url }),
+      /**
+       * BROWSER-HIFI-F4 — cihaz önizleme: { guestId, device:'desktop'|'tablet'|'phone', scale, viewHeight,
+       * reload? } → { ok, device }. Gerçek emülasyon main'de (mobil ekran + kullanıcı aracısı + dokunma).
+       */
+      emulate: (p) => ipcRenderer.invoke("browser:emulate", p),
+      /** BROWSER-HIFI-F4 — geliştirici panelinin Ağ sekmesi: { guestId } → { entries, failed }. */
+      netLog: (p) => ipcRenderer.invoke("browser:net-log", p),
+      /** BROWSER-HIFI-F4 (G5) — ekran görüntüsü / öğe seçimi sır taraması: { texts, strings } → { hits, strings, masked }. */
+      shotScan: (p) => ipcRenderer.invoke("browser:shot-scan", p),
+      /**
+       * ADP-135 — run a browser action (navigate/click/type/read/readPage/screenshot/
+       * back) against the live internal-browser guest. Used by Jarvis voice
+       * (jarvisVoice.executeBrowser). Resolves { ok, result? } | { ok:false, error }.
+       */
+      run: (value) => ipcRenderer.invoke("browser:action", value),
+      /**
+       * ADP-150 (multi-tab) — main asks the renderer to open a new IN-APP browser tab
+       * when a guest does target=_blank / window.open (instead of the OS browser). cb
+       * gets { url }. Returns an unsubscribe fn.
+       */
+      onNewTab: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:new-tab", l);
+        return () => ipcRenderer.removeListener("browser:new-tab", l);
+      },
+      /**
+       * ADP-150 (multi-tab) — tell main which <webview> guest (by webContents id) is the
+       * active tab, so headed automation (ADP-095) drives the visible tab. Main only
+       * accepts an id it tracked at attach time (never the app renderer).
+       */
+      setActiveGuest: (id) => ipcRenderer.send("browser:setActiveGuest", id),
+      /**
+       * ACCT-OFFICE-01 — bu hesabın + kanalın iç tarayıcı bölümü (`persist:…`). SYNC: `<webview>`
+       * takılmadan önce İLK DOM'da olmalı. main will-attach'te aynı adı zorlar.
+       */
+      partition: () => ipcRenderer.sendSync("browser:partition"),
+      /**
+       * ADP-333 — main, bir AJANA ait sekme açılmasını ister (ajan kendi sekmesine kilitli;
+       * kullanıcının sekmesine asla girmez). cb { agentId, url } alır. Sekme ARKA PLANDA
+       * açılır: patronun baktığı sayfa değişmez.
+       */
+      onAgentTab: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:agent-tab", l);
+        return () => ipcRenderer.removeListener("browser:agent-tab", l);
+      },
+      /**
+       * WINCLOSE-GUARD-01 — sayfanın İÇİNDE ⌘W basıldı: main bu misafirin sekmesini kapatmamızı
+       * ister. cb { guestId, action:'close' } alır. (⌘R'yi main kendisi yapar: yalnız o sayfa.)
+       * BROWSER-HIFI-F1 — `action` artık tarayıcı tablosunun her eylemi olabilir (new, reopen,
+       * focusAddress, back, forward, next, prev, nth:N, allTabs, devtools…).
+       */
+      onGuestShortcut: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:guest-shortcut", l);
+        return () => ipcRenderer.removeListener("browser:guest-shortcut", l);
+      },
+      /**
+       * BROWSER-HIFI-F1 — sekme simgesi: main sayfanın simgesini sayfanın oturumuyla indirip
+       * veri adresine çevirir. cb { guestId, dataUrl } alır (yalnız data:image/…).
+       */
+      onFavicon: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:favicon", l);
+        return () => ipcRenderer.removeListener("browser:favicon", l);
+      },
+      /** ADP-333 — bu sekmenin SAHİBİ şu ajan: { guestId, agentId }. */
+      setTabOwner: (payload) => ipcRenderer.send("browser:setTabOwner", payload),
+      /** PERF-BROWSER-TABS-01 — sekme başı süreç/bellek: { tabs: [{ id (guest webContents id), pid, mb, host, owner, ageMin, shared }], totalMb, processCount }. */
+      tabMetrics: () => ipcRenderer.invoke("browser:tab-metrics"),
+      /**
+       * BROWSER-HIFI-F2 — GEÇMİŞ (hesap kökünde, yalnız bu bilgisayarda). Defter yalnız main'in
+       * gezinme olayından yazılır; renderer adres GÖNDEREMEZ, yalnız okur / siler / temizler.
+       *   historyList({ q, filter:'all'|'agents'|'local' }) → { enabled, total, entries:[{id,url,title,at,owner,host}] }
+       *   historyClear('hour'|'today'|'all') → { ok, removed } — o kökenlerin çerez + site verisi de silinir
+       */
+      historyList: (p) => ipcRenderer.invoke("browser:history:list", p),
+      historyRemove: (id) => ipcRenderer.invoke("browser:history:remove", id),
+      historyClear: (range) => ipcRenderer.invoke("browser:history:clear", { range }),
+      historySetEnabled: (on) => ipcRenderer.invoke("browser:history:setEnabled", on),
+      /** Yeni sekme sayfası: son açılan farklı adresler (küçük resim veri adresiyle) → { enabled, items }. */
+      historyRecent: () => ipcRenderer.invoke("browser:history:recent"),
+      onHistoryChanged: (cb) => {
+        const l = () => cb();
+        ipcRenderer.on("browser:history:changed", l);
+        return () => ipcRenderer.removeListener("browser:history:changed", l);
+      },
+      /** Yeni sekme sayfası: terminalde duyurulmuş yerel sunucular + yoklama → [{ origin, host, port, name, up, agentId, seenAt }]. */
+      devServers: () => ipcRenderer.invoke("browser:devServers"),
+      /**
+       * ADP-394 — HAYALET MOD: main, bir guest'in KOMPOZE EDİLMESİNİ ister (otomasyon koşarken).
+       * cb { guestId, on } alır. `display:none` bir <webview> kare üretmez → tıklama inmez
+       * (ADP-392). Renderer o sekmeyi görünmez ama çizilen bir katmana çevirir; boşta kapatır.
+       */
+      onComposite: (cb) => {
+        const l = (_e, p) => cb(p);
+        ipcRenderer.on("browser:composite", l);
+        return () => ipcRenderer.removeListener("browser:composite", l);
       }
     });
-    contextBridge.exposeInMainWorld("queueBoardApi", {
-      /** → { ok, board: {waiting, inflight, done, warnings, counts}, sources }. */
-      get: () => ipcRenderer.invoke("queueboard:get")
-    });
-  }
-});
-
-// src/preload/bridges/voice.js
-var require_voice = __commonJS({
-  "src/preload/bridges/voice.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("jarvisInputSim", {
-      run: (action) => ipcRenderer.invoke("jarvis:input-event", action)
-    });
-    contextBridge.exposeInMainWorld("jarvisScreenCapture", {
-      run: (req) => ipcRenderer.invoke("jarvis:screen-capture", req)
+    contextBridge.exposeInMainWorld("presetAdvisorApi", {
+      recommend: (payload) => ipcRenderer.invoke("presets:recommend", payload)
     });
     contextBridge.exposeInMainWorld("jarvisApi", {
       /** Capability probe → { ok, hasOpenAiKey, voice, claudeBin, voiceMode, grok }. */
@@ -909,6 +2404,18 @@ var require_voice = __commonJS({
       },
       /** STT: base64 audio → { ok, text } | { ok:false, reason }. Whisper, main-side. */
       transcribe: (payload) => ipcRenderer.invoke("jarvis:transcribe", payload),
+      /** A12-SES-MALIYET — ücretli yedek izni (oturumluk): { decision:'allow'|'deny', scope? }. */
+      paidFallbackConsent: (payload) => ipcRenderer.invoke("jarvis:paidFallbackConsent", payload),
+      /** AXF-04 — yerel ses tanıma durumu (kurulu mu, kurulum sürüyor mu). SIR İÇERMEZ. */
+      localSttStatus: () => ipcRenderer.invoke("jarvis:localSttStatus"),
+      /** AXF-04 — yerel ses tanıma modelini indir (yalnız kullanıcının düğmesiyle). */
+      installLocalStt: () => ipcRenderer.invoke("jarvis:installLocalStt"),
+      /** A12-SES-MALIYET — aylık ses bütçesi bildirimi (%80 / %100, ayda bir kez). Returns unsubscribe. */
+      onVoiceBudget: (cb) => {
+        const l = (_e, b) => cb(b);
+        ipcRenderer.on("voice:budget", l);
+        return () => ipcRenderer.removeListener("voice:budget", l);
+      },
       /**
        * ADP-813 — YEREL STT ISITMA: kayıt BAŞLADIĞI an çağrılır. whisper.cpp sunucusu
        * ayağa kalkarken (~600 ms + model yükleme) kullanıcı zaten konuşuyor → ilk turun
@@ -970,6 +2477,8 @@ var require_voice = __commonJS({
       },
       /** Brain: { transcript, context } → { ok, decision, via } (claude or rule). */
       think: (payload) => ipcRenderer.invoke("jarvis:think", payload),
+      /** A9 — sohbet cümlesi: { text, context } → { kind:'command'|'ambiguous'|'message', decision?, reason? } (beyinsiz). */
+      chatIntent: (payload) => ipcRenderer.invoke("jarvis:chatIntent", payload),
       /** TTS: { text, play? } → { ok, path, bytes, ms } | { ok:false }. Uses settings engine. */
       speak: (payload) => ipcRenderer.invoke("jarvis:speak", payload),
       /** Preview a specific TTS voice with a sample sentence. { voice } → { ok, ... }. */
@@ -996,6 +2505,17 @@ var require_voice = __commonJS({
         const l = (_e, chunk) => cb(chunk);
         ipcRenderer.on("jarvis:speech-chunk", l);
         return () => ipcRenderer.removeListener("jarvis:speech-chunk", l);
+      },
+      /**
+       * AXP-16b — MAIN'de çalan sesin GERÇEK bitişi ({ speechId, reason, at }).
+       * `speak({ speechId })` ile istenir; mikrofon kapısı bunu bekler ve kestirim
+       * (`sayHoldMs`) yalnız YEDEKTİR. Eski preload'larda YOK → çağıran `?.` ile
+       * korur ve sessizce kestirime düşer. Returns unsubscribe.
+       */
+      onSpeechEnded: (cb) => {
+        const l = (_e, payload) => cb(payload);
+        ipcRenderer.on("jarvis:speech-ended", l);
+        return () => ipcRenderer.removeListener("jarvis:speech-ended", l);
       },
       /** Akan TTS'i kes: yoldaki HTTP isteği de iptal edilir (jeton/bant yanmaz). */
       cancelSpeakStream: (streamId) => ipcRenderer.send("jarvis:speakStreamCancel", streamId),
@@ -1045,12 +2565,32 @@ var require_voice = __commonJS({
         receipts: () => ipcRenderer.invoke("agentx:receipts"),
         retry: (id) => ipcRenderer.invoke("agentx:retry", id),
         cancel: (id) => ipcRenderer.invoke("agentx:cancel", id),
+        /** ENG-BLOCK-02 — engel kartından menü seçimi: { id, digest, index } → { ok, reason?, receipt? }. */
+        answerMenu: (req) => ipcRenderer.invoke("agentx:answerMenu", req),
+        answerMode: (req) => ipcRenderer.invoke("agentx:answerMode", req),
+        // ENG-BLOCK-03 — kip kartı
         /** Makbuz üretildi/değişti (ana pencere + pop-out aynı olayı dinler). Returns unsubscribe. */
         onReceipt: (cb) => {
           const l = (_e, receipt) => cb(receipt);
           ipcRenderer.on("agentx:receipt", l);
           return () => ipcRenderer.removeListener("agentx:receipt", l);
         },
+        /**
+         * A8-SESLI-SONUC — bir iş bitti: {id, agentId, agentName, outcome:'done'|'failed'|'unclear',
+         * text, summary}. Yalnız ana pencereye gelir (tek konuşan). Returns unsubscribe.
+         */
+        onResult: (cb) => {
+          const l = (_e, result) => cb(result);
+          ipcRenderer.on("agentx:result", l);
+          return () => ipcRenderer.removeListener("agentx:result", l);
+        },
+        /** A8 — sonuç söylendi → "ona söyle …" cevabının hedefi bu ajan olur. */
+        resultSpoken: (p) => ipcRenderer.invoke("agentx:resultSpoken", p),
+        /**
+         * A23-ICTARAYICI — sonucun sayfasını İÇ TARAYICIDA aç. Yalnız sonuç KİMLİĞİ gider;
+         * yol/URL main'deki defterden çıkar. → {ok, kind, label, deduped?} | {ok:false, reason}.
+         */
+        openResult: (p) => ipcRenderer.invoke("agentx:openResult", { id: p && typeof p.id === "string" ? p.id : "" }),
         // ── AXP-04 — IŞIK ─────────────────────────────────────────────────────────
         /** Kaynak ölçümü: {orbCss} (ana pencere CSS px) → {ok, mode, origin, drawOrigin, overlay, mainContent, mainZoom}. */
         beamSource: (p) => ipcRenderer.invoke("agentx:beam:source", p),
@@ -1066,263 +2606,6 @@ var require_voice = __commonJS({
         beamMeasured: (p) => ipcRenderer.send("agentx:beam:measured", p)
       }
     });
-  }
-});
-
-// src/preload/bridges/files.js
-var require_files = __commonJS({
-  "src/preload/bridges/files.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer, webUtils } = require("electron");
-    contextBridge.exposeInMainWorld("imageApi", {
-      saveTemp: (payload) => ipcRenderer.invoke("image:saveTemp", payload),
-      /** → { ok, missing:[], foreign:[], present:[] } */
-      verify: (paths) => ipcRenderer.invoke("image:verify", paths)
-    });
-    contextBridge.exposeInMainWorld("attachmentApi", {
-      /**
-       * Bir görseli depoya al. `path` (native drop / MCP) YA DA `data` (⌘V, dosya
-       * seçici) verilir. → { ok, sha256, mime, bytes, width, height, localRelPath,
-       * thumbDataUrl, originDevice, title, kind, source } | { ok:false, reason }
-       */
-      ingest: (payload) => ipcRenderer.invoke("attachment:ingest", payload),
-      /** local_rel_path → { ok, dataUrl, mime, bytes } | { ok:false, reason:'missing' } */
-      read: (relPath) => ipcRenderer.invoke("attachment:read", relPath),
-      /** → { ok, present } — tam çözünürlük BU cihazda var mı? */
-      hasBytes: (relPath) => ipcRenderer.invoke("attachment:hasBytes", relPath),
-      /** Baytları diskten sil (satırın tombstone'u ÇAĞIRANIN işi). */
-      removeBytes: (relPath) => ipcRenderer.invoke("attachment:removeBytes", relPath)
-    });
-    contextBridge.exposeInMainWorld("officePackApi", {
-      /** → { ok, path, bytes, sha256 } | { ok:false, error } */
-      exportPack: (pack, skills) => ipcRenderer.invoke("office:exportPack", { pack, skills }),
-      /** → { ok, pack, skills:[{name,text,sha256,bytes}], warnings } | { ok:false, error } */
-      readPack: (zipPath) => ipcRenderer.invoke("office:readPack", zipPath)
-    });
-    contextBridge.exposeInMainWorld("fileDropApi", {
-      /** Resolve a dropped File's absolute on-disk path (replaces removed File.path). */
-      getPathForFile: (file) => {
-        try {
-          return webUtils && typeof webUtils.getPathForFile === "function" ? webUtils.getPathForFile(file) : "";
-        } catch {
-          return "";
-        }
-      }
-    });
-    contextBridge.exposeInMainWorld("fileApi", {
-      /** Read a workspace file as UTF-8 → { ok, content, encoding, path } | { ok:false, reason }. */
-      read: (p) => ipcRenderer.invoke("file:read", p),
-      /** Write UTF-8 content to a workspace file → { ok, bytes, path } | { ok:false, reason }. */
-      write: (p, content) => ipcRenderer.invoke("file:write", { path: p, content }),
-      /** List a workspace directory → { ok, dir, entries:[{name,path,type}] } | { ok:false, reason }. */
-      list: (dir) => ipcRenderer.invoke("file:list", dir),
-      /**
-       * ADP-103 — open the OS directory picker; the chosen dir becomes a new active root
-       * (the only way to browse outside the workspace) → { ok, root, name } | { ok:false, reason }.
-       */
-      openDialog: () => ipcRenderer.invoke("file:openDialog"),
-      /**
-       * ADP-108 — live-watch: grant the editor read access to a WATCHED pane's cwd and
-       * learn that cwd (+ home + workspace root) so the renderer can rebase the relative
-       * path the agent prints to the absolute file it wrote → { ok, cwd, home,
-       * workspaceRoot } | { ok:false, reason }. Keyed to a main-spawned paneId (no path
-       * is supplied by the renderer), so the ADP-103 sandbox model is preserved.
-       */
-      allowPaneRoot: (paneId) => ipcRenderer.invoke("file:allowPaneRoot", paneId),
-      /**
-       * ADP-109 — editor start-experience persistence (last-session + recent). SYNC get
-       * (so the renderer reads it during mount without an async flash) + async set. Stored
-       * in userData main-side because the embedded server's RANDOM per-launch port makes
-       * the renderer origin (and thus localStorage) change on every restart.
-       */
-      getEditorState: () => ipcRenderer.sendSync("file:editorState:get"),
-      setEditorState: (state) => ipcRenderer.invoke("file:editorState:set", state)
-    });
-    contextBridge.exposeInMainWorld("clipboardApi", {
-      /** Düz metni panoya yaz → { ok } (main tarafında boy sınırlı). */
-      write: (text) => ipcRenderer.invoke("clipboard:write", text),
-      /**
-       * ADP-894 — ODAKLI yüzeye YAPIŞTIR → { ok, kind }. Windows'ta Ctrl+V'yi xterm
-       * `\x16` olarak yutuyor (ölçüldü) → yapıştırma hiç çalışmıyordu; macOS'ta
-       * aynı işi Electron'un varsayılan Edit menüsü `webContents.paste()` ile
-       * yapıyor. Bu uç o menü öğesinin ta kendisidir.
-       *
-       * ADP-925 — panoda GÖRÜNTÜ varsa (ve metin yoksa) main bir TESLİMAT DİREKTİFİ
-       * döner; `paneId` verilirse motoruna göre karar verir:
-       *   • `{ kind:'engine-keys', keys }` → çağıran bu baytı pane'e YAZAR; motor
-       *     panoyu kendisi okur (ölçüldü: claude `\x16` → `[Image #1]`).
-       *   • `{ kind:'image', path }`       → main görüntüyü temp PNG'ye yazdı;
-       *     çağıran YOLU pane'e yapıştırır (kabuk pane'leri).
-       *   • `{ kind:'text' }`              → metin yolu main'de zaten koştu.
-       *
-       * GÜVENLİK: pano İÇERİĞİ renderer'a GEÇMEZ — metinde main yalnız yerel
-       * "yapıştır" komutunu çalıştırır; görüntüde geçen şey ya sabit bir kontrol
-       * baytı ya da temp dosya YOLUdur. "Okuma ucu yok" duruşu (yukarıda) korunur.
-       */
-      pasteFocused: (opts) => ipcRenderer.invoke("clipboard:pasteFocused", opts)
-    });
-    contextBridge.exposeInMainWorld("clipApi", {
-      /** → { ok, items:[{id,kind,at,preview,chars,width,height,bytes,thumb}] } (en yeni başta). */
-      list: () => ipcRenderer.invoke("clip:list"),
-      /**
-       * Öğeyi panoya geri koy + pane'e nasıl ineceğini söyle → aynı sözleşme
-       * `clipboard:pasteFocused` ile (ADP-925):
-       *   • `{ kind:'text', text }`        → çağıran metni pane'e YAPIŞTIRIR (Enter YOK)
-       *   • `{ kind:'engine-keys', keys }` → çağıran kontrol baytını yazar, motor panoyu okur
-       *   • `{ kind:'image', path }`       → çağıran temp PNG YOLUnu yapıştırır (kabuk pane'i)
-       */
-      deliver: (itemId, paneId) => ipcRenderer.invoke("clip:deliver", { itemId, paneId }),
-      /** Tek öğeyi geçmişten sil → { ok }. */
-      remove: (itemId) => ipcRenderer.invoke("clip:remove", itemId),
-      /** Geçmişin tamamını sil → { ok, removed }. */
-      clear: () => ipcRenderer.invoke("clip:clear"),
-      /** Geçmiş değişti (yeni kopya / silme). Aboneliği bırakan fonksiyon döner. */
-      onChanged: (cb) => {
-        const listener = () => cb();
-        ipcRenderer.on("clip:changed", listener);
-        return () => ipcRenderer.removeListener("clip:changed", listener);
-      }
-    });
-    contextBridge.exposeInMainWorld("officeStateApi", {
-      get: () => ipcRenderer.sendSync("office:state:get"),
-      set: (state) => ipcRenderer.invoke("office:state:set", state)
-    });
-  }
-});
-
-// src/preload/bridges/services.js
-var require_services = __commonJS({
-  "src/preload/bridges/services.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("designApi", {
-      /** Tasarım turunu ayrı pencerede aç (zaten açıksa öne getirir). → { ok, reused? } | { ok:false, error }. */
-      openWindow: () => ipcRenderer.invoke("design:openWindow"),
-      /** Tasarım penceresini kapat. → { ok } | { ok:false, error }. */
-      closeWindow: () => ipcRenderer.invoke("design:closeWindow"),
-      /** Pencere şu an açık mı → { open }. */
-      isWindowOpen: () => ipcRenderer.invoke("design:isWindowOpen"),
-      /** Pencere açıldı/kapandı (giriş düğmesi gerçeği yansıtsın). cb gets { open }. Returns unsubscribe. */
-      onOpenState: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("design:openState", listener);
-        return () => ipcRenderer.removeListener("design:openState", listener);
-      },
-      /**
-       * AUID-M4A (ARIZA-1) — TÜM pencerelerdeki ajan-bağlı pane'ler. `ptyApi.list`
-       * SAHİP PENCEREYE göre süzer ve tasarım penceresi hiçbir pty'nin sahibi
-       * olmadığı için ona hep BOŞ dönüyordu. → { ok, panes }.
-       */
-      listAgents: () => ipcRenderer.invoke("design:listAgents"),
-      /**
-       * AUID-M4A — bir tasarım görevi klasörü aç (`docs/design/<görev>`). `fileApi`
-       * mkdir yapamaz; demo tohumu ve üretim modu buna muhtaç. → { ok, created }.
-       */
-      ensureTaskDir: (rel) => ipcRenderer.invoke("design:ensureTaskDir", rel)
-    });
-    contextBridge.exposeInMainWorld("codeIntelApi", {
-      /** Diff one file vs HEAD → { ok, tracked, relPath, committedText, added, modified, removed, summary }. */
-      diff: (filePath) => ipcRenderer.invoke("git:diff", filePath),
-      /** Files in the active workspace (scoped to its git repo) → { ok, files:[path…] }.
-       *  `root` (TASK-MQTIVZSDYPNRH) = the editor's active file/folder; main scopes to it. */
-      listFiles: (root) => ipcRenderer.invoke("workspace:listFiles", root),
-      /** Literal case-insensitive content search in the active workspace → { ok, hits:[{file,
-       *  line, text}], truncated }. `root` scopes the search (active file/folder). */
-      grep: (query, root) => ipcRenderer.invoke("workspace:grep", { query, root }),
-      /** ADP-402 — pane header git-branch rozeti: cwd → saran repo'nun branch'i
-       *  ({ ok, branch: string|null }; git değilse/root dışıysa branch yok). */
-      // B-02 — `opts.force` TTL cache'ini atlar: görev değişimi / attach / merge
-      // sonrası rozet 5 saniye bayat kalmasın (poll YOK, yalnız olay).
-      branch: (cwd, opts) => ipcRenderer.invoke("git:branch", cwd, opts)
-    });
-    contextBridge.exposeInMainWorld("worktreeApi", {
-      /** → { ok, worktrees:[{taskId, project, code, branch, path, baseCommit, owner, state, livePaneId}] } */
-      list: () => ipcRenderer.invoke("worktree:list"),
-      /**
-       * İnceleme kartının verisi — HİÇBİR ŞEYİ DEĞİŞTİRMEZ.
-       * → { ok, branch, target, commitCount, commits, files, diffStat, conflict, conflictFiles,
-       *     secretScan:{ok,findings}, approval:{approver,auto,blocked,why}, preconditions }
-       * `secretScan.findings` yalnız DOSYA + TÜR taşır; sırrın DEĞERİ asla dönmez (G-4).
-       */
-      review: (input) => ipcRenderer.invoke("worktree:review", input),
-      /** Merge et. Kapılar burada TEKRAR koşar; `approvedBy:true` patron onayıdır. */
-      merge: (input) => ipcRenderer.invoke("worktree:merge", input),
-      /** Merge sonrası ağacı kaldır. Kirli ağaç yalnız `force:true` ile (patron onayı, G-9). */
-      release: (input) => ipcRenderer.invoke("worktree:release", input),
-      /** Temizlik taraması: kayıp/bayat kayıtlar + defter DIŞI yönetilen ağaçlar. */
-      reap: () => ipcRenderer.invoke("worktree:reap")
-    });
-    contextBridge.exposeInMainWorld("codeIndexApi", {
-      /**
-       * → { ok, installed, binPath, binName, installUrl,
-       *     projects:[{slug, repoPath, enabled, indexedSha, lastIndexedAt,
-       *                state:'not-indexed'|'fresh'|'stale'|'unknown', staleFiles, indexing}] }
-       * `state:'unknown'` "ölçemedim" demektir ve "taze" diye YUVARLANMAZ (CIDX-0 §4b).
-       */
-      list: (slugs) => ipcRenderer.invoke("codeIndex:list", { slugs }),
-      /** { slug, enabled } → { ok, enabled, persisted, restartHint }. */
-      set: (slug, enabled) => ipcRenderer.invoke("codeIndex:set", { slug, enabled }),
-      /** Arka planda indeksle → { ok, started, repoPath } | { ok:false, why }. */
-      index: (slug) => ipcRenderer.invoke("codeIndex:index", { slug }),
-      /** İlerleme/bitiş: { slug, running, ok?, exitCode?, tail? }. */
-      onProgress: (cb) => {
-        const handler = (_e, payload) => cb(payload);
-        ipcRenderer.on("codeIndex:progress", handler);
-        return () => ipcRenderer.removeListener("codeIndex:progress", handler);
-      }
-    });
-    contextBridge.exposeInMainWorld("sprintApi", {
-      /** run objesini kalıcıla → { ok, file? , error? }. */
-      save: (run) => ipcRenderer.invoke("sprint:save", run),
-      /** id → { ok, run|null }. */
-      load: (id) => ipcRenderer.invoke("sprint:load", id),
-      /** → { ok, runs: [{id, settled, updatedAt, objective, taskCount}] }. */
-      list: () => ipcRenderer.invoke("sprint:list"),
-      /**
-       * DF-03 — ÇOK-ADAYLI kanıt sondası (supervisor'ın ADP-735 çözümünün aynısı).
-       * { department?, items:[{taskId, evidencePath, agentId?, since?}] }
-       *   → { ok, items:[{taskId, found, path?, mtimeMs?, stale?}] }
-       * Renderer'ın tek-köklü `fileApi` sondası kurulu makinede YANLIŞ köke bakıyordu.
-       */
-      probeEvidence: (req) => ipcRenderer.invoke("sprint:evidence", req),
-      /**
-       * RES-IDX-01 — SONUÇ KÖKÜ görevin projesinden (main `resultRoot.cjs`; renderer tahmin
-       * etmez). { project?, codes?:[…] } → { ok, root, source, fallback, existing:[…], hasIndexScript }.
-       * Worker'a rapor yolu bu kökle MUTLAK + TEK yazılır; supervisor aynı kökü birincil
-       * aday yapar (BUG-R3 #8: raporlar üç yere düşüyordu).
-       */
-      resultRoot: (req) => ipcRenderer.invoke("sprint:resultRoot", req)
-    });
-    contextBridge.exposeInMainWorld("searchApi", {
-      /**
-       * → { ok:true, groups:{ [type]: { total, hits:[{type,key,title,path,line,snippet,meta,mtime,score}] } },
-       *     total, ms, fts } | { ok:false, reason:'index_not_built'|'fts_unavailable'|… }
-       * `ok:false` "sonuç yok" DEĞİLDİR — indeks kurulmadıysa arayüz bunu söylemeli.
-       */
-      query: (payload) => ipcRenderer.invoke("searchIndex:query", payload),
-      /** → { running, phase, sessionsEnabled, dbFile, dbBytes, stats, lastResult }. */
-      status: () => ipcRenderer.invoke("searchIndex:status"),
-      /** Arka plan kurulumunu başlat → { ok, dbFile } | { ok:false, reason }. */
-      reindex: () => ipcRenderer.invoke("searchIndex:reindex"),
-      /** Board anlık görüntüsü (işçi Supabase'e bağlanmaz) → { ok, rows }. */
-      syncTasks: (rows) => ipcRenderer.invoke("searchIndex:syncTasks", rows),
-      /** OPT-OUT: false → oturum belgeleri indeksten SİLİNİR (gizlenmez). */
-      setSessionsEnabled: (enabled) => ipcRenderer.invoke("searchIndex:setSessionsEnabled", enabled),
-      /** İlerleme akışı: { phase:'start'|'progress'|'done'|'error'|'exit', source?, … }. */
-      onEvent: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("searchIndex:event", listener);
-        return () => ipcRenderer.removeListener("searchIndex:event", listener);
-      }
-    });
-  }
-});
-
-// src/preload/bridges/hand.js
-var require_hand = __commonJS({
-  "src/preload/bridges/hand.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
     contextBridge.exposeInMainWorld("handOverlayApi", {
       /** Tespit kaynağı → main: telemetri olay(lar)ı. Katman kapalıysa (ayar açıkken) açar. */
       feed: (events) => ipcRenderer.invoke("handOverlay:feed", events),
@@ -1395,617 +2678,101 @@ var require_hand = __commonJS({
        *  main hangi sekmenin önde olduğunu bilemez — pencere kendi bildirir. */
       reportZoomSurface: (surface) => ipcRenderer.invoke("handControl:zoomSurface", surface),
       /** main → pencere zoom yükü: { phase, surface, scale, delta, x, y }.
-       *  Yalnız CrewPane ÖNDEYKEN gelir; değilken zoom OS'a iner (HAND-G1). */
+       *  Yalnız AgentSpace ÖNDEYKEN gelir; değilken zoom OS'a iner (HAND-G1). */
       onZoom: (cb) => {
         const l = (_e, payload) => cb(payload);
         ipcRenderer.on("handControl:zoom", l);
         return () => ipcRenderer.removeListener("handControl:zoom", l);
       }
     });
-  }
-});
-
-// src/preload/bridges/mobile.js
-var require_mobile = __commonJS({
-  "src/preload/bridges/mobile.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("mobileBridge", {
-      /** main'in veri sorularını dinle. cb: ({ requestId, kind }) => void */
-      onQuery: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("mobile:query", l);
-        return () => ipcRenderer.removeListener("mobile:query", l);
-      },
-      /** Cevap: { requestId, data }. */
-      queryResult: (res) => ipcRenderer.send("mobile:query:result", res),
-      /** Canlı olay (MobileEvent) → SSE. */
-      event: (event) => ipcRenderer.send("mobile:event", event),
-      /**
-       * ADP-296 — YAZMA komutları (prompt/delegate/tasks/jarvis/approve/stop). Renderer
-       * MEVCUT motorları çağırır; gateway yalnız taşır. cb: ({ requestId, kind, payload }).
-       */
-      onCommand: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("mobile:command", l);
-        return () => ipcRenderer.removeListener("mobile:command", l);
-      },
-      /** Cevap: { requestId, result }. */
-      commandResult: (res) => ipcRenderer.send("mobile:command:result", res)
-    });
-    contextBridge.exposeInMainWorld("mobileAdmin", {
-      status: () => ipcRenderer.invoke("mobile:status"),
-      enable: () => ipcRenderer.invoke("mobile:enable"),
-      disable: () => ipcRenderer.invoke("mobile:disable"),
-      createPairing: () => ipcRenderer.invoke("mobile:pair"),
-      // MOB-UX-M1 (M1-b) — sihirbazın ölçümü: { tailnet:{state,address?,dnsName?},
-      // gateway:{running,…}, peers:{available,phones?} }. Gateway KAPALIYKEN de çalışır.
-      probe: () => ipcRenderer.invoke("mobile:probe"),
-      revoke: (deviceId) => ipcRenderer.invoke("mobile:revoke", deviceId),
-      // ADP-308 — cihaz yetkisi read ⇄ command (yalnız masaüstünden; telefonun kendini
-      // yükseltebileceği bir rota YOK — ADP-293 §4 kapsam kuralı).
-      setScope: (deviceId, scope) => ipcRenderer.invoke("mobile:scope", deviceId, scope)
+    contextBridge.exposeInMainWorld("spikeProbe", {
+      rendered: (chunk) => ipcRenderer.send("spike:rendered", chunk),
+      done: (summary) => ipcRenderer.send("spike:done", summary)
     });
   }
 });
 
-// src/preload/bridges/settings.js
-var require_settings = __commonJS({
-  "src/preload/bridges/settings.js"() {
+// src/preload/bridges/crewpaneCompat.js
+var require_crewpaneCompat = __commonJS({
+  "src/preload/bridges/crewpaneCompat.js"() {
     "use strict";
     var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("projectConfigApi", {
-      /** → { ok, workspaceRoot, projects:[{slug, isolation, defaultBranch, repoPath, repoSource}] } */
-      get: (slugs) => ipcRenderer.invoke("project:config:get", { slugs }),
-      /** { slug, isolation:'worktree'|'off', defaultBranch? } → { ok, persisted, branchSaved, repoPath, why } */
-      set: (input) => ipcRenderer.invoke("project:config:set", input)
-    });
-    contextBridge.exposeInMainWorld("settingsApi", {
-      /** → { ok, workspaceRoot, resolvedWorkspaceRoot, repoRoot, firstRunRequired, defaultWorkspaceDir, pushToTalkKey, pushToTalkKeys, wakeModelPath, hasOpenAiKey, mcpServers, theme }. */
-      get: () => ipcRenderer.invoke("settings:get"),
-      /** Merge-patch + persist. patch = { workspaceRoot?, apiKeys?:{openai?,…}, pushToTalkKey?, wakeModelPath?, mcpServers?, theme?, notifications?, engines?:{<id>:{vendorHosted:'allow'|'block'}} }. */
-      set: (patch) => ipcRenderer.invoke("settings:set", patch),
-      /**
-       * SKL-B3 — ürünün KENDİ API anahtarını (bugün: gemini) GERÇEKTEN sağlayıcıya sorar.
-       * Renderer yalnız SERVİS ADINI verir; anahtar bu köprüden hiçbir yönde geçmez.
-       * → { ok:true, source, status, count } | { ok:false, reason:'no-key'|'rejected'|
-       *    'unreachable'|'unsupported', … }
-       */
-      verifyAppKey: (service) => ipcRenderer.invoke("appkey:verify", service),
-      /**
-       * ADP-232-C — ilk-açılış "çalışma alanı seç": { mode:'create'|'pick' }.
-       * 'create' önerilen ~/CrewPane'i oluşturur; 'pick' OS klasör dialog'u açar
-       * (yol renderer'dan asla gelmez). → { ok, root, restartRequired } | { ok:false, reason }.
-       */
-      provisionWorkspace: (req) => ipcRenderer.invoke("workspace:provision", req),
-      /**
-       * ADP-232-B — CANLI çalışma alanı geçişi (yeniden başlatmadan). req:
-       *   { mode:'pick' }    → OS klasör dialog'u (yol renderer'dan gelmez),
-       *   { mode:'current' } → Ayarlar'ın settings.workspaceRoot'a yazdığı kökü canlı uygula,
-       *   { root:'…' }       → doğrudan yol (Ayarlar input'u; settings:set ile aynı güven sınırı).
-       * → { ok, root, previous, changed, grandfathered[] } | { ok:false, reason }.
-       * Açık pane'ler/çalışan işler ESKİ kökte kalır; yeni işler yeni kökte açılır.
-       */
-      switchWorkspace: (req) => ipcRenderer.invoke("workspace:switch", req),
-      /**
-       * ADP-737 — TAKIM KAPSAMI KAPISI (renderer ucu). Delegasyon yolunda her worker'ın
-       * KENDİ takımı için sorulur: hedef takım liderin takımı değilse main sahibe onay
-       * kartı çıkarır ve cevabı bekler. Karar renderer'da ASLA verilmez — burada yalnız
-       * sorulur (`{action:'delegate'|'manage', leaderId, targetScope}` → `{ok, code?, reason?}`).
-       */
-      authorizeTeamScope: (req) => ipcRenderer.invoke("teamScope:authorize", req),
-      /**
-       * ADP-888 — ARAYÜZ DİLİ canlı değişince main push eder: cb({ locale, preference }).
-       * Route değişmez, ağaç yeniden render olur → açık pane/terminal durumu KORUNUR.
-       * Returns unsubscribe.
-       */
-      onLocaleChanged: (cb) => {
-        const l = (_e, payload) => cb(payload || {});
-        ipcRenderer.on("app:locale-changed", l);
-        return () => ipcRenderer.removeListener("app:locale-changed", l);
-      },
-      /** ADP-232-B — kök CANLI değişince main push eder: cb({ root, previous, grandfathered[], at }). Returns unsubscribe. */
-      onWorkspaceChanged: (cb) => {
-        const l = (_e, payload) => cb(payload || {});
-        ipcRenderer.on("workspace:changed", l);
-        return () => ipcRenderer.removeListener("workspace:changed", l);
-      }
-    });
-    contextBridge.exposeInMainWorld("updateApi", {
-      /** → { checked, updateAvailable, latestVersion, currentVersion, lastCheckedAt, autoCheck, dismissed, downloadUrl, mode, phase, progressPercent }. */
-      get: () => ipcRenderer.invoke("update:get"),
-      /** Manuel kontrol (Ayarlar "Şimdi kontrol et"; toggle'dan bağımsız koşar). → aynı durum nesnesi. */
-      checkNow: () => ipcRenderer.invoke("update:checkNow"),
-      /** updater modu: uygulama içinde indir (progress push'ları gelir); notify modu: tarayıcıda SABİT DMG URL'i. */
-      download: () => ipcRenderer.invoke("update:download"),
-      /** ADP-553 — İNDİRİLMİŞ güncellemeyi kullanıcı onayıyla kur (yeniden başlatır). phase!=='downloaded' → no-op. */
-      install: () => ipcRenderer.invoke("update:install"),
-      /** "Bu sürüm için sonra" — sürüm-bazlı kalıcı dismiss (settings.json). → durum. */
-      dismiss: () => ipcRenderer.invoke("update:dismiss"),
-      /** Main durum push'u (kontrol sonucu/dismiss) → rozet CANLI güncellenir. Returns unsubscribe. */
-      onState: (cb) => {
-        const l = (_e, s) => cb(s);
-        ipcRenderer.on("update:state", l);
-        return () => ipcRenderer.removeListener("update:state", l);
-      }
-    });
-    contextBridge.exposeInMainWorld("announceApi", {
-      /** → { checked, fromCache, lastCheckedAt, currentVersion, items:[{id,level,title,body,action,read,hidden,…}] }. */
-      get: () => ipcRenderer.invoke("announce:get"),
-      /** Feed'i şimdi çek (Ayarlar/geliştirici tetiği). → aynı durum nesnesi. */
-      checkNow: () => ipcRenderer.invoke("announce:checkNow"),
-      /** "Okudum" — KALICI (settings.json); bir daha şerit çıkmaz. → durum. */
-      markRead: (id) => ipcRenderer.invoke("announce:markRead", id),
-      /** Şeridin ✕'i — OTURUMLUK gizleme (diske yazılmaz, yeniden açılışta geri gelir). */
-      hide: (id) => ipcRenderer.invoke("announce:hide", id),
-      /** Aksiyon düğmesi: adresi MAIN çözer + https doğrular + shell.openExternal. */
-      openAction: (id) => ipcRenderer.invoke("announce:openAction", id),
-      /** Gövde içi link: main adresin O duyurunun gövdesinde GERÇEKTEN geçtiğini doğrular. */
-      openLink: (id, url) => ipcRenderer.invoke("announce:openLink", id, url),
-      /** Main durum push'u (yeni feed / okundu) → UI CANLI güncellenir. Returns unsubscribe. */
-      onState: (cb) => {
-        const l = (_e, s) => cb(s);
-        ipcRenderer.on("announce:state", l);
-        return () => ipcRenderer.removeListener("announce:state", l);
-      }
-    });
-    contextBridge.exposeInMainWorld("changelogApi", {
-      /** → { checked, fromCache, lastCheckedAt, recentCount, recentWindowDays, items:[{date,category,version,product,url,tr,en}] }. */
-      get: () => ipcRenderer.invoke("changelog:get"),
-      /** Feed'i şimdi çek (geliştirici tetiği). → aynı durum nesnesi. */
-      checkNow: () => ipcRenderer.invoke("changelog:checkNow"),
-      /** Sürüm notu linki: main renderer'ın gönderdiği adresi KENDİ kayıt listesiyle doğrular. */
-      openUrl: (url) => ipcRenderer.invoke("changelog:openUrl", url),
-      /** Main durum push'u (periyodik tazeleme) → UI CANLI güncellenir. Returns unsubscribe. */
-      onState: (cb) => {
-        const l = (_e, s) => cb(s);
-        ipcRenderer.on("changelog:state", l);
-        return () => ipcRenderer.removeListener("changelog:state", l);
-      }
-    });
-    var authBridgeObj = {
-      /** → { ok, signedIn, email, licenseStatus:'none'|'fresh'|'grace'|'expired'|'invalid', seat, products[], requireSeat }. */
-      get: () => ipcRenderer.invoke("crewpane:get"),
-      /** Sistem tarayıcısında PKCE girişini başlat → { ok, url }. */
-      signIn: () => ipcRenderer.invoke("crewpane:signIn"),
-      /**
-       * Hesaptan çık (sunucuda revoke + yerel oturum & lisans jetonu silinir).
-       *
-       * ADP-863 — SEÇENEKLER ARTIK KABLODA TAŞINIR (eskiden hiç iletilmiyordu, bu yüzden
-       * `force` yolu arayüzden ERİŞİLEMEZDİ → çalışan pane varken çıkış SESSİZCE reddedilirdi):
-       *   `{ probe:true }` → çıkmadan "ne kapanacak" sayıları + onay metni
-       *   `{ force:true }` → kullanıcı onay diyaloğunu onayladı, çalışan pane'lere rağmen çık
-       */
-      signOut: (opts) => ipcRenderer.invoke("crewpane:signOut", opts),
-      /** Lisans jetonunu yeniden çek (ağ hatasında cached jeton KORUNUR — offline ≠ kilit). */
-      refresh: () => ipcRenderer.invoke("crewpane:refresh"),
-      /**
-       * SEC-01 — hesaba bağlı cihazlar → { ok, devices:[…], currentDeviceId }.
-       * `currentDeviceId` listede "bu cihaz"ı işaretlemek için: kullanıcı oturduğu
-       * makineyi yanlışlıkla çıkarmasın.
-       */
-      devices: () => ipcRenderer.invoke("crewpane:devices"),
-      /**
-       * SEC-01 — cihazı hesaptan çıkar → { ok, device } | { ok:false, reason }.
-       * Cihazdaki hiçbir veri silinmez; yalnız o kurulum yeni lisans jetonu alamaz.
-       * Başarıda main lisansı kendiliğinden tazeler (ret çözüldüyse hemen düşsün).
-       */
-      revokeDevice: (deviceId) => ipcRenderer.invoke("crewpane:deviceRevoke", deviceId),
-      /**
-       * SEC-02 — DİĞER CİHAZLARI BIRAK → { ok, released } | { ok:false, reason }.
-       * `revokeDevice`ten AYRI: koltuğu boşaltır, cihazı hesapta BIRAKIR. Uyuyan ya
-       * da çöken bir makine kirasını bırakamadığında kullanıcının kaçış kapısıdır.
-       * Başarıda main lisansı kendiliğinden tazeler (ret çözüldüyse hemen düşsün).
-       */
-      releaseOtherDevices: () => ipcRenderer.invoke("crewpane:deviceReleaseOthers"),
-      /** ADP-646 — "Paket al": faturalandırma sayfasını SİSTEM TARAYICISINDA aç → { ok, url }. */
-      openBilling: () => ipcRenderer.invoke("crewpane:openBilling"),
-      /**
-       * ADP-719 — giriş dönüşü (crewpane://) DOĞRU uygulamaya mı geliyor?
-       * → { ok, severity:'blocking'|'warn'|null, ownsDefault, conflicts:[{path,bundleId,name}], reason }
-       * `{ repair:true }` şema sahipliğini bu uygulamaya geri alır (kullanıcı tıkı).
-       */
-      schemeHealth: (opts) => ipcRenderer.invoke("crewpane:schemeHealth", opts),
-      /**
-       * LX-SAFESTORAGE-01 — bu makinede oturum SAKLANABİLİR Mİ?
-       * → { ok, measured, available, backend, plaintext, canStore, reasonKey }
-       * `canStore:false` ise giriş duvarı kullanıcıya SEBEBİNİ söyler (her açılışta
-       * yeniden giriş isteneceğini). SIR TAŞIMAZ: yalnız arka ucun adı + hüküm.
-       * `canStore:null` = ölçülemedi ("kapalı" DEĞİL — ADP-721).
-       */
-      secretBackend: () => ipcRenderer.invoke("crewpane:secretBackend"),
-      /**
-       * ADP-719 — İKİNCİ GİRİŞ YOLU: deep-link dönmediyse tarayıcının adres
-       * çubuğundaki dönüş bağlantısı elle verilir; deep-link ile AYNI yoldan işlenir.
-       */
-      pasteCallback: (url) => ipcRenderer.invoke("crewpane:pasteCallback", url),
-      /** Main durum değişince push eder (giriş/çıkış/jeton) → Ayarlar CANLI güncellenir. */
-      onState: (cb) => {
-        const l = (_e, s) => cb(s);
-        ipcRenderer.on("crewpane:state", l);
-        return () => ipcRenderer.removeListener("crewpane:state", l);
-      },
-      // ── RESET-03 — KURULUMU SIFIRLA ───────────────────────────────────────────
-      //
-      // 🔴 BEYAZ LİSTE KAPIDIR ([[ref_preload_whitelist_is_a_gate]]) — ve KAPININ
-      // İKİ KATI VAR. İlk yazımda bu iki metot AYRI bir `window.resetApi` globaline
-      // konmuştu: kanal adları doğruydu, main handler'ı vardı, kanal kapısı YEŞİLDİ
-      // — ama RESET-02 köprüyü `window.crewpaneApi` ÜZERİNDE arıyor
-      // (`resetFlow.resetApiFrom(crewpaneApi())`) ve bulamayınca "Gelişmiş" bölümünü
-      // HİÇ ÇİZMİYOR. Yani özellik sessizce ölüyordu. Kanalın VAR olması yetmez;
-      // KARŞI TARAFIN BAKTIĞI YERDE olması gerekir.
-      //
-      // KARAR BURADA VERİLMEZ. Onay sözcüğünü MAIN karşılaştırır (dil main'de
-      // bilinir, renderer'a güvenilmez); bu köprü yalnız kullanıcının yazdığı metni
-      // taşır. Yol/hedef alanları main'de DÜŞER (resetGate.sanitizeRequest).
-      /**
-       * KURU KOŞUM — hiçbir şey silinmez. `{ level }`
-       * → { ok, level, bytesTotal:number|null, targets:[{kind,bytes,entries}],
-       *     keeps:[{label}], warnings:[string], confirmWord, panes, terminals, agents }
-       * `bytesTotal:null` = "hesaplanamadı" (0 DEĞİL).
-       */
-      resetPlan: (opts) => ipcRenderer.invoke("reset:plan", opts),
-      /**
-       * SIFIRLAMA İSTEĞİ — { level:'session'|'full', confirmText, keepLogs }.
-       * → { ok:true, restarting:true } | { ok:false, reason:'bad_confirm'|'bad_level'|… }
-       * Çalışan süreçte hiçbir kullanıcı dosyası silinmez: main işaretçi yazar ve
-       * uygulama yeniden başlar; silme yeni sürecin EN BAŞINDA olur (Windows kilidi).
-       */
-      resetRequest: (req) => ipcRenderer.invoke("reset:request", req)
+    var platformStr = String(process.platform || "");
+    contextBridge.exposeInMainWorld("crewpanePlatform", platformStr);
+    var perfNum = (name, fallback) => {
+      const raw = String(process.env[name] ?? "").trim();
+      if (!raw) return fallback;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : fallback;
     };
-    contextBridge.exposeInMainWorld("crewpaneApi", authBridgeObj);
-    contextBridge.exposeInMainWorld("prefsApi", {
-      /** Bu cihazın localStorage tercihlerini projeksiyona bildir. → { ok, changed, dropped } */
-      publish: (values) => ipcRenderer.invoke("prefs:publish", { values }),
-      /** Projeksiyondaki renderer tercihleri + beyaz liste. → { ok, values, keys, status } */
-      pull: () => ipcRenderer.invoke("prefs:pull"),
-      /** Ayarlar → Senkron satırının gerçeği. → { ok, exists, keyCount, lastApplied, file } */
-      status: () => ipcRenderer.invoke("prefs:status"),
-      /**
-       * Uzak tercihler UYGULANDI. `applied` = settings.json'a yazılan anahtarlar;
-       * renderer ekseni için `pull()` çağrılır (gövde sinyalle taşınmaz — ADP-712).
-       */
-      onChanged: (cb) => {
-        const h = (_e, payload) => {
-          try {
-            cb(payload);
-          } catch {
-          }
-        };
-        ipcRenderer.on("prefs:changed", h);
-        return () => ipcRenderer.removeListener("prefs:changed", h);
+    var perfFlag = (name, fallback) => {
+      const raw = String(process.env[name] ?? "").trim();
+      if (!raw) return fallback;
+      return raw !== "0" && raw.toLowerCase() !== "false";
+    };
+    var perfSettings = {
+      termFlushHz: perfNum("CREWPANE_TERM_FLUSH_HZ", 30),
+      termHiddenFlushHz: perfNum("CREWPANE_TERM_HIDDEN_FLUSH_HZ", 4),
+      termWriteRecovery: perfFlag("CREWPANE_TERM_WRITE_RECOVERY", true),
+      termBlankRecovery: perfFlag("CREWPANE_TERM_BLANK_RECOVERY", true)
+    };
+    contextBridge.exposeInMainWorld("crewpanePerf", perfSettings);
+    contextBridge.exposeInMainWorld("crewpaneDoctor", {
+      runProbe: () => ipcRenderer.invoke("doctor:probe"),
+      fixPermissions: () => ipcRenderer.invoke("doctor:fix-permissions")
+    });
+    var localeState = null;
+    try {
+      const prefix = "--crewpane-locale=";
+      const arg = (process.argv || []).find((a) => typeof a === "string" && a.startsWith(prefix));
+      if (arg) {
+        const raw = arg.slice(prefix.length);
+        const parsed = JSON.parse(decodeURIComponent(raw));
+        if (parsed && typeof parsed.lang === "string") {
+          localeState = Object.freeze({
+            lang: parsed.lang,
+            direction: parsed.direction === "rtl" ? "rtl" : "ltr",
+            source: parsed.source || "default",
+            messages: Object.freeze(parsed.messages && typeof parsed.messages === "object" ? { ...parsed.messages } : {})
+          });
+        }
       }
-    });
-  }
-});
-
-// src/preload/bridges/sync.js
-var require_sync = __commonJS({
-  "src/preload/bridges/sync.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("integrationsApi", {
-      /** → { ok, available, records:[{id,service,scope,env,authKind,envVar,meta}], catalog:[…] }. */
-      list: () => ipcRenderer.invoke("integ:list"),
-      /**
-       * Yeni bağlantı: { service, secret, scope?, env?, keyLabel?, scopeHint?, userFields? }
-       * → { ok, record } (record MASKELİ) | { ok:false, reason, error }.
-       */
-      add: (input) => ipcRenderer.invoke("integ:add", input),
-      /** Bağlantıyı kes: cred_… → { ok, removed, restartHint } (açık pane'ler yeniden başlatılmalı). */
-      remove: (id) => ipcRenderer.invoke("integ:remove", id),
-      // ── MCP-COST-01 — MALIYET GORUNURLUGU + OTOMATIK ACILMA ISARETI ───────────
-      // Ikisi de SIR TASIMAZ. `mcpStats` yalniz sayar (surec/RSS), `autostart`
-      // yalniz bir sonraki pane acilisini etkiler — baglantiyi KOPARMAZ.
-      /**
-       * Su anki MCP maliyeti →
-       * { ok, measured, paneCount, totalMb, services:{ <servis>:{panes,procs,wrappers,rssMb,orphans} } }
-       * `measured:false` = `ps` okunamadi (UI sifir yazmamali, "olculemedi" demeli).
-       */
-      mcpStats: () => ipcRenderer.invoke("integ:mcpStats"),
-      /**
-       * Otomatik acilma isareti.
-       *   ()                                        → { ok, map }
-       *   ({ op:'set', service, enabled:false })     → { ok, map, restartHint }
-       * Yazili olmayan servis ACIKTIR (varsayilan degismedi).
-       */
-      autostart: (payload) => ipcRenderer.invoke("integ:autostart", payload),
-      /**
-       * Gerçek MCP handshake ile dene: { service, env?, scope?, secret?, userFields? }
-       * → { ok, tools, serverName, durationMs, reason?, error? }. `secret` verilirse
-       * KAYDETMEDEN test edilir. `npx` paketi indirebileceği için uzun sürebilir.
-       */
-      test: (input) => ipcRenderer.invoke("integ:test", input),
-      // ── INT-OBS-01 — TELEMETRİ OTOMATİK KURULUMU ──────────────────────────────
-      // 🔴 Bu üç çağrının HİÇBİRİ jeton TAŞIMAZ — ne içeri ne dışarı. Jeton zaten
-      // kasadadır; main onu kendi çözer. Renderer yalnız "hangi servis" der ve
-      // maskeli bir SONUÇ alır. `add`ten farkı budur (o, sırrı bir kez içeri yollar).
-      /**
-       * Kurulumu çalıştır: { service:'sentry'|'posthog', orgSlug?, teamSlug? }
-       * → { ok, org, channels, notes } | { ok:false, code:'choose-org', orgs:[…] }
-       *   | { ok:false, code, message }  (message KULLANICI CÜMLESİDİR, hata kodu değil)
-       */
-      provision: (input) => ipcRenderer.invoke("telemetry:provision", input),
-      /**
-       * Doğrulama olayı gönder + panoda göründüğünü OKU:
-       * → { ok, channel, sent, confirmed, method, message }.
-       * `confirmed:false` "gönderildi ama göremedim" demektir — sahte yeşil YOK.
-       */
-      verifyTelemetry: (input) => ipcRenderer.invoke("telemetry:verify", input),
-      /** Durum yüzeyi → { ok, channel, services:[{service, connected, org, channels:[{channel,project,masked}], lastVerify}] }. */
-      provisionStatus: () => ipcRenderer.invoke("telemetry:provisionStatus")
-    });
-    contextBridge.exposeInMainWorld("syncApi", {
-      /** Rozet + kuruluş görüntüsü. → { ok, enabled, state, queued, conflictsOpen, realtimeProven, plan, setup } */
-      status: () => ipcRenderer.invoke("sync:status"),
-      /** "Şimdi eşitle" — gerçek tur (jeton tazelenir, yedek tur yeniden planlanır). */
-      now: (opts) => ipcRenderer.invoke("sync:now", opts || {}),
-      /** Açık çakışmalar (GÖVDESİZ). → { ok, rows:[{id,relPath,class,kind,winnerSha,loserSha,recoverable,…}], count } */
-      conflicts: (opts) => ipcRenderer.invoke("sync:conflicts", opts || {}),
-      /** "Kaybedeni yanına yaz" — üzerine YAZMAZ, `<ad>.conflict-<8hex>.<uzantı>` açar. → { ok, path } */
-      restoreLoser: (id) => ipcRenderer.invoke("sync:restoreLoser", { id }),
-      /** Kullanıcı kararını deftere yaz: 'kept-winner' | 'restored-loser' | 'merged-manual'. */
-      resolveConflict: (id, resolution) => ipcRenderer.invoke("sync:resolveConflict", { id, resolution }),
-      /** §5.4 sır kapısı: "bu dosyada sır yok, yükle" (sha256 ile). */
-      approveSecret: (sha256) => ipcRenderer.invoke("sync:approveSecret", { sha256 }),
-      /** Yeniden girişten sonra DURMUŞ kuyruğu sürdür. */
-      resumeQueue: () => ipcRenderer.invoke("sync:resumeQueue"),
-      /** Tercih kaydedildikten sonra motoru yeniden çöz (kapatma ANINDA söker). */
-      refresh: (opts) => ipcRenderer.invoke("sync:refresh", opts || {})
-    });
-    contextBridge.exposeInMainWorld("memoryApi", {
-      /** → { nodes:[{slug,name,type,scope,desc}], edges:[{from,to}], counts, scopes }. */
-      graph: () => ipcRenderer.invoke("memory:graph"),
-      /** ADP-277 — one fact's full body: (scope, slug) → { slug, scope, name, description, type, body } | null. */
-      fact: (scope, slug) => ipcRenderer.invoke("memory:fact", scope, slug),
-      // ADP-870 (Faz 2) — hafıza RAG indeksi. İndeksleme AYRI SÜREÇTE koşar; buradaki
-      // çağrılar yalnız onu başlatır/durdurur ve ilerlemesini dinler (UI donmaz).
-      /** → { running, phase, startedAt, lastEvent, lastResult, reason, dbFile }. */
-      indexStatus: () => ipcRenderer.invoke("memoryIndex:status"),
-      /** Arka plan indekslemeyi başlat → { ok, dbFile } | { ok:false, reason }. */
-      indexStart: () => ipcRenderer.invoke("memoryIndex:start"),
-      /** Nazik durdur (dosya sınırında) → { ok } | { ok:false, reason:'not_running' }. */
-      indexStop: () => ipcRenderer.invoke("memoryIndex:stop"),
-      /**
-       * İlerleme akışı. cb gets { phase, done?, total?, chunks?, file?, rssMb?, reason? }.
-       * phase: scanned|planned|indexing|done|exit|stopped|unavailable|error. Returns unsubscribe.
-       */
-      onIndexEvent: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("memoryIndex:event", listener);
-        return () => ipcRenderer.removeListener("memoryIndex:event", listener);
-      },
-      // ADP-871 (Faz 3) — hibrit arama (kelime + anlam). ADP-854'ün dosya-adı eşleşmesi
-      // yerinde DURUYOR; bu onun yanına gelen ikinci bir yüzey.
-      /**
-       * → { ok:true, results:[{ name, docPath, headingPath, lineStart, lineEnd, excerpt,
-       *     matchedBy:['anlam'|'kelime'], score }], text, degraded, sources }
-       *   | { ok:false, reason:'index_not_built'|'empty_query'|… }
-       * `degraded:true` = anlam katmanı bu sorguya katılamadı (model ısınıyor ya da kurulu
-       * değil) → sonuçlar yalnız kelime katmanından. `text` doğrudan gösterilebilir; sonuç
-       * yoksa "Hafızada bunu bulamadım." der (uydurma yok).
-       */
-      search: (query, k) => ipcRenderer.invoke("memoryIndex:search", query, k),
-      /** → { embedderReady, embedderRunning, unavailable, semanticEnabled, openIndexes }. */
-      searchStatus: () => ipcRenderer.invoke("memoryIndex:searchStatus"),
-      // ── ADP-900 — ANLAM KATMANI: ONAYLI İNDİRME ───────────────────────────────
-      // Kural: onay verilmeden TEK BAYT inmez ve kapı MAIN tarafındadır (renderer'a
-      // güvenilmez). `embedPlan` yalnız BOYUT sorar (HEAD; gövde inmez, disk yazılmaz).
-      /** → { ok, prefs:{semanticEnabled,autoIndex,consent}, available, reason, model, ramMb, diskBytes, install, search }. */
-      embedState: () => ipcRenderer.invoke("memoryEmbed:state"),
-      /** Sunucudan ÖLÇÜLEN plan → { ok, model:{files,totalBytes,…}, runtime, totalBytes, remainingBytes, ramMb, ready, consentKey }. */
-      embedPlan: () => ipcRenderer.invoke("memoryEmbed:plan"),
-      /** Kullanıcının kararını damgala (granted=false → kapalı kalır, hiçbir şey inmez). */
-      embedConsent: (granted, key) => ipcRenderer.invoke("memoryEmbed:consent", granted, key),
-      /** İndirmeyi başlat (damga plana uymuyorsa `consent_required` döner). */
-      embedInstall: () => ipcRenderer.invoke("memoryEmbed:install"),
-      /** İptal — yarım dosya KALIR, sonraki deneme kaldığı yerden sürer. */
-      embedCancel: () => ipcRenderer.invoke("memoryEmbed:cancel"),
-      /** Model + çalışma zamanını sil → { ok, freedBytes }. */
-      embedRemove: () => ipcRenderer.invoke("memoryEmbed:remove"),
-      /** { semanticEnabled?, autoIndex? } → { ok, prefs }. */
-      embedSetPrefs: (patch) => ipcRenderer.invoke("memoryEmbed:setPrefs", patch),
-      /** Kurulum ilerlemesi: { phase, file, receivedBytes, totalBytes, reason, message }. Aboneliği bırakır. */
-      onEmbedEvent: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("memoryEmbed:event", listener);
-        return () => ipcRenderer.removeListener("memoryEmbed:event", listener);
-      },
-      // ADP-862 (st1) — ÜRÜN UCU. `search`in ham çıktısının üstünde üç GARANTİ verir:
-      // her sonuçta kaynak (dosya+satır) + alıntı · sonuç yoksa "Hafızada bunu
-      // bulamadım." (uydurma yok) · gösterilen metin sır maskesinden geçmiş.
-      /**
-       * → { ok, found, query, results:[{ source, name, scope, heading, lineStart,
-       *     lineEnd, excerpt, matchedBy, score }], text, degraded, masked, reason? }
-       */
-      recall: (query, k) => ipcRenderer.invoke("memory:recall", query, k)
-    });
-  }
-});
-
-// src/preload/bridges/browser.js
-var require_browser = __commonJS({
-  "src/preload/bridges/browser.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("browserControlBridge", {
-      /** Subscribe to approval requests. cb gets { requestId, action, selector?, text?, agentId? }. */
-      onApproval: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("browser:approval", l);
-        return () => ipcRenderer.removeListener("browser:approval", l);
-      },
-      /**
-       * Reply to an approval request: { requestId, approved, scope? }.
-       * ADP-341 — `scope:'session'` = "bu görev boyunca izin ver" (yalnız kapı `scope:'session'`
-       * teklif ettiyse geçerlidir; TTL 30dk + eylem tavanı, diske YAZILMAZ). Yoksa tek eylemlik.
-       */
-      approvalResult: (res) => ipcRenderer.send("browser:approval:result", res),
-      /**
-       * ADP-341 (ADR-026 §3.3) — DURDUR: tüm görev-başı izinleri iptal eder ve bekleyen onay
-       * varsa onu da geçersiz kılar. → { revoked, epoch }
-       */
-      stop: () => ipcRenderer.invoke("browser:stop"),
-      /**
-       * ADP-343 (ADR-026 §2.5) — OTOMASYON MODU: süre sınırlı "bu oturumda sorma" (Ayarlar → Güven).
-       * `minutes` null/0 → kapat. Oturumluk: diske yazılmaz, DURDUR kapatır, hassas hedef ve yasak
-       * origin bundan ETKİLENMEZ. → { active, until, remainingMs, minutes:[…] }
-       */
-      setAutomation: (minutes) => ipcRenderer.invoke("browser:trust:automation", { minutes }),
-      /** ADP-343 — otomasyon modunun canlı durumu (geri sayım). */
-      automationStatus: () => ipcRenderer.invoke("browser:trust:status"),
-      /** Subscribe to the agent's browser activity feed. cb gets { action, selector?, agentId?, at }. */
-      onActivity: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("browser:activity", l);
-        return () => ipcRenderer.removeListener("browser:activity", l);
-      },
-      /**
-       * ADP-135 — run a browser action (navigate/click/type/read/readPage/screenshot/
-       * back) against the live internal-browser guest. Used by Jarvis voice
-       * (jarvisVoice.executeBrowser). Resolves { ok, result? } | { ok:false, error }.
-       */
-      run: (value) => ipcRenderer.invoke("browser:action", value),
-      /**
-       * ADP-150 (multi-tab) — main asks the renderer to open a new IN-APP browser tab
-       * when a guest does target=_blank / window.open (instead of the OS browser). cb
-       * gets { url }. Returns an unsubscribe fn.
-       */
-      onNewTab: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("browser:new-tab", l);
-        return () => ipcRenderer.removeListener("browser:new-tab", l);
-      },
-      /**
-       * ADP-150 (multi-tab) — tell main which <webview> guest (by webContents id) is the
-       * active tab, so headed automation (ADP-095) drives the visible tab. Main only
-       * accepts an id it tracked at attach time (never the app renderer).
-       */
-      setActiveGuest: (id) => ipcRenderer.send("browser:setActiveGuest", id),
-      /**
-       * ADP-333 — main, bir AJANA ait sekme açılmasını ister (ajan kendi sekmesine kilitli;
-       * kullanıcının sekmesine asla girmez). cb { agentId, url } alır. Sekme ARKA PLANDA
-       * açılır: patronun baktığı sayfa değişmez.
-       */
-      onAgentTab: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("browser:agent-tab", l);
-        return () => ipcRenderer.removeListener("browser:agent-tab", l);
-      },
-      /** ADP-333 — bu sekmenin SAHİBİ şu ajan: { guestId, agentId }. */
-      setTabOwner: (payload) => ipcRenderer.send("browser:setTabOwner", payload),
-      /**
-       * ADP-394 — HAYALET MOD: main, bir guest'in KOMPOZE EDİLMESİNİ ister (otomasyon koşarken).
-       * cb { guestId, on } alır. `display:none` bir <webview> kare üretmez → tıklama inmez
-       * (ADP-392). Renderer o sekmeyi görünmez ama çizilen bir katmana çevirir; boşta kapatır.
-       */
-      onComposite: (cb) => {
-        const l = (_e, p) => cb(p);
-        ipcRenderer.on("browser:composite", l);
-        return () => ipcRenderer.removeListener("browser:composite", l);
-      }
-    });
-  }
-});
-
-// src/preload/bridges/system.js
-var require_system = __commonJS({
-  "src/preload/bridges/system.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    contextBridge.exposeInMainWorld("popoutApi", {
-      /** Pane'i ayrı pencereye çıkar. `{ paneId, title?, agentId? }` → { ok, paneId } | { ok:false, error }. */
-      open: (payload) => ipcRenderer.invoke("popout:open", payload),
-      /** Pop-out penceresini kapat = pane eski hücresine döner. → { ok } | { ok:false, error }. */
-      close: (paneId) => ipcRenderer.invoke("popout:close", paneId),
-      /** Şu an dışarıda olan paneId'ler (reload sonrası durum hidrasyonu). → string[]. */
-      list: () => ipcRenderer.invoke("popout:list"),
-      /** Pop-out penceresi kapandı (kullanıcı ⌘W/kırmızı düğme/"Geri koy"). cb gets { paneId }. Returns unsubscribe. */
-      onClosed: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("popout:closed", listener);
-        return () => ipcRenderer.removeListener("popout:closed", listener);
-      },
-      /** ADP-712 — pencereyi büyüt/eski boyutuna getir (ızgaradaki "zoom"un karşılığı). */
-      toggleMaximize: (paneId) => ipcRenderer.invoke("popout:toggleMaximize", paneId),
-      /** ADP-712 — pencerenin şu anki durumu → { paneId, maximized } | null. */
-      state: (paneId) => ipcRenderer.invoke("popout:state", paneId),
-      /** ADP-712 — pencere native düğmeyle büyütüldü/küçültüldü. cb gets { paneId, maximized }. */
-      onState: (cb) => {
-        const listener = (_event, payload) => cb(payload);
-        ipcRenderer.on("popout:state", listener);
-        return () => ipcRenderer.removeListener("popout:state", listener);
-      }
-    });
-    contextBridge.exposeInMainWorld("feedbackApi", {
-      /** → { ok, text, lines } | { ok:false, reason:'no-log'|'unreadable' } */
-      logExcerpt: (opts) => ipcRenderer.invoke("feedback:logExcerpt", opts || {}),
-      /** → { ok, shots:[{name, at, bytes, thumbDataUrl}] } | { ok:false, reason:'no-dir' } */
-      recentShots: (opts) => ipcRenderer.invoke("feedback:recentShots", opts || {}),
-      /** → { ok, name, dataUrl, sha256, width, height } | { ok:false, reason } */
-      shotPreview: (opts) => ipcRenderer.invoke("feedback:shotPreview", opts || {})
-    });
-    contextBridge.exposeInMainWorld("localSpriteApi", {
-      /** → { ok, dir, sprites:[{key,url48,url16,bytes}] } */
-      list: () => ipcRenderer.invoke("sprites:listLocal"),
-      /**
-       * AVATAR-PACK-01 — Yüklü PAKETLER (manifest + lisans + karakterler + eksikler).
-       * `list` ile aynı diski okur ama başka soruyu yanıtlar: `list` "hangi sprite
-       * anahtarları çizilebilir", bu ise "hangi paket kurulu ve neyi vaat ediyor".
-       * → { ok, dir, packages:[{key,manifest,characters,missing}], skipped }
-       */
-      listPackages: () => ipcRenderer.invoke("sprites:listPackages"),
-      /** ADP-737 — Paket yükle (zip dosyası). → { ok, key?, manifest?, warnings?, error? } */
-      installPackage: (zipPath) => ipcRenderer.invoke("sprites:installPackage", zipPath),
-      /** ADP-737 — Paketi kaldır (key). → { ok, error? } */
-      removePackage: (key) => ipcRenderer.invoke("sprites:removePackage", key),
-      /** ADP-737 — Paketi dışa aktar (karakterleri zip'le). → { ok, path?, error? } */
-      exportPackage: (keys) => ipcRenderer.invoke("sprites:exportPackage", keys)
-    });
-    contextBridge.exposeInMainWorld("feedbackSeenApi", {
-      get: () => ipcRenderer.sendSync("feedback:seen:get"),
-      set: (state) => ipcRenderer.invoke("feedback:seen:set", state)
-    });
-    contextBridge.exposeInMainWorld("resourceApi", {
-      /** → { ok, state } — state: { level, freePct, reasons, waiting[], settings, … }. */
-      state: () => ipcRenderer.invoke("resource:state"),
-      /** "Yine de aç": kullanıcı HER ZAMAN açabilir. Onay süre-kutulu (ms; boş → varsayılan). */
-      allowAnyway: (ms) => ipcRenderer.invoke("resource:allowAnyway", ms),
-      /** Ayarlar: { enabled?, warnFreePct?, criticalFreePct? } → { ok, state }. Diske yazılır. */
-      configure: (patch) => ipcRenderer.invoke("resource:configure", patch),
-      /** Bitmiş (terminal + >15 dk sessiz) pane'ler. `department` verilirse yalnız o takım. */
-      finishedPanes: (opts) => ipcRenderer.invoke("resource:finishedPanes", opts || {}),
-      /** ONAYLI kapatma — main her paneId'yi yeniden ölçer (canlanan pane öldürülmez). */
-      closeFinished: (paneIds) => ipcRenderer.invoke("resource:closeFinished", { paneIds }),
-      /** Baskı seviyesi ya da bekleme kuyruğu değişince push. Dönen fonksiyon aboneliği bırakır. */
-      onPressure: (cb) => {
-        const l = (_e, state) => cb(state);
-        ipcRenderer.on("resource:pressure", l);
-        return () => ipcRenderer.removeListener("resource:pressure", l);
-      }
-    });
-    contextBridge.exposeInMainWorld("reportsApi", {
-      /** cb: ({ at }) => void — abonelikten çıkmak için dönen fonksiyonu çağır. */
-      onChanged: (cb) => {
-        const l = (_e, payload) => cb(payload || { at: Date.now() });
-        ipcRenderer.on("reports:changed", l);
-        return () => ipcRenderer.removeListener("reports:changed", l);
-      }
-    });
-  }
-});
-
-// src/preload/bridges/test.js
-var require_test = __commonJS({
-  "src/preload/bridges/test.js"() {
-    "use strict";
-    var { contextBridge, ipcRenderer } = require("electron");
-    if (process.env.CREWPANE_AUTOTEST || process.env.CREWPANE_SPIKE_AUTOTEST || process.env.NODE_ENV === "test") {
-      contextBridge.exposeInMainWorld("spikeProbe", {
-        rendered: (chunk) => ipcRenderer.send("spike:rendered", chunk),
-        done: (summary) => ipcRenderer.send("spike:done", summary)
-      });
+    } catch {
+      localeState = null;
     }
+    if (localeState) contextBridge.exposeInMainWorld("crewpaneLocale", localeState);
+    contextBridge.exposeInMainWorld("crewpaneDb", {
+      listRecentProjects: () => ipcRenderer.invoke("db:projects:recent"),
+      listRecentAgents: () => ipcRenderer.invoke("db:agents:recent"),
+      getProject: (slug) => ipcRenderer.invoke("db:project:get", slug),
+      saveProject: (proj) => ipcRenderer.invoke("db:project:save", proj),
+      deleteProject: (slug) => ipcRenderer.invoke("db:project:delete", slug),
+      openDbFolder: () => ipcRenderer.invoke("db:folder:open"),
+      syncStatus: () => ipcRenderer.invoke("db:sync:status")
+    });
+    contextBridge.exposeInMainWorld("crewpaneApi", {
+      get: () => ipcRenderer.invoke("crewpane:get"),
+      signIn: () => ipcRenderer.invoke("crewpane:signIn"),
+      signOut: (opts) => ipcRenderer.invoke("crewpane:signOut", opts),
+      schemeHealth: (opts) => ipcRenderer.invoke("crewpane:schemeHealth", opts),
+      secretBackend: () => ipcRenderer.invoke("crewpane:secretBackend"),
+      pasteCallback: (url) => ipcRenderer.invoke("crewpane:pasteCallback", url),
+      refresh: () => ipcRenderer.invoke("crewpane:refresh"),
+      openBilling: () => ipcRenderer.invoke("crewpane:openBilling"),
+      devices: () => ipcRenderer.invoke("crewpane:devices"),
+      deviceRevoke: (deviceId) => ipcRenderer.invoke("crewpane:deviceRevoke", deviceId),
+      deviceReleaseOthers: () => ipcRenderer.invoke("crewpane:deviceReleaseOthers"),
+      onState: (cb) => {
+        const listener = (_e, state) => cb(state);
+        ipcRenderer.on("crewpane:state", listener);
+        return () => ipcRenderer.removeListener("crewpane:state", listener);
+      }
+    });
+    contextBridge.exposeInMainWorld("taskApi", {
+      cleanTeamDone: (opts) => ipcRenderer.invoke("task:cleanTeamDone", opts),
+      cleanAll: () => ipcRenderer.invoke("task:cleanAll"),
+      listSummary: () => ipcRenderer.invoke("task:listSummary")
+    });
   }
 });
 
@@ -2526,6 +3293,16 @@ var require_jevUiBridge = __commonJS({
         injectFloatingWidget();
         injectSettingsControls();
         setupObserver();
+        try {
+          const { contextBridge, ipcRenderer } = require("electron");
+          contextBridge.exposeInMainWorld("jevUiBridge", {
+            getSettings: () => ({ ...currentSettings }),
+            saveSettings: (patch) => saveJevSettings(patch),
+            routeTask: (prompt) => ipcRenderer.invoke("jev:route-task", prompt),
+            decisionLog: (opts) => ipcRenderer.invoke("jev:decision-log", opts)
+          });
+        } catch (_e) {
+        }
       }
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", boot);
@@ -2537,21 +3314,6 @@ var require_jevUiBridge = __commonJS({
 });
 
 // src/preload/index.js
-require_platform();
-require_database();
-require_core();
-require_terminal();
-require_agents();
-require_skills();
-require_tasks();
-require_voice();
-require_files();
-require_services();
-require_hand();
-require_mobile();
-require_settings();
-require_sync();
-require_browser();
-require_system();
-require_test();
+require_basePreload();
+require_crewpaneCompat();
 require_jevUiBridge();

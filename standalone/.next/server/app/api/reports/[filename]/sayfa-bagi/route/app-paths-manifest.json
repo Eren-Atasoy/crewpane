@@ -1,0 +1,3 @@
+{
+  "/api/reports/[filename]/sayfa-bagi/route": "app/api/reports/[filename]/sayfa-bagi/route.js"
+}

@@ -862,6 +862,75 @@ test('Jev Roadmap - Faz 6c: motion-studio builtin skill catalog integrity and ru
   assert.ok(text.includes('Smoke Test') || text.includes('smoke test'));
 });
 
+// ── Faz 5 & 6 Ek Güvenlik: Eskalasyon Sayacı Tavanı ve Tek-Geçişli Şema ─────────
+test('Jev Roadmap - Güvenlik & Maliyet: escalationCounter blocks runaway loops after max escalations', (t) => {
+  const { decide } = require('../src/agents/jev/decide.cjs');
+  const installedEngines = [{ id: 'claude', installed: true, loggedIn: true }];
+
+  // 1. İlk eskalasyon (counter: 0 -> 1) standart'a çıkar
+  const res1 = decide({
+    task: { title: 'Buton rengini mavi yap' },
+    engines: installedEngines,
+    escalationCounter: 0,
+    maxEscalations: 2,
+    goalFailure: { failedRounds: 2 },
+  });
+  assert.strictEqual(res1.tier, 'standard');
+  assert.strictEqual(res1.escalationCounter, 1);
+  assert.strictEqual(res1.escalationBlocked, false);
+  assert.strictEqual(res1.reason.code, 'escalated-after-failed-checks');
+
+  // 2. Maksimum eskalasyon sınırına (2) ulaşıldığında eskalasyon bloke edilir
+  const resBlocked = decide({
+    task: { title: 'Buton rengini mavi yap' },
+    engines: installedEngines,
+    escalationCounter: 2,
+    maxEscalations: 2,
+    lastTier: 'expert',
+    goalFailure: { failedRounds: 2 },
+  });
+  assert.strictEqual(resBlocked.escalationBlocked, true);
+  assert.strictEqual(resBlocked.escalationCounter, 2);
+  assert.strictEqual(resBlocked.tier, 'expert');
+  assert.strictEqual(resBlocked.reason.code, 'escalation-limit-reached');
+  assert.ok(resBlocked.reason.signals.includes('signal:escalation-counter-exceeded'));
+});
+
+test('Jev Roadmap - Gateway Optimizasyonu: single-pass classifierSchema enforces security override in one roundtrip', (t) => {
+  const { buildSinglePassPayload, parseClassifierResult } = require('../src/agents/jev/classifierSchema.cjs');
+
+  // 1. Tek geçişli payload oluşturma
+  const payload = buildSinglePassPayload({
+    title: 'Kullanıcı JWT token ve şifreleme anahtarlarını yenile',
+    description: 'Tüm yetkilendirme akışını ve migration işlemlerini güvenli hale getir',
+    filesTouched: ['src/auth/jwt.js', 'src/db/migration.sql'],
+  });
+  assert.strictEqual(payload.messages.length, 2);
+  assert.strictEqual(payload.response_format.type, 'json_schema');
+  assert.ok(payload.messages[1].content.includes('JWT token'));
+
+  // 2. LLM hata yapıp Routine dese bile, security_trigger: true ise tier Expert'e kilitlenir
+  const parsedOverride = parseClassifierResult({
+    tier: 'routine',
+    security_trigger: true,
+    confidence: 0.95,
+    reason: 'Security keywords present in task text',
+  });
+  assert.strictEqual(parsedOverride.tier, 'expert');
+  assert.strictEqual(parsedOverride.securityTrigger, true);
+
+  // 3. Normal rutin görevde Routine olarak korunur
+  const parsedRoutine = parseClassifierResult({
+    tier: 'routine',
+    security_trigger: false,
+    confidence: 0.9,
+    reason: 'Simple CSS fix',
+  });
+  assert.strictEqual(parsedRoutine.tier, 'routine');
+  assert.strictEqual(parsedRoutine.securityTrigger, false);
+});
+
+
 
 
 

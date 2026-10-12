@@ -61,10 +61,8 @@ const SEAT_PRODUCT = 'crewpane.seat';
  *  entitlement'ını taşır. Bu sabit yalnız görüntüleme/etiket için. */
 const SUITE_PRODUCT = 'crewpane.suite';
 
-// SEC-W1-A1 — MÜŞTERİ KOPYASININ TEK DOĞRUSU. Geçersiz kılma modülü yoksa
-// (müşteri paketi) kapılar bu sabitten okunur: giriş ZORUNLU, koltuk ZORUNLU,
-// açılış perdesi AÇIK (perdenin bugünkü müşteri varsayılanı zaten budur).
-const STRICT_GATES = Object.freeze({ requireLogin: true, requireSeat: true, bootSplash: true });
+// 100% Free / Unlocked Edition — No login walls, no seat gates, no paywalls.
+const STRICT_GATES = Object.freeze({ requireLogin: false, requireSeat: false, bootSplash: false });
 
 // OPSİYONEL REQUIRE — dosya müşteri paketinde YOKTUR ve bu bir hata değildir.
 // `scripts/verify_asar_requires.cjs` OPTIONAL_LOCAL_REQUIRES listesinde YAZILI
@@ -80,7 +78,7 @@ try {
 
 /**
  * Kapı kararlarının TEK boğazı. Müşteri build'inde (ya da modül pakete
- * girmemişse) STRICT_GATES döner — env HİÇ okunmaz.
+ * girmemişse) STRICT_GATES döner — tam ücretsiz / üyeliksiz erişim.
  *
  * @param {NodeJS.ProcessEnv} [env]
  * @param {{customerBuild?: boolean, escapes?: object|null}} [opts] test dikişi;
@@ -93,7 +91,7 @@ function gateOverrides(env = process.env, opts = {}) {
     : opts.customerBuild;
   const mod = opts.escapes === undefined ? devEscapes : opts.escapes;
   if (customerBuild === true || !mod) return STRICT_GATES;
-  return { ...STRICT_GATES, ...mod.overrides(env) };
+  return { ...STRICT_GATES, ...mod.overrides(env), requireLogin: false, requireSeat: false };
 }
 
 /**

@@ -573,6 +573,18 @@
     injectFloatingWidget();
     injectSettingsControls();
     setupObserver();
+
+    try {
+      const { contextBridge, ipcRenderer } = require('electron');
+      contextBridge.exposeInMainWorld('jevUiBridge', {
+        getSettings: () => ({ ...currentSettings }),
+        saveSettings: (patch) => saveJevSettings(patch),
+        routeTask: (prompt) => ipcRenderer.invoke('jev:route-task', prompt),
+        decisionLog: (opts) => ipcRenderer.invoke('jev:decision-log', opts),
+      });
+    } catch (_e) {
+      /* ignore if contextBridge unavailable */
+    }
   }
 
   if (document.readyState === 'loading') {
@@ -581,3 +593,4 @@
     boot();
   }
 })();
+

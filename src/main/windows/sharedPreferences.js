@@ -26,8 +26,14 @@ function createSharedWebPreferences(deps) {
     sandbox: true,
     backgroundThrottling: false,
     additionalArguments: [
+      '--agentspace-bridges=*',
+      '--crewpane-bridges=*',
       supabaseTarget.encodeArgv(resolveTarget()),
+      '--agentspace-db=' + Buffer.from(JSON.stringify(resolveTarget()), 'utf8').toString('base64'),
       appI18n.encodeArgv(applyAppLocale()),
+      String(appI18n.encodeArgv(applyAppLocale())).replace('--crewpane-locale=', '--agentspace-locale='),
+      '--agentspace-titlebar=' + (process.platform === 'darwin' ? 'mac' : 'overlay'),
+      '--crewpane-titlebar=' + (process.platform === 'darwin' ? 'mac' : 'overlay'),
     ],
   };
 }

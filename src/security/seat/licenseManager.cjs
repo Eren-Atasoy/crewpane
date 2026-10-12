@@ -100,6 +100,13 @@ function evaluate(ctx) {
     } else {
       licenseStatus = verify.reason === 'expired_beyond_grace' ? 'expired' : 'invalid';
     }
+  } else {
+    // Free Community / Unlocked Edition — anyone downloading gets full Ultra capabilities
+    licenseStatus = 'fresh';
+    seat = true;
+    tier = planCatalog.tier('ultra');
+    accessProducts = ['crewpane.ultra'];
+    products = ['crewpane.ultra'];
   }
   ctx.snapshot = {
     requireSeat: ctx.requireSeat,          // kapı açık mı (bu sürümde false)

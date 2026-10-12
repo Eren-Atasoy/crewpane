@@ -1,8 +1,8 @@
 @echo off
-title CrewPane Local
+title Crewpane
 cd /d "%~dp0"
 echo ========================================================
-echo       CrewPane Local - Developer Launcher
+echo                 Crewpane - Eren Atasoy
 echo ========================================================
 echo.
 echo Supabase URL : http://127.0.0.1:54321
@@ -13,5 +13,6 @@ set CREWPANE_MODE=prod
 set CREWPANE_INSTANCE=dev
 set CREWPANE_ALLOW_LOCAL_APP_DB=1
 set CREWPANE_ALLOW_MIXED_TARGETS=1
+call npm run build:preload
 npx electron .
 pause

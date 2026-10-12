@@ -2,9 +2,9 @@
   "version": 1,
   "config": {
     "env": {
-      "NEXT_PUBLIC_APP_VERSION": "0.2.48",
-      "NEXT_PUBLIC_BUILD_COMMIT": "cdc779328",
-      "NEXT_PUBLIC_BUILD_TIME": "2026-09-22T04:03:47.816Z"
+      "NEXT_PUBLIC_APP_VERSION": "0.4.0",
+      "NEXT_PUBLIC_BUILD_COMMIT": "419e20c4d",
+      "NEXT_PUBLIC_BUILD_TIME": "2026-10-07T20:08:13.271Z"
     },
     "webpack": null,
     "typescript": {
@@ -109,7 +109,7 @@
         "transform": "lodash/{{member}}"
       }
     },
-    "outputFileTracingRoot": "/Users/crewpane/Downloads/.crewpane-build-REL0248",
+    "outputFileTracingRoot": "/Users/muratbaskicioglu/Downloads/.agentspace-worktrees/rel040-rc1",
     "cacheComponents": false,
     "cacheLife": {
       "default": {
@@ -326,11 +326,11 @@
       ]
     },
     "turbopack": {
-      "root": "/Users/crewpane/Downloads/.crewpane-build-REL0248"
+      "root": "/Users/muratbaskicioglu/Downloads/.agentspace-worktrees/rel040-rc1"
     },
     "distDirRoot": ".next"
   },
-  "appDir": "/Users/crewpane/Downloads/.crewpane-build-REL0248",
+  "appDir": "/Users/muratbaskicioglu/Downloads/.agentspace-worktrees/rel040-rc1",
   "relativeAppDir": "",
   "files": [
     ".next/routes-manifest.json",

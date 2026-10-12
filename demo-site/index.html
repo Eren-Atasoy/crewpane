@@ -1,13 +1,13 @@
 <!doctype html>
 <!--
-  Gustoso Bistro — CrewPane ile birlikte gelen ÖRNEK sayfa.
+  Gustoso Bistro — AgentSpace ile birlikte gelen ÖRNEK sayfa.
 
   Kurgusal bir işletmedir: gerçek bir marka, kişi, adres, telefon ya da
   e-posta içermez (`.example` alan adı RFC 2606 ile yönlendirilemez olarak
   ayrılmıştır). Tamamen çevrimdışı çalışır — web fontu, CDN, analitik,
   harita ya da uzak görsel YOK; bütün görseller satır içi / `data:` SVG.
 
-  Sample page that ships with CrewPane. A fictional business; contains no
+  Sample page that ships with AgentSpace. A fictional business; contains no
   real brand, person, address, phone or email, and makes no network requests.
 -->
 <html lang="tr" data-lang="tr">
@@ -44,6 +44,8 @@
 }
 
 *,*::before,*::after{ box-sizing:border-box; }
+/* ONB-F2 — tur formu doldururken alan kısaca yanar. */
+.demo-filled{ outline:2px solid var(--saffron); outline-offset:1px; }
 
 html{ scroll-behavior:smooth; }
 @media (prefers-reduced-motion: reduce){ html{ scroll-behavior:auto; } }
@@ -466,15 +468,15 @@ footer{ border-top:1px solid var(--line); padding:26px var(--gut) 40px; }
           <div class="fields">
             <div class="field">
               <label for="f-name"><span data-when="tr">Ad</span><span data-when="en">Name</span></label>
-              <input id="f-name" type="text" autocomplete="off">
+              <input id="f-name" type="text" autocomplete="off" data-demo="Ayşe Yılmaz">
             </div>
             <div class="field">
               <label for="f-mail"><span data-when="tr">E-posta</span><span data-when="en">Email</span></label>
-              <input id="f-mail" type="email" autocomplete="off">
+              <input id="f-mail" type="email" autocomplete="off" data-demo="ayse@ornek.example">
             </div>
             <div class="field">
               <label for="f-date"><span data-when="tr">Tarih</span><span data-when="en">Date</span></label>
-              <input id="f-date" type="date">
+              <input id="f-date" type="date" data-demo="2026-10-03">
             </div>
             <div class="field">
               <label for="f-time"><span data-when="tr">Saat</span><span data-when="en">Time</span></label>
@@ -486,7 +488,7 @@ footer{ border-top:1px solid var(--line); padding:26px var(--gut) 40px; }
             </div>
             <div class="field">
               <label for="f-size"><span data-when="tr">Kişi</span><span data-when="en">People</span></label>
-              <select id="f-size">
+              <select id="f-size" data-demo="4">
                 <option>1</option><option selected>2</option><option>3</option>
                 <option>4</option><option>5</option><option>6</option>
               </select>
@@ -575,6 +577,24 @@ document.getElementById('booking').addEventListener('submit', function(e){
   }, { rootMargin: '-15% 0px -55% 0px' });
   acts.forEach(function(a){ io.observe(a); });
   acts[0].classList.add('lit');
+})();
+
+/* ONB-F2 — TANITIM TURU (yalnız bu sayfanın içinde, ağ yok):
+   ?accent=warm|olive|navy → kullanıcının turdaki karar rengi (KAPALI küme; başka değer yok sayılır).
+   ?autofill=1            → "ekipten biri sayfayı deniyor": bölümler sırayla, sonra form dolar ve gönderilir.
+   Form yine hiçbir yere göndermez; örnek mesajı görünür. */
+(function(){
+  var q = ''; try { q = location.search || ''; } catch (e) { q = ''; }
+  var C = { warm: '#d9632b', olive: '#5f7f1f', navy: '#2d4f9e' };
+  var m = /[?&]accent=(warm|olive|navy)(?:&|$)/.exec(q);
+  if (m) document.documentElement.style.setProperty('--amaro', C[m[1]]);
+  if (!/[?&]autofill=1(?:&|$)/.test(q)) return;
+  var form = document.getElementById('booking'); if (!form) return;
+  var fields = Array.prototype.slice.call(form.querySelectorAll('[data-demo]'));
+  function go(id){ var el = document.getElementById(id); if (el && el.scrollIntoView) el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+  [['s2', 1300], ['s3', 2600], ['s4', 3900], ['s5', 5200]].forEach(function(p){ setTimeout(function(){ go(p[0]); }, p[1]); });
+  fields.forEach(function(f, i){ setTimeout(function(){ f.value = f.getAttribute('data-demo'); f.classList.add('demo-filled'); }, 7000 + i * 1100); });
+  setTimeout(function(){ if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event('submit', { cancelable: true })); }, 7000 + fields.length * 1100 + 600);
 })();
 </script>
 

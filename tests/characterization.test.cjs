@@ -50,10 +50,11 @@ test('Characterization: IPC surface (main handlers + preload bridges) is unchang
   matchSnapshot('ipc-surface', inventory());
 });
 
-test('Characterization: bundled preload exposes 65 bridges and valid surface', () => {
+test('Characterization: bundled preload exposes 85 bridges and valid surface', () => {
   const bundled = preloadSurface(path.join(ROOT, 'dist', 'preload.js'));
-  assert.equal(bundled.bridges.length, 65);
+  assert.equal(bundled.bridges.length, 85);
 });
+
 
 test('Characterization: every preload invoke/send channel has a main-process handler', () => {
   const inv = inventory();

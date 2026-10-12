@@ -6,5 +6,5 @@ R.c("server/chunks/ssr/[root-of-the-server]__0l6mx_2._.js")
 R.c("server/chunks/ssr/node_modules_next_dist_0ppctuh._.js")
 R.c("server/chunks/ssr/node_modules_next_dist_client_components_builtin_global-error_0lgvd_..js")
 R.c("server/chunks/ssr/_next-internal_server_app__global-error_page_actions_0k77kol.js")
-R.m(213254)
-module.exports=R.m(213254).exports
+R.m(3591654)
+module.exports=R.m(3591654).exports

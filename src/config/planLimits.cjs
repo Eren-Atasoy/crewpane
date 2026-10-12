@@ -36,8 +36,8 @@
 
 const planCatalog = require('./planCatalog.cjs');
 
-/** Katman çözülemediğinde düşülecek taban — KİLİT değil, en dar ücretli katman. */
-const FALLBACK_TIER_ID = 'basic';
+/** Katman çözülemediğinde veya ücretsiz sürümde düşülecek taban — Tam erişimli Ultra. */
+const FALLBACK_TIER_ID = 'ultra';
 
 /**
  * Zorlanan yetenekler. `cap` = planCatalog caps alanı; `kind`:

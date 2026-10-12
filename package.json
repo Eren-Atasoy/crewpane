@@ -1,7 +1,8 @@
 {
   "name": "crewpane",
   "productName": "CrewPane",
-  "version": "0.2.48",
+  "version": "0.4.0",
+  "author": "Eren Atasoy",
   "private": true,
   "description": "CrewPane Electron shell — embeds the autonomous agent workspace and terminal runtime.",
   "main": "main.js",
@@ -11,6 +12,8 @@
     "build:preload": "esbuild src/preload/index.js --bundle --platform=node --external:electron --outfile=dist/preload.js",
     "prestart": "npm run build:preload",
     "start": "cross-env CREWPANE_MODE=prod CREWPANE_INSTANCE=dev CREWPANE_ALLOW_LOCAL_APP_DB=1 CREWPANE_ALLOW_MIXED_TARGETS=1 electron .",
+    "dev": "start.bat",
+    "electron:dev": "start.bat",
     "start:win": "start.bat",
     "pretest": "npm run build:preload",
     "test": "node --test tests/architecture.test.cjs tests/units.test.cjs tests/core-domains.test.cjs tests/jev-roadmap.test.cjs tests/smoke.test.cjs tests/characterization.test.cjs",
@@ -37,7 +40,8 @@
     "koffi": "3.1.6",
     "node-pty": "1.1.0"
   },
-  "gitCommit": "cdc779328",
+  "gitCommit": "419e20c4d",
+
   "crewpaneTelemetry": {
     "CREWPANE_SENTRY_DSN_PROD": "",
     "CREWPANE_POSTHOG_KEY_PROD": "",

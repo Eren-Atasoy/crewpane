@@ -1,0 +1,11 @@
+{
+  "pages": {},
+  "app": {
+    "[project]/src/app/rapor-onizleme/page": [
+      "static/media/Geist_Variable-s.p.06.f0v_2js29o.woff2",
+      "static/media/GeistMono_Variable-s.p.1216mhqx6y_is.woff2"
+    ]
+  },
+  "appUsingSizeAdjust": true,
+  "pagesUsingSizeAdjust": false
+}

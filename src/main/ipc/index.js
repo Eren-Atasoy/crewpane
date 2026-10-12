@@ -1,7 +1,7 @@
 'use strict';
 
 const { createIpcRouter } = require('./router');
-const { wireIpc, wireServicesIpc, wireAgentsIpc, wireSystemIpc } = require('./wire');
+const { wireIpc, wireServicesIpc, wireAgentsIpc, wireSystemIpc, wire040Ipc } = require('./wire');
 const {
   assembleIpcDeps,
   buildPlatformAndWindowDeps,
@@ -19,6 +19,7 @@ module.exports = {
   wireServicesIpc,
   wireAgentsIpc,
   wireSystemIpc,
+  wire040Ipc,
   assembleIpcDeps,
   buildPlatformAndWindowDeps,
   buildWorkspaceAndStorageDeps,
@@ -28,3 +29,4 @@ module.exports = {
   buildSystemAuthAndEngineDeps,
   createMainIpcWiring,
 };
+

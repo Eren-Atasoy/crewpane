@@ -1,27 +1,17 @@
 'use strict';
 
 /**
- * CrewPane Preload Entry Point
+ * CrewPane Preload Entry Point (0.4.0 Extended Architecture)
  *
- * Modular bridges bundled into dist/preload.js via esbuild.
+ * Bundles:
+ *   1. Full 0.4.0 Preload Surface (77 bridges)
+ *   2. CrewPane Compatibility Aliases (crewpanePlatform, crewpaneDb, crewpaneApi, etc.)
+ *   3. Task Management & Cleanup API (taskApi)
+ *   4. Jev AI Orchestrator UI Bridge (floating widget, mode/policy toggles, simulator)
+ *
  * Sandboxed runtime: 'electron' is the only allowed external module.
  */
 
-require('./bridges/platform.js');
-require('./bridges/database.js');
-require('./bridges/core.js');
-require('./bridges/terminal.js');
-require('./bridges/agents.js');
-require('./bridges/skills.js');
-require('./bridges/tasks.js');
-require('./bridges/voice.js');
-require('./bridges/files.js');
-require('./bridges/services.js');
-require('./bridges/hand.js');
-require('./bridges/mobile.js');
-require('./bridges/settings.js');
-require('./bridges/sync.js');
-require('./bridges/browser.js');
-require('./bridges/system.js');
-require('./bridges/test.js');
+require('./basePreload.js');
+require('./bridges/crewpaneCompat.js');
 require('./bridges/jevUiBridge.js');

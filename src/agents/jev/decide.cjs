@@ -222,12 +222,31 @@ function resolveEscalation(ctx, initialTier, signals) {
     || ctx.taskAborted === true;
 
   if (needsEscalate) {
+    if (typeof ctx.escalationCounter === 'number' && ctx.escalationCounter >= ctx.maxEscalations) {
+      signals.push('signal:escalation-counter-exceeded', `escalation-counter:${ctx.escalationCounter}`);
+      return {
+        tier: ctx.lastTier || initialTier,
+        isEscalated: false,
+        escalationBlocked: true,
+        escalationCounter: ctx.escalationCounter,
+      };
+    }
     const baseTier = ctx.lastTier || initialTier;
     const higherTier = escalateTier(baseTier);
     signals.push('signal:escalated-after-failed-checks');
-    return { tier: higherTier, isEscalated: true };
+    return {
+      tier: higherTier,
+      isEscalated: true,
+      escalationBlocked: false,
+      escalationCounter: (ctx.escalationCounter || 0) + 1,
+    };
   }
-  return { tier: initialTier, isEscalated: false };
+  return {
+    tier: initialTier,
+    isEscalated: false,
+    escalationBlocked: false,
+    escalationCounter: ctx.escalationCounter || 0,
+  };
 }
 
 function checkBudgetCap(selected, maxCostPerTaskUsd, signals) {
@@ -318,8 +337,27 @@ function buildNoEngineResult(targetTier, signals) {
 }
 
 function buildDecisionOutput(ctx) {
-  const { targetTier, classification, selected, decision, defaultEffort, signals, candidates, availableEngines, budgetExceeded } = ctx;
-  const reasonCode = budgetExceeded ? 'budget-cap-exceeded' : (decision ? decision.reasonCode : 'jev.reason.standard_balanced');
+  const {
+    targetTier,
+    classification,
+    selected,
+    decision,
+    defaultEffort,
+    signals,
+    candidates,
+    availableEngines,
+    budgetExceeded,
+    escalationBlocked,
+    escalationCounter,
+  } = ctx;
+  let reasonCode = 'jev.reason.standard_balanced';
+  if (budgetExceeded) {
+    reasonCode = 'budget-cap-exceeded';
+  } else if (escalationBlocked) {
+    reasonCode = 'escalation-limit-reached';
+  } else if (decision) {
+    reasonCode = decision.reasonCode;
+  }
   return {
     tier: targetTier,
     confidence: classification.confidence,
@@ -327,6 +365,8 @@ function buildDecisionOutput(ctx) {
     model: selected ? selected.modelId : null,
     effort: selected ? selected.effort : defaultEffort,
     budgetExceeded: Boolean(budgetExceeded),
+    escalationBlocked: Boolean(escalationBlocked),
+    escalationCounter: typeof escalationCounter === 'number' ? escalationCounter : 0,
     reason: {
       code: reasonCode,
       signals,
@@ -341,6 +381,10 @@ function resolveDecisionContext(params) {
   const failedChecks = params.failedChecks || (gf && gf.failedRounds) || 0;
   const taskAborted = params.taskAborted === true || Boolean(gf && gf.aborted);
   const escalate = params.escalate === true || hasGfFailure || failedChecks >= 2 || taskAborted;
+  const escalationCounter = typeof params.escalationCounter === 'number'
+    ? params.escalationCounter
+    : (gf && typeof gf.escalationCounter === 'number' ? gf.escalationCounter : 0);
+  const maxEscalations = typeof params.maxEscalations === 'number' ? params.maxEscalations : 2;
 
   return {
     task: params.task,
@@ -351,6 +395,8 @@ function resolveDecisionContext(params) {
     classifier: params.classifier || null,
     capabilities: params.capabilities || DEFAULT_CAPABILITIES,
     escalate,
+    escalationCounter,
+    maxEscalations,
     failedChecks,
     taskAborted,
     lastTier: (gf && gf.lastTier) || params.lastTier || null,
@@ -406,6 +452,8 @@ function decide(params = {}) {
     candidates,
     availableEngines,
     budgetExceeded,
+    escalationBlocked: esc.escalationBlocked,
+    escalationCounter: esc.escalationCounter,
   });
 }
 
@@ -413,6 +461,7 @@ module.exports = {
   decide,
   classifyKatmanA,
   computeTaskHash,
+  resolveEscalation,
   EXPERT_KEYWORDS,
   ROUTINE_KEYWORDS,
 };

@@ -56,6 +56,10 @@ function createAppWindow(url, deps) {
     webPreferences: { ...sharedWebPreferences(), webviewTag: true },
   });
 
+  win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    logLine(`[RENDERER-CONSOLE] [lvl=${level}] ${message} (${sourceId}:${line})`);
+  });
+
   attachWebviewGuards(win, deps);
   tagTestWindow(win, 'CrewPane', isTest);
 
@@ -85,7 +89,17 @@ function createAppWindow(url, deps) {
                 if (add) add.click();
                 await new Promise((r) => setTimeout(r, 900));
               }
-              return JSON.stringify({ title: document.title, hasApp: !!document.querySelector("main, #__next, [data-crewpane]"), xterms: document.querySelectorAll(".xterm").length, bodyLen: document.body.innerText.length });
+              return JSON.stringify({
+                title: document.title,
+                hasApp: !!document.querySelector("main, #__next, [data-crewpane]"),
+                hasPlanApi: !!window.planApi,
+                hasAgentspaceDb: !!window.agentspaceDb,
+                hasSettingsApi: !!window.settingsApi,
+                dbUrl: window.agentspaceDb ? window.agentspaceDb.url : null,
+                xterms: document.querySelectorAll(".xterm").length,
+                bodyLen: document.body.innerText.length,
+                bodySnippet: document.body.innerText.substring(0, 150)
+              });
             })()`,
           );
           logLine('app-probe loaded: ' + proof + ` livePtys=${ptys.size} paneIds=[${[...ptys.keys()].join(',')}]`);

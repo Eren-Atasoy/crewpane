@@ -3,6 +3,17 @@
   "functions": {
     "/api/reports": {},
     "/api/reports/[filename]": {},
+    "/api/reports/[filename]/comments": {},
+    "/api/reports/[filename]/design": {},
+    "/api/reports/[filename]/draft": {},
+    "/api/reports/[filename]/evidence": {},
+    "/api/reports/[filename]/page": {},
+    "/api/reports/[filename]/page-state": {},
+    "/api/reports/[filename]/sayfa-bagi": {},
+    "/api/reports/[filename]/state": {},
+    "/api/reports/[filename]/versions": {},
+    "/api/reports/claude-esleme": {},
+    "/api/reports/drafts": {},
     "/reports": {}
   }
 }

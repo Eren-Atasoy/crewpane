@@ -1,7 +1,7 @@
 {
-  "name": "CrewPane",
-  "short_name": "CrewPane",
-  "description": "CrewPane ofisini telefonundan izle ve yönet.",
+  "name": "AgentSpace",
+  "short_name": "AgentSpace",
+  "description": "AgentSpace ofisini telefonundan izle ve yönet.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
